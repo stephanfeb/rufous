@@ -14,6 +14,10 @@ use boubou_core::guards::budget::{
     elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
 };
 use boubou_core::ollama::{Client, Message};
+use boubou_core::parallel::{
+    env_snapshot, format_capacity_table, progress_line, CapacityPlanner, ParallelConfig,
+    ResourceProbe, SEVERE_EXIT_CODE,
+};
 use boubou_core::skills::SkillSet;
 use boubou_core::text::read_text;
 use boubou_core::todo::todo_file;
@@ -71,6 +75,8 @@ enum Cmd {
     },
     /// Check the local setup: config, Ollama, models, skills, MCP servers.
     Doctor,
+    /// Print this machine's parallel-dispatch capacity plan (read-only, nothing is spawned).
+    Plan,
     /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
     Serve {
         #[arg(long, default_value_t = 8765)]
@@ -134,6 +140,20 @@ fn main() -> Result<()> {
         Cmd::Doctor => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(doctor(&cfg))?;
+        }
+        Cmd::Plan => {
+            let pc = ParallelConfig::from_config(&cfg).with_env(&env_snapshot());
+            let model = if pc.child_model.is_empty() {
+                "(未配置 child_model)".to_string()
+            } else {
+                pc.child_model.clone()
+            };
+            let plan = ResourceProbe::new(cfg.ollama_host()).plan_capacity(&model, &pc);
+            println!("{}", format_capacity_table(&plan, &pc));
+            println!(
+                "  (enabled={}, child_model={:?}, hard_cap={})",
+                pc.enabled, pc.child_model, pc.hard_cap
+            );
         }
         Cmd::Serve { port, workdir } => {
             let wd = match workdir {
@@ -301,8 +321,15 @@ fn run_task(
             let _ = std::fs::remove_file(tj);
         }
     }
-    agent.run(msgs, session, budget_sec)?;
-    Ok(())
+    match agent.run(msgs, session, budget_sec) {
+        Ok(_) => Ok(()),
+        Err(boubou_core::Error::ChildTerminated(reason)) => {
+            // The child sandbox fuse: the dispatcher reads exit 53 and falls back without a retry.
+            println!("[child-mode] 严重违规熔断: {reason}");
+            std::process::exit(SEVERE_EXIT_CODE);
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn chat(
@@ -358,6 +385,7 @@ fn print_event(ev: AgentEvent) {
             let _ = std::io::stdout().flush();
         }
         AgentEvent::Log(l) => println!("{l}"),
+        AgentEvent::Dispatch(v) => println!("{}", progress_line(&v)),
         AgentEvent::Error(e) => eprintln!("[error] {e}"),
         AgentEvent::ToolCall(_)
         | AgentEvent::ToolResult { .. }

@@ -219,6 +219,43 @@ impl NdjsonDecoder {
     }
 }
 
+/// One entry of `/api/ps`: a model resident in memory.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LoadedModel {
+    pub model: String,
+    pub size: f64,
+    pub size_vram: f64,
+}
+
+/// Lenient `/api/ps` decoding: `model` or `name`, numbers possibly as strings.
+pub fn parse_ps(v: &Value) -> Vec<LoadedModel> {
+    fn num(v: Option<&Value>) -> f64 {
+        match v {
+            Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+            Some(Value::String(s)) => s.trim().parse().unwrap_or(0.0),
+            _ => 0.0,
+        }
+    }
+    v.get("models")
+        .and_then(Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .map(|m| LoadedModel {
+                    model: m
+                        .get("model")
+                        .or_else(|| m.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    size: num(m.get("size")),
+                    size_vram: num(m.get("size_vram")),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     base: String,
@@ -251,6 +288,20 @@ impl Client {
             .json()
             .await?;
         Ok(v.version)
+    }
+
+    /// `GET /api/ps`: the models currently resident in memory.
+    pub async fn loaded_models(&self) -> Result<Vec<LoadedModel>> {
+        let v: Value = self
+            .http
+            .get(format!("{}/api/ps", self.base))
+            .header("User-Agent", "boubou-parallel")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(parse_ps(&v))
     }
 
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {

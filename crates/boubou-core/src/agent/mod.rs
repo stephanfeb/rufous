@@ -71,6 +71,9 @@ pub struct RunParams {
     /// `AGENT_ABLATION`: comma-separated switches used by the benchmark harness.
     pub ablation: Vec<String>,
     pub max_iterations: usize,
+    /// `AGENT_CHILD_SANDBOX=1`: this process is a dispatched child (ring-0 sandbox,
+    /// minimal prompt, narrowed tool face, never Q&A, never dispatches itself).
+    pub child_mode: bool,
 }
 
 impl RunParams {
@@ -107,6 +110,7 @@ impl RunParams {
                 .map(String::from)
                 .collect(),
             max_iterations: MAX_ITERATIONS,
+            child_mode: std::env::var("AGENT_CHILD_SANDBOX").is_ok_and(|v| v == "1"),
         })
     }
 
@@ -127,6 +131,7 @@ impl RunParams {
             unattended: false,
             ablation: Vec::new(),
             max_iterations: MAX_ITERATIONS,
+            child_mode: false,
         }
     }
 
@@ -180,5 +185,8 @@ pub enum AgentEvent {
     },
     /// `===== MAX ITERATIONS =====`
     MaxIterations,
+    /// Parallel-dispatch progress (`phase`: start / progress / done); Mingbird's
+    /// `@@DISPATCH@@` stdout line.
+    Dispatch(Value),
     Error(String),
 }

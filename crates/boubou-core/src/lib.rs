@@ -13,6 +13,7 @@ pub mod guards;
 pub mod mcp;
 pub mod memory;
 pub mod ollama;
+pub mod parallel;
 pub mod safety;
 pub mod skills;
 pub mod text;

@@ -211,6 +211,20 @@ impl ToolFace {
         self.disabled.contains(name)
     }
 
+    /// Child mode (`install_child_mode`): only `allowed` stays; every other built-in tool is
+    /// disabled at assembly and refused at call time.
+    pub fn narrow_to(&mut self, allowed: &[String]) {
+        let keep = |n: &str| allowed.iter().any(|a| a == n);
+        self.disabled = crate::tools::CORE_TOOL_NAMES
+            .iter()
+            .chain(crate::tools::ADVANCED_TOOL_NAMES.iter())
+            .filter(|n| !keep(n))
+            .map(|n| n.to_string())
+            .collect();
+        self.active.retain(|n| keep(n));
+        self.extra.clear();
+    }
+
     /// Persistently disable a tool (anti-loop escalation).
     pub fn disable(&mut self, name: &str) {
         self.disabled.insert(name.to_string());

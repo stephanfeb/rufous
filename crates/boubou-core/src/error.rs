@@ -22,6 +22,10 @@ pub enum Error {
     /// The agent loop stopped on purpose after saving its checkpoint (Mingbird `sys.exit(1)`).
     #[error("agent stopped: {0}")]
     Aborted(String),
+    /// A child agent tripped the sandbox fuse; the process should exit with code 53
+    /// (`parallel::SEVERE_EXIT_CODE`) so the dispatcher falls back without retrying.
+    #[error("child sandbox fuse: {0}")]
+    ChildTerminated(String),
     #[error("skill `{0}` not found")]
     SkillNotFound(String),
     #[error("skill file {path}: {reason}")]

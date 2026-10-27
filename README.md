@@ -24,7 +24,11 @@ flattened into the categories as `server.tool`) are in. `boubou doctor` probes e
 Web search defaults to Bing, then DuckDuckGo, then Baidu (`AGENT_SEARCH_BACKENDS` overrides).
 `boubou serve` runs the local web UI (Mingbird's page and `/api/*` contract, agent in-process,
 approval dialogs, stop); `cargo run -p boubou-app` opens the same UI in a native window.
-Next: parallel dispatch, voice input.
+Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, "child_model":
+"<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
+sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside
+the child directory, audit log, exit 53 on a severe violation). `boubou plan` shows what this
+machine could run. Next: voice input, `restart_ollama`, cloud backends.
 See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)

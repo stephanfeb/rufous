@@ -82,6 +82,23 @@ pub fn publish(bus: &Bus, ev: AgentEvent) {
             }
         }
         AgentEvent::Error(e) => bus.note(format!("[error] {e}")),
+        AgentEvent::Dispatch(v) => {
+            // Parallel-dispatch progress: a "⚙ parallel <label>" chip, full event attached.
+            let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let label = match s("phase").as_str() {
+                "start" => format!(
+                    "start total={} max_parallel={}",
+                    v["total"], v["max_parallel"]
+                ),
+                "done" => format!("done ok={} failed={}", v["ok"], v["failed"]),
+                _ => format!("{} #{} {}", s("status"), v["index"], s("task")),
+            };
+            bus.push(
+                "dispatch",
+                json!({"kind": "parallel", "name": head(&label, 80), "event": v}),
+                Map::new(),
+            );
+        }
         AgentEvent::Finished { summary } => {
             // Mingbird printed the summary as a stdout line the page ignores; a tool-only run
             // then showed no answer at all. Surface it as answer text instead.

@@ -24,7 +24,7 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `_claimed_missing_files`, `_plan_named_missing` | `boubou-core/src/guards/artifacts.rs` | ported, tested |
 | `_EditConvergenceGuard`, `_norm_p` | `boubou-core/src/guards/edit.rs` | ported, tested (case-insensitive on all platforms, by design) |
 | `parse_time_budget`, `parse_duration_str`, `resolve_time_budget`, `_budget_nudge`, elapsed sidecar | `boubou-core/src/guards/budget.rs` | ported, tested; module globals (`BUDGET_SEC`, `TIME_BUDGET_PARSE`) became explicit parameters |
-| `agent_loop` (empty-turn ladder, hard reset, six finish gates, dup/streak/research/todo anti-loop, failure ladder, budget pacing, stale-plan nudge, Q&A wrap-up), `_FAIL_MARKERS`, `_ws_note` | `boubou-core/src/agent/run.rs` | ported, tested against the scripted-loop suite and a live gemma4:12b run. Not yet: `restart_ollama` on 4× 500 (logged, falls through to compaction retry), `_maybe_parallel_dispatch`, `_child_sandbox` |
+| `agent_loop` (empty-turn ladder, hard reset, six finish gates, dup/streak/research/todo anti-loop, failure ladder, budget pacing, stale-plan nudge, Q&A wrap-up), `_FAIL_MARKERS`, `_ws_note` | `boubou-core/src/agent/run.rs` | ported, tested against the scripted-loop suite and a live gemma4:12b run. `_maybe_parallel_dispatch` and child mode (`_child_sandbox`, `_CHILD_SYSTEM`, gate exemptions, exit 53) are in. Not yet: `restart_ollama` on 4× 500 (logged, falls through to compaction retry) |
 | `call_chat` (streaming, `think` 400 retry, tri-state options) | `boubou-core/src/agent/chat.rs` | ported as the `ChatBackend` trait + `OllamaBackend`; cloud / OpenAI-compatible backends todo |
 | `_active_tools`, `_disabled_tools`, `route_categories`, `tools_for_categories`, `_chat_tool_defs`, `_filter_offline_tools`, `_is_mcp_producing` | `boubou-core/src/agent/face.rs` | ported (`ToolFace`); MCP flattened tool defs join when the client lands |
 | `compact_history` L1/L2/L3, `_estimate_messages_tokens`, `_workdir_files_text`, `_dedupe_trailing_assistant`, `sanitize_ckpt`, `_similar`, `_attach_pending_images` | `boubou-core/src/agent/history.rs` | ported, tested; `_similar` is a difflib-style matching-blocks ratio without the autojunk heuristic |
@@ -33,7 +33,12 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `_run_test_guard`, `_pytest_hint`, `_test_env_broken` | `boubou-core/src/agent/testguard.rs` | ported (runs `python -m pytest -q` in the workdir when `test_*.py` exist) |
 | `main()`: `--session/--new/--append/--time-budget`, checkpoint/session resume, `--chat` | `boubou-cli/src/main.rs` | ported; not covered by tests yet |
 | `platform_profile.py` | `boubou-core/src/agent/prompt.rs` (`Platform`, `platform_block`) | ported |
-| `parallel_*.py` (dispatch, probe, safety, todo) | `boubou-core/src/parallel/` | todo; config section kept opaque in `Config::parallel` |
+| `parallel_config.py` (`DEFAULT_PARALLEL`, env overrides, `hard_disabled`, `current_depth`) | `boubou-core/src/parallel/config.rs` | ported, tested (`ParallelConfig`, typed; invalid values keep the current value; rule lists are data) |
+| `parallel_safety.py` (`ChildSandbox`, path boundary, dangerous-command rules, audit JSONL, fuse) | `boubou-core/src/parallel/sandbox.rs` | ported, tested. Windows-style paths (`..\x`, `C:\…`, `\\wsl$`) are judged on every platform so the Python cases hold on macOS/Linux; POSIX adds `/etc/`, `chmod -R`, `launchctl`/`systemctl` rules |
+| `parallel_probe.py` (`ResourceProbe`, `estimate_child_cost`, `plan_capacity`, `format_capacity_table`) | `boubou-core/src/parallel/probe.rs` | ported, tested with injected readers; `sysinfo` for RAM, `/api/ps` for loaded models; `boubou plan` prints the table |
+| `parallel_todo.py` (`JsonTodoProvider`, `classify_task`, `safety_precheck`, `should_dispatch`) | `boubou-core/src/parallel/trigger.rs` | ported, tested; reason strings verbatim |
+| `parallel_dispatch.py` (`ParallelDispatcher`, `ResultIntegrator`, `summary_for_parent`, `@@DISPATCH@@`) | `boubou-core/src/parallel/dispatch.rs` | ported, tested with a scripted `Spawner`; children are `boubou run <model> task.md <dir> --session disp_<run>_NN --new` in their own process group; a worker pool of `max_parallel` scoped threads |
+| `_maybe_parallel_dispatch`, `install_child_mode`, `child_gate`, `_CHILD_SYSTEM` | `boubou-core/src/parallel/hook.rs`, `exec.rs` (`Executor::install_child_mode`, ring-0 check first in `prepare`), `agent/run.rs` (`RunParams::child_mode`, `AgentEvent::Dispatch`, `Agent::parallel`) | ported, tested. The library never calls `exit(53)`: the loop returns `Error::ChildTerminated` and the CLI maps it to exit 53 |
 | `run_python` (bundled interpreter) | — | **dropped** (decision 2026-10-27): no Python runtime in Boubou. The `office_word`, `office_excel` and `image_batch` skills went with it; `doc_digest` and `file_organizer` still mention `run_python` and need rewording. Revisit later. |
 | `voice_input.py` (sherpa-onnx) | `boubou-app` | todo: `sherpa-rs`; the one native lib that may ship as a DLL |
 | `agent_gui.py`, `ui_v4.py`, `ui_theme.py` (Tk) | dropped | replaced by Tauri shell |
@@ -67,7 +72,13 @@ stdio server (`tests/fixtures/fake_mcp.py`, needs `python3`, skipped when absent
 `boubou-web/tests/api.rs` drives a real loopback server with a scripted runner: status shape,
 prefs round-trip and `prefver` migration, session rows / detail / select / newchat, plan,
 chat → SSE (`note`, `tok`, `ask` with `ask_id`, `exit`), 409 on busy and on a stale ask id,
-stop, offline and cloud config writes. 159 tests total.
+stop, offline and cloud config writes. `tests/parallel_sandbox.rs`, `parallel_config.rs`,
+`parallel_probe.rs`, `parallel_trigger.rs` and `parallel_dispatch.rs` port the five
+`test_parallel_*.py` files (the Windows-path cases included); `tests/child_mode.rs` ports the
+child-mode cases of `test_integration_0901.py` (finish-gate exemption, Q&A stays task, receipt
+isolation, hook off-by-default / kill switch / idempotence, a dispatch through the hook with a
+fake spawner that marks the todo done, and a scripted loop ending in `Error::ChildTerminated`
+with the checkpoint saved). 247 tests total.
 
 Counts are test functions, not parametrised cases. Several Python tests were merged where they
 shared a fixture; the assertions are all present.
@@ -97,15 +108,28 @@ text (`tok`) so a tool-only run still shows a reply (Mingbird printed it as an i
 3. ~~web_search / web_fetch / memory tools, then `batch_tools` parallelism for network calls.~~ Done 2026-10-27 (135 tests green; `boubou tool web_search '{"query":…}'` and `boubou tool web_fetch …` return real results; `mcp_call` is the last stub).
 4. ~~MCP client via `rmcp`.~~ Done 2026-10-27 (148 tests green; `boubou doctor` probes every server in parallel and lists its tools; live-checked against the fake server and `npx @modelcontextprotocol/server-filesystem`: flattened `filesystem.read_text_file` with a relative path resolved against the workdir, sandbox hint on a refused path, manifest cache written).
 5. ~~Tauri shell: `/api/*` surface~~ Done 2026-10-27 (`boubou serve` + `boubou-app` window; 159 tests green). Voice input still open.
-6. Parallel dispatch.
-7. Child sandbox (ring 0) when sub-agents arrive.
+6. ~~Parallel dispatch.~~ Done 2026-10-28 (247 tests green; `boubou plan` live; one real child run under `AGENT_CHILD_SANDBOX=1` against gemma4:12b).
+7. ~~Child sandbox (ring 0) when sub-agents arrive.~~ Done with 6 (same commit).
 
-## Step 6 brief: parallel dispatch and voice (handoff notes, 2026-10-27)
+## Parallel dispatch as shipped (step 6, 2026-10-28)
 
-Parallel dispatch: Mingbird's `parallel_config.py` / child-agent dispatch (`@@DISPATCH@@`
-events, `_child_sandbox`, exit 53 on a serious violation). `Config.parallel` is kept opaque in
-`config.rs`; `ToolInvocation::BatchTools` already fans network calls out. Start from the Python
-tests `tests/test_parallel_safety.py`. The child sandbox (ring 0) belongs with it.
+Off by default, like Mingbird: `config.json` → `"parallel": {"enabled": true, "child_model":
+"<tag>"}` turns it on; `AGENT_PARALLEL=0` is the kill switch; `AGENT_PARALLEL_MODEL/CTX/
+MIN_ITEMS/MIN_DISPATCH/MAX/TIMEOUT/DEPTH` override single fields. The hook runs once before the
+loop (never for Q&A, children, or a resumed history that already has a tool message or the
+`[parallel-dispatch]` receipt). Children are the same binary with `AGENT_CHILD_SANDBOX=1`,
+`AGENT_PARALLEL=0`, `MINGBIRD_DEPTH+1`; the parent's time budget is not inherited. In a child
+the Executor installs `ChildSandbox` as ring 0 (allow list `read_file list_dir create_file
+todo finish`, writes only inside the child dir, sensitive paths and severe commands refused,
+`audit.log` JSONL), the confirmation channel is a headless deny, the prompt is `CHILD_SYSTEM`
+with no platform block, gates 4–6 and the wrap-up call are skipped, and a severe refusal ends the
+run with exit 53. The dispatcher judges each child on exit code + `TASK COMPLETE` in `agent.log`
++ artifacts matching its claims + a clean audit, copies artifacts back without overwriting,
+marks todo items done and appends the receipt message. Known gap: a parent run started from the
+web UI dispatches too, but the page only shows the `dispatch` chips; there is no cancel for an
+in-flight batch except the run's stop flag (checked between children).
+
+## Step 7 brief (handoff notes, 2026-10-28)
 
 Voice: Mingbird uses sherpa-onnx (14M Chinese model, CPU) from the Tk GUI; the web page has no
 microphone button, so this needs a small UI addition plus a `/api/voice` upload endpoint or a

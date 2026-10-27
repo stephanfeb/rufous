@@ -35,6 +35,7 @@ encoding_rs = "0.8"
 sha1 = "0.10"
 scraper = { version = "0.23", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 rmcp = { version = "3.8", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
 
 [workspace.lints.rust]

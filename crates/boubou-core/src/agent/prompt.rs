@@ -119,6 +119,27 @@ pub fn platform_block(full: bool, unattended: bool) -> String {
     )
 }
 
+/// `_CHILD_SYSTEM`: the minimal prompt of a dispatched child (local cost of a short
+/// small-model session; the parent's prefill is untouched).
+pub const CHILD_SYSTEM: &str = "You are a sub-agent doing one small mechanical file task.
+- Work ONLY inside your current directory. Never touch paths outside it.
+- Use create_file to write the result, list_dir/read_file to inspect, todo to plan.
+- No commands, no network, no deleting, no editing other files.
+- When the output file exists and is correct, call finish(summary=files you created).";
+
+/// The child prompt plus the dynamic workdir line. No platform block: a child has no
+/// command tools, so the shell notes would only cost tokens.
+pub fn child_system(workdir: Option<&Path>) -> String {
+    let mut s = CHILD_SYSTEM.to_string();
+    if let Some(wd) = workdir {
+        s.push_str(&format!(
+            "\n当前工作目录(所有命令与相对路径都在它之下运行):{}",
+            wd.display()
+        ));
+    }
+    s
+}
+
 /// Options for [`system_prompt`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptOptions<'a> {

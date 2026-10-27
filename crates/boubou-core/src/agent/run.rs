@@ -31,6 +31,7 @@ use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
 use crate::guards::{self, artifacts, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
+use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
 use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
 use crate::tools::{is_mcp_tool, resolve_alias};
 use crate::{text, Error, Result};
@@ -100,6 +101,10 @@ pub trait ToolRunner {
     ) -> Vec<Value> {
         Vec::new()
     }
+    /// Child mode: the sandbox fuse has tripped; the loop must end with exit 53.
+    fn child_terminated(&self) -> Option<String> {
+        None
+    }
 }
 
 impl ToolRunner for Executor {
@@ -116,6 +121,9 @@ impl ToolRunner for Executor {
         offline: bool,
     ) -> Vec<Value> {
         self.mcp.tool_defs(cats, extra, offline)
+    }
+    fn child_terminated(&self) -> Option<String> {
+        Executor::child_terminated(self)
     }
 }
 
@@ -177,6 +185,9 @@ pub struct Agent<B, T> {
     sink: Sink,
     /// User stop (web UI "stop" button): ends the run at the next check, saving the session.
     stop: Arc<AtomicBool>,
+    /// `_maybe_parallel_dispatch`: set by [`Agent::standard`] (or `with_parallel`); `None`
+    /// means the hook is absent (tests, embedding).
+    pub parallel: Option<DispatchHook>,
 }
 
 impl<B, T> std::fmt::Debug for Agent<B, T> {
@@ -192,11 +203,20 @@ impl<B, T> std::fmt::Debug for Agent<B, T> {
 impl Agent<super::OllamaBackend, Executor> {
     /// The production wiring: streaming Ollama backend, real executor in the workdir.
     pub fn standard(params: RunParams, host: impl Into<String>, offline: bool) -> Result<Self> {
-        let backend = super::OllamaBackend::new(host, &params)?;
+        let host: String = host.into();
+        let backend = super::OllamaBackend::new(host.clone(), &params)?;
         let mut tools = Executor::new(params.workdir.clone()).with_configured_mcp();
         tools.slim_output = params.slim_output;
+        let pcfg = ParallelConfig::from_config(&crate::config::Config::load().unwrap_or_default())
+            .with_env(&env_snapshot());
+        let child_mode = params.child_mode;
         let mut agent = Agent::new(params, backend, tools);
         agent.face.offline = offline;
+        if child_mode {
+            let allowed = agent.tools.install_child_mode(&pcfg);
+            agent.face.narrow_to(&allowed);
+        }
+        agent.parallel = Some(DispatchHook::new(pcfg, host).with_child_mode(child_mode));
         Ok(agent)
     }
 }
@@ -213,7 +233,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sessions_dir: session::sessions_dir(&home),
             sink: Box::new(|_| {}),
             stop: Arc::new(AtomicBool::new(false)),
+            parallel: None,
         }
+    }
+
+    /// Attach the parallel-dispatch hook (tests inject a probe and spawner through it).
+    pub fn with_parallel(mut self, hook: DispatchHook) -> Self {
+        self.parallel = Some(hook);
+        self
     }
 
     /// Share a stop flag with the caller; the backend abandons an in-flight stream when it
@@ -240,6 +267,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
     /// Build the opening message list for a fresh task.
     pub fn task_messages(&self, task: &str) -> Vec<Message> {
+        if self.params.child_mode {
+            // A dispatched child: the minimal prompt, no platform block.
+            return vec![
+                Message::system(prompt::child_system(Some(&self.params.workdir))),
+                Message::user(task),
+            ];
+        }
         let opts = prompt::PromptOptions {
             workdir: Some(&self.params.workdir),
             system_file: self.params.system_file.as_deref(),
@@ -270,7 +304,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sessions_dir,
             sink,
             stop,
+            parallel,
         } = self;
+        let child = params.child_mode;
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
         let ctx_budget = f64::from(params.num_ctx);
@@ -325,8 +361,17 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut todo_gate_warns = 0;
         const TODO_STALE_NUDGE: usize = 4;
 
+        if child {
+            log!(
+                "[child-mode] 沙箱已装:工具={:?} workdir={}",
+                face.active,
+                workdir.display()
+            );
+        }
         // Q&A or task? A session with real progress treats short follow-ups as task steps.
-        let qa = qa::is_qa(&messages, qa::has_task_progress(&messages));
+        // A child never counts as Q&A: its task text is mechanical by construction, and the
+        // Q&A path would swap out the sandbox prompt and drop the producing tools.
+        let qa = !child && qa::is_qa(&messages, qa::has_task_progress(&messages));
         let cats: Option<BTreeSet<String>> = if qa {
             let cs = prompt::chat_system(Some(workdir), params.lang_en);
             let mut m = vec![Message::system(cs)];
@@ -336,6 +381,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         } else {
             Some(face::route_categories(&qa::task_routing_text(&messages)))
         };
+        // Parallel dispatch hook (harness layer; Q&A, children and resumed runs skip it —
+        // the hook itself re-checks the child, kill-switch, no-tool-message and receipt gates).
+        if !qa && !child {
+            if let Some(hook) = parallel.as_ref() {
+                messages = hook.maybe_dispatch(messages, workdir, &mut |ev| match ev {
+                    HookEvent::Log(l) => sink(AgentEvent::Log(l)),
+                    HookEvent::Dispatch(v) => sink(AgentEvent::Dispatch(v)),
+                });
+            }
+        }
         let small_model = !qa && guards::is_small_model(model);
         tools.set_slim_output(params.slim_output);
         if small_model {
@@ -756,6 +811,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     sink(AgentEvent::ToolCall(tc.clone()));
                     res = tools.run_tool(n, &args_v);
                     last_sig = Some((name.clone(), sig_json.clone()));
+                    if let Some(reason) = tools.child_terminated() {
+                        // ≥1 severe refusal (system-area write, irreversible command): end
+                        // the child now; the dispatcher sees exit 53 and does not retry.
+                        log!(
+                            "[child-mode] 严重违规熔断(exit 53): {}",
+                            text::head(&reason, 160)
+                        );
+                        save!();
+                        return Err(Error::ChildTerminated(reason));
+                    }
                 }
 
                 if n == "enable_tools" {
@@ -872,7 +937,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     }
                     // Gate 4: files the plan names must exist (existence, not checkmarks).
-                    if !qa && !fg_off && plan_gate_warns < 2 {
+                    // Children are exempt from gates 4–6: one mechanical task, no plan to
+                    // maintain; their exit contract (artifacts + finish) is checked by the
+                    // dispatcher, and a blocked child only burns its budget into a timeout.
+                    if !qa && !child && !fg_off && plan_gate_warns < 2 {
                         let p_missing = artifacts::plan_named_missing(workdir);
                         if !p_missing.is_empty() {
                             plan_gate_warns += 1;
@@ -889,7 +957,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     }
                     // Gate 5: the plan must be synced before the end (2 refusals max).
-                    if !qa && !params.ablated("finish_gate_text_only") && todo_gate_warns < 2 {
+                    if !qa
+                        && !child
+                        && !params.ablated("finish_gate_text_only")
+                        && todo_gate_warns < 2
+                    {
                         let (t_done, t_all) = todo_progress(&load_todo(workdir));
                         if t_all > 0 && t_done < t_all {
                             todo_gate_warns += 1;
@@ -906,7 +978,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     }
                     // Gate 6: once, re-inject the original task for a self-check.
-                    if !qa && !finish_reread_used {
+                    if !qa && !child && !finish_reread_used {
                         finish_reread_used = true;
                         let orig = qa::task_original_text(&messages, 2000);
                         if !orig.is_empty() {

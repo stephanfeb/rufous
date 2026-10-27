@@ -15,6 +15,7 @@ use crate::config::agent_home;
 use crate::guards::format_bash_out;
 use crate::mcp::{self, McpRegistry};
 use crate::memory;
+use crate::parallel::{ChildSandbox, ParallelConfig};
 use crate::safety::{resolve_path, safe_path, Gate, SafetyPolicy};
 use crate::skills::SkillSet;
 use crate::text::{self, clen, head};
@@ -84,6 +85,10 @@ pub struct Executor {
     pub web: Web,
     /// MCP servers and their probed manifest; an empty registry when none are configured.
     pub mcp: Arc<McpRegistry>,
+    /// Ring 0: installed in a dispatched child (`AGENT_CHILD_SANDBOX=1`), checked first.
+    pub child: Option<ChildSandbox>,
+    /// Set once the child sandbox trips its fuse; the loop ends the run with exit 53.
+    child_terminated: Option<String>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -122,7 +127,56 @@ impl Executor {
             mcp: Arc::new(McpRegistry::new(&agent_home(), mcp::McpConfig::new())),
             agent_home: agent_home(),
             install_dir,
+            child: None,
+            child_terminated: None,
         }
+    }
+
+    /// `install_child_mode`: default-deny sandbox, audit, fuse; the confirmation channel is
+    /// short-circuited (nobody is in the loop of a headless child). Returns the tool names
+    /// the child may use, for the tool face.
+    pub fn install_child_mode(&mut self, cfg: &ParallelConfig) -> Vec<String> {
+        const NEVER_WITHOUT_COMMANDS: [&str; 16] = [
+            "run_bash",
+            "run_command",
+            "shell",
+            "bash",
+            "delete_file",
+            "edit_file",
+            "append_file",
+            "web_search",
+            "web_fetch",
+            "web_search_multi",
+            "mcp_call",
+            "enable_tools",
+            "memory_store",
+            "memory_recall",
+            "batch_tools",
+            "search_files",
+        ];
+        let mut allowed: Vec<String> = if cfg.child_allowed_tools.is_empty() {
+            crate::parallel::config::DEFAULT_CHILD_ALLOWED_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            cfg.child_allowed_tools.clone()
+        };
+        if !cfg.child_allow_commands {
+            allowed.retain(|t| !NEVER_WITHOUT_COMMANDS.contains(&t.as_str()));
+        }
+        let mut c = cfg.clone();
+        c.child_allowed_tools = allowed.clone();
+        self.child = Some(ChildSandbox::new(&self.workdir, &c));
+        let mut policy = self.gate.policy.clone();
+        policy.unattended = true;
+        self.gate = Gate::headless(policy);
+        allowed
+    }
+
+    /// The fuse reason once a child sandbox has decided the process must end (exit 53).
+    pub fn child_terminated(&self) -> Option<String> {
+        self.child_terminated.clone()
     }
 
     /// Attach the MCP registry (shared with the loop, which asks it for tool definitions).
@@ -207,6 +261,25 @@ impl Executor {
         let name = resolve_alias(name);
         let mut map = coerce_object(name, args).map_err(|e| format!("[tool error: {e}]"))?;
         coerce_args(name, &mut map)?;
+        // Ring 0: the child sandbox decides first and has no escalation path.
+        if let Some(sb) = self.child.as_mut() {
+            let chk = sb.check_tool(name, &map);
+            if !chk.allowed() {
+                if sb.should_terminate() && self.child_terminated.is_none() {
+                    self.child_terminated = Some(format!(
+                        "{} target={}",
+                        chk.reason,
+                        text::head(&chk.target, 120)
+                    ));
+                }
+                return Err(format!(
+                    "[子agent安全门拦截(default-deny,无升级路径): {}。目标: {}。可用工具只有 {:?};不要尝试绕道,把当前步骤改成本目录内的确定性产出。]",
+                    chk.reason,
+                    text::head(&chk.target, 120),
+                    sb.allowed_tools_sorted()
+                ));
+            }
+        }
         if is_mcp_tool(name) {
             // Flattened MCP tool `server.tool`: same gate, then the MCP dispatcher.
             let Some((server, tool)) = mcp::split_qualified(name) else {

@@ -23,6 +23,7 @@ chrono.workspace = true
 sha1.workspace = true
 scraper.workspace = true
 rmcp.workspace = true
+sysinfo.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

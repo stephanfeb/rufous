@@ -10,7 +10,7 @@
 
 ## 状态
 
-核心移植中。工具协议、配置、技能、Ollama 客户端、五环安全门、工具执行器、全部纯守护逻辑和 agent 主循环（finish 门禁、反循环阶梯、上下文压缩、检查点/会话/转录文件）已移植并有测试。`boubou run <模型> <任务文件> <工作目录>` 已能对本地 Ollama 端到端跑通；写出的会话文件可被鸣鸟直接读取。网页搜索/抓取（抓取缓存与鸣鸟共用）、长期记忆、`batch_tools` 网络并行、MCP（`rmcp`，stdio 与 streamable HTTP，工具按类别扁平化为 `服务器.工具名`）已完成。`boubou doctor` 会探测全部 MCP 服务器；`boubou tool <工具名> '<json>'` 可单独调试任一内置或 MCP 工具。搜索后端默认 Bing → DuckDuckGo → 百度（`AGENT_SEARCH_BACKENDS` 可覆盖）。`boubou serve` 启动本地网页界面（沿用鸣鸟的页面与 `/api/*` 接口，agent 进程内运行，支持越界确认弹窗与中止）；`cargo run -p boubou-app` 以原生窗口打开同一界面。下一步是并行派发与语音输入。
+核心移植中。工具协议、配置、技能、Ollama 客户端、五环安全门、工具执行器、全部纯守护逻辑和 agent 主循环（finish 门禁、反循环阶梯、上下文压缩、检查点/会话/转录文件）已移植并有测试。`boubou run <模型> <任务文件> <工作目录>` 已能对本地 Ollama 端到端跑通；写出的会话文件可被鸣鸟直接读取。网页搜索/抓取（抓取缓存与鸣鸟共用）、长期记忆、`batch_tools` 网络并行、MCP（`rmcp`，stdio 与 streamable HTTP，工具按类别扁平化为 `服务器.工具名`）已完成。`boubou doctor` 会探测全部 MCP 服务器；`boubou tool <工具名> '<json>'` 可单独调试任一内置或 MCP 工具。搜索后端默认 Bing → DuckDuckGo → 百度（`AGENT_SEARCH_BACKENDS` 可覆盖）。`boubou serve` 启动本地网页界面（沿用鸣鸟的页面与 `/api/*` 接口，agent 进程内运行，支持越界确认弹窗与中止）；`cargo run -p boubou-app` 以原生窗口打开同一界面。并行派发已移植,默认关闭:在 `config.json` 里设 `"parallel": {"enabled": true, "child_model": "<模型>"}` 后,计划中足够多的简单单文件条目会派给沙箱子进程并行完成(`AGENT_CHILD_SANDBOX=1`,default-deny 工具面,只能写子目录,审计日志,严重违规 exit 53);`boubou plan` 显示本机容量。下一步是语音输入、`restart_ollama` 与云端后端。
 详见 [docs/PORTING.md](docs/PORTING.md)。
 
 ## 与鸣鸟的兼容
