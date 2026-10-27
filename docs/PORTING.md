@@ -14,7 +14,9 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `mcp.json` parsing + category tagging | `boubou-core/src/mcp.rs` | ported, tested |
 | MCP client (stdio + streamable HTTP) | `boubou-core/src/mcp.rs` | todo: `rmcp` |
 | `_gate_check`, `_risk_classify`, `_safe_path`, `_DANGER_CMD`, `_BASH_ESCAPE_PATTERNS`, `_SENSITIVE_PATTERNS` (rings 1–3) | `boubou-core/src/safety.rs` | ported, tested; `Confirmer` trait replaces the stdin `@@ASK@@` channel; child sandbox (ring 0) todo |
-| `run_tool`: create/read/edit/append/delete/list/search/run_bash/todo/skills/enable_tools/finish/batch_tools, `.bak`, `.mingbird_trash/`, overwrite guard, crawl guard v2, `_bash_snapshot`, `_auto_repair` (text files), `_format_bash_out`, slim output, timeout tree-kill | `boubou-core/src/exec.rs` | ported, tested. Not yet: web_search/web_fetch/web_search_multi/memory_*/mcp_call (stubs that say so), `.py` auto-repair (needs an interpreter), Windows-only path hints are `cfg!(windows)` |
+| `run_tool`: create/read/edit/append/delete/list/search/run_bash/todo/skills/enable_tools/finish/batch_tools, `.bak`, `.mingbird_trash/`, overwrite guard, crawl guard v2, `_bash_snapshot`, `_auto_repair` (text files), `_format_bash_out`, slim output, timeout tree-kill | `boubou-core/src/exec.rs` | ported, tested. `batch_tools` gates every call first, then runs network calls on scoped threads and the rest serially, output blocks in call order. Not yet: `mcp_call` (stub that says so), `.py` auto-repair (needs an interpreter), Windows-only path hints are `cfg!(windows)` |
+| `web_search` / `web_search_multi` / `web_fetch`, `_cache_key`/`_cache_get`/`_cache_set` | `boubou-core/src/web.rs` | ported, tested (loopback server, no live network in tests). `reqwest::blocking` + `scraper` with Mingbird's Bing/Baidu selectors; cache keys are byte-identical so both stacks share `<home>/cache/`; `AGENT_SEARCH_BACKENDS` honoured. Live-checked against Bing and Wikipedia 2026-10-27 |
+| `load_memory`/`save_memory`/`memory_store`/`memory_recall` | `boubou-core/src/memory.rs` | ported, tested; same `memory.json` shape and (score, text, ts) ordering |
 | `todo_file`/`load_todo`/`save_todo`/`format_todo_lines`/`todo_progress`, `_atomic_write_json` | `boubou-core/src/todo.rs` | ported, tested |
 | `_model_params_b`, `_semantically_empty`, `_estimate_tokens` | `boubou-core/src/guards/mod.rs` | ported, tested |
 | `_is_qa`, `_has_task_progress`, `_task_original_text`, `_HARNESS_NOTE_PREFIXES` | `boubou-core/src/guards/qa.rs` | ported, tested |
@@ -53,7 +55,10 @@ Tk GUI with a Tauri shell around the existing web UI.
 env, substantive-summary delivery, the todo sync gate's two-refusal limit, `enable_tools`
 unlocking a ban, duplicate-call interception, the empty-ladder graceful exit, Q&A force-close,
 repeat-output dead loop, the harness-prefix invariant over a mixed run, and the session file
-shapes. 119 tests total.
+shapes. `tests/web_memory.rs` covers `tests/test_core.py::TestCache` / `TestBatchTools` plus
+search-result parsing against bs4's output, `web_fetch` against a loopback server (full text under
+`sources/`, cache hit on the second call), memory store/recall ordering, and a timing test that
+proves two `web_fetch` calls in one `batch_tools` overlap. 135 tests total.
 
 Counts are test functions, not parametrised cases. Several Python tests were merged where they
 shared a fixture; the assertions are all present.
@@ -78,24 +83,40 @@ every call fails until the shell implements this surface.
 
 1. ~~Port the guard/executor tests and implement against them.~~ Done 2026-10-27 (81 tests green).
 2. ~~Agent loop against the deferred wiring tests above; checkpoint/transcript formats byte-compatible.~~ Done 2026-10-27 (119 tests green; live run against gemma4:12b created a file, verified it, resumed with `--append`; Mingbird's Python loaders read the files Boubou wrote).
-3. web_search / web_fetch / memory tools, then `batch_tools` parallelism for network calls.
+3. ~~web_search / web_fetch / memory tools, then `batch_tools` parallelism for network calls.~~ Done 2026-10-27 (135 tests green; `boubou tool web_search '{"query":…}'` and `boubou tool web_fetch …` return real results; `mcp_call` is the last stub).
 4. MCP client via `rmcp`.
 5. Tauri shell: `/api/*` surface, then voice input.
 6. Parallel dispatch.
 7. Child sandbox (ring 0) when sub-agents arrive.
 
-## Step 3 brief: network and memory tools (handoff notes, 2026-10-27)
+## Step 4 brief: MCP client (handoff notes, 2026-10-27)
 
-Python: `web_search` (Bing/Baidu HTML scraping, ~line 700–900 of `ollama_agent.py`), `web_fetch`
-(saves full text under `sources/`, returns summary + path), `web_search_multi` (thread pool),
-`memory_store`/`memory_recall` (`~/.ollama_agent/memory.json`, word-overlap scoring; see
-`load_memory`/`memory_recall` just after `tools_for_categories`), and `batch_tools` parallelism for
-network calls (sequential in Boubou today, cap 8).
+Python (`ollama_agent.py`): `mcp_call(server, tool, args)` ~line 823 (60 s timeout; on an
+argument error it lists the tool's expected parameter names so the model can guess right next
+turn; missing server → `[MCP server 'x' not configured. Edit <mcp.json>: {...}]`),
+`_probe_stdio` ~944 (hand-rolled line-delimited JSON-RPC over `Popen`: `initialize` →
+`tools/list`, 10 s, tree-kill on timeout, `None` = failed vs `[]` = no tools), `_probe_http` ~1003
+(streamable HTTP via the `mcp` client), `mcp_manifest(force)` ~1032 (memory + disk cache
+`<home>/mcp_manifest_cache.json` `{ts, data}`, TTL 300 s, shorter TTL when a probe failed; per
+tool `{name, desc[:150], schema, categories, expose}` with `expose ∈ {auto, on-demand, disabled}`),
+`mcp_tool_defs(cats, extra)` ~1098 (flattens to real tool defs named `server.tool`; `auto` tools
+ride with their category, `on-demand`/`disabled` only when `enable_tools` named them; skips tools
+that duplicate built-ins or file verbs; offline mode drops every `url` server), and
+`_resolve_mcp_paths(args, workdir)` ~1162 (path-like keys, relative → absolute under the
+workdir, URLs and absolute paths untouched). The dispatcher at ~1690 splits `server.tool` on the
+first dot and calls `mcp_call` with resolved args. Tests: `tests/test_mcp*.py`.
 
-Rust hooks: `exec.rs` already dispatches `ToolInvocation::{WebSearch, WebFetch, WebSearchMulti,
-MemoryStore, MemoryRecall}` to stubs; `ToolFace::offline` hides them when `offline_mode` is set;
-`FAIL_MARKERS` already lists `[web_search error` / `[web_fetch error`. The loop is synchronous, so
-either use `reqwest::blocking` inside the executor or hand the executor a tokio `Handle`.
+Rust hooks: `mcp.rs` already parses `mcp.json` and does category tagging; `ToolFace` is where
+flattened defs join `tools_for_categories` (today it only returns built-ins); `exec.rs` routes
+`ToolInvocation::McpCall` to a stub; `face::is_mcp_producing` and `PRODUCING_PREFIX` already know
+the `server.tool` naming. Use `rmcp` (stdio child transport + streamable HTTP). Keep the probe
+synchronous from the loop's point of view (a small runtime like `OllamaBackend`, or a
+`std::thread` per probe with a 10 s join) and persist the manifest cache in Mingbird's file shape
+so a Boubou run warms Mingbird and vice versa. The bench home uses a Tavily HTTP MCP server, so
+step 4 is what unblocks the head-to-head LRAB run.
+
+Toolchain note: `boubou-app` (Tauri) pulls `dlopen2 0.8`, which needs edition 2024 and therefore
+Rust ≥ 1.85; the default members build on 1.84. Bump `rust-version` when the Tauri shell starts.
 
 Known loop gaps to pick up when convenient: `restart_ollama` after four consecutive 500s (needs
 `ollama_exe`/`ollama_env` from `Config`), the cloud / OpenAI-compatible backends behind

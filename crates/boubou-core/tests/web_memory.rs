@@ -1,0 +1,317 @@
+//! Web search/fetch parsing and cache (`tests/test_core.py::TestCache`, `TestBatchTools`),
+//! memory store/recall, and `web_fetch` against a loopback HTTP server. No real network:
+//! search backends point at a closed loopback port.
+
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::time::Duration;
+
+use boubou_core::exec::Executor;
+use boubou_core::memory::{load_memory, memory_recall, memory_store};
+use boubou_core::safety::SafetyPolicy;
+use boubou_core::web::{
+    cache_get, cache_key, cache_set, extract_text, parse_search_results, Web, CACHE_TTL,
+};
+use serde_json::json;
+
+const BING: &str = r#"<html><body><ol id="b_results">
+<li class="b_algo"><h2><a href="https://a.example/1">Alpha <b>One</b></a></h2>
+  <div class="b_caption"><p>First snippet here.</p></div></li>
+<li class="b_algo"><h2><a href="https://a.example/2">Beta</a></h2><p>Loose paragraph.</p></li>
+<li class="b_algo"><h2>no link</h2></li>
+<li class="b_algo"><h2><a href="https://a.example/3">Gamma</a></h2></li>
+</ol></body></html>"#;
+
+const BAIDU: &str = r#"<html><body>
+<div class="result c-container"><h3 class="t"><a href="http://b.example/x">百度 结果</a></h3>
+  <div class="c-abstract">摘要文字</div></div>
+<div class="result c-container"><h3><a href="http://b.example/y">第二条</a></h3></div>
+</body></html>"#;
+
+fn home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tmp")
+}
+
+/// An executor whose search backends fail instantly (closed loopback port).
+fn ex(dir: &Path) -> Executor {
+    let mut e = Executor::with_policy(dir, SafetyPolicy::default());
+    e.agent_home = dir.join("home");
+    e.web = Web::with_backends(
+        &e.agent_home,
+        vec!["http://127.0.0.1:9/search?q={query}".to_string()],
+    );
+    e
+}
+
+// ---- cache ----
+
+#[test]
+fn cache_key_matches_mingbird_shape() {
+    let k = cache_key(&["t", "k"]);
+    assert_eq!(k.len(), 24);
+    assert!(k.chars().all(|c| c.is_ascii_hexdigit()));
+    // hashlib.sha1(b"t|k").hexdigest()[:24], so Boubou and Mingbird share cache entries
+    assert_eq!(k, "e2f8a658fee8670b31fe7295");
+    assert_ne!(k, cache_key(&["t", "x"]));
+}
+
+#[test]
+fn cache_roundtrip_and_missing() {
+    let d = home();
+    let key = cache_key(&["t", "k"]);
+    cache_set(d.path(), &key, &json!({"v": 42}));
+    assert_eq!(cache_get(d.path(), &key, CACHE_TTL), Some(json!({"v": 42})));
+    assert_eq!(
+        cache_get(d.path(), &cache_key(&["nope", "x"]), CACHE_TTL),
+        None
+    );
+    assert_eq!(cache_get(d.path(), &key, Duration::ZERO), None); // expired
+}
+
+// ---- parsing ----
+
+#[test]
+fn bing_results_parse_like_bs4() {
+    let out = parse_search_results(BING, false, 5);
+    assert_eq!(out.len(), 3); // the h2 without a link is skipped
+    assert_eq!(
+        out[0],
+        "• AlphaOne\n  https://a.example/1\n  First snippet here."
+    );
+    assert_eq!(out[1], "• Beta\n  https://a.example/2\n  Loose paragraph.");
+    assert_eq!(out[2], "• Gamma\n  https://a.example/3\n  ");
+    assert_eq!(parse_search_results(BING, false, 1).len(), 1);
+}
+
+#[test]
+fn baidu_results_parse_like_bs4() {
+    let out = parse_search_results(BAIDU, true, 5);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0], "• 百度 结果\n  http://b.example/x\n  摘要文字"); // bs4 strips only the ends of a text node
+    assert!(parse_search_results(BAIDU, false, 5).is_empty());
+}
+
+#[test]
+fn extract_text_drops_chrome_and_scripts() {
+    let html = r#"<html><head><title>T</title><style>p{}</style><script>var x=1;</script></head>
+<body><header>Site</header><nav>menu</nav><main><h1>Hello</h1><p>World &amp; <b>friends</b>.</p></main>
+<footer>foot</footer><noscript>js off</noscript></body></html>"#;
+    let t = extract_text(html);
+    assert_eq!(t, "T Hello World & friends .");
+}
+
+// ---- web_fetch against a loopback server ----
+
+fn serve_once(body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        }
+    });
+    format!("http://{addr}/page")
+}
+
+#[test]
+fn web_fetch_stores_full_text_and_returns_summary() {
+    let d = home();
+    let url =
+        serve_once("<html><body><script>x()</script><h1>Title</h1><p>Body text</p></body></html>");
+    let web = Web::with_backends(&d.path().join("home"), vec![]);
+    let out = web.fetch(&url, Some(d.path()));
+    assert!(out.starts_with("Title Body text"));
+    assert!(out.contains("[全文已存: sources/fetch_"));
+    let key = cache_key(&["fetch", &url]);
+    let saved = std::fs::read_to_string(d.path().join("sources").join(format!("fetch_{key}.txt")))
+        .expect("source file");
+    assert_eq!(saved, format!("URL: {url}\n\nTitle Body text"));
+    // Second call is served from the cache (the server accepted only one connection).
+    assert_eq!(web.fetch(&url, Some(d.path())), out);
+}
+
+#[test]
+fn web_fetch_error_is_a_marked_tool_error() {
+    let d = home();
+    let web = Web::with_backends(d.path(), vec![]);
+    let out = web.fetch("http://127.0.0.1:9/x", Some(d.path()));
+    assert!(out.starts_with("[web_fetch error:"));
+}
+
+#[test]
+fn web_search_reports_last_error_when_all_backends_fail() {
+    let d = home();
+    let web = Web::with_backends(
+        d.path(),
+        vec![
+            "http://127.0.0.1:9/a".to_string(),
+            "http://127.0.0.1:9/b?x=1".to_string(),
+        ],
+    );
+    let out = web.search("anything", 5);
+    assert!(out.starts_with("[web_search error:"));
+    let multi = web.search_multi(&["q1".to_string(), "q2".to_string()], 2);
+    assert!(multi.starts_with("### 查询: q1\n[web_search error:"));
+    assert!(multi.contains("\n\n### 查询: q2\n"));
+    assert_eq!(
+        web.search_multi(&[], 2),
+        "[web_search_multi: 需提供 queries 数组]"
+    );
+}
+
+#[test]
+fn web_search_serves_cached_results() {
+    let d = home();
+    let web = Web::with_backends(d.path(), vec!["http://127.0.0.1:9/s".to_string()]);
+    let key = cache_key(&["search", "127.0.0.1:9/s", "rust", "5"]);
+    cache_set(&web.cache_dir, &key, &json!("• cached\n  u\n  s"));
+    assert_eq!(web.search("rust", 5), "• cached\n  u\n  s");
+}
+
+// ---- memory ----
+
+#[test]
+fn memory_store_and_recall() {
+    let d = home();
+    assert_eq!(memory_recall(d.path(), "x", 3), "(no memory)");
+    assert_eq!(
+        memory_store(d.path(), "user likes Rust and static linking"),
+        "[saved 1 facts]"
+    );
+    assert_eq!(memory_store(d.path(), "项目名叫布布"), "[saved 2 facts]");
+    assert_eq!(memory_store(d.path(), "unrelated note"), "[saved 3 facts]");
+    let mem = load_memory(d.path());
+    assert_eq!(mem.len(), 3);
+    assert!(mem[0]["ts"].as_str().is_some_and(|t| t.len() == 16));
+    let r = memory_recall(d.path(), "What does the user like? rust", 3);
+    assert!(r.starts_with('['));
+    assert!(r.contains("user likes Rust"));
+    assert!(!r.contains("unrelated"));
+    // No overlap → the last three facts, oldest first, bare text.
+    let r = memory_recall(d.path(), "zzz", 3);
+    assert_eq!(
+        r,
+        "user likes Rust and static linking\n项目名叫布布\nunrelated note"
+    );
+}
+
+#[test]
+fn memory_tools_run_through_the_executor() {
+    let d = home();
+    let mut e = ex(d.path());
+    assert_eq!(
+        e.run_tool("memory_store", &json!({"text": "fact one"})),
+        "[saved 1 facts]"
+    );
+    let r = e.run_tool("memory_recall", &json!({"query": "fact"}));
+    assert!(r.contains("fact one"));
+    assert!(e.agent_home.join("memory.json").exists());
+}
+
+// ---- batch_tools (TestBatchTools) ----
+
+#[test]
+fn batch_serial_file_ops_no_race() {
+    let d = home();
+    let mut e = ex(d.path());
+    let out = e.run_tool(
+        "batch_tools",
+        &json!({"calls": [
+            {"tool": "create_file", "args": {"path": "a.txt", "content": "AAA"}},
+            {"tool": "read_file", "args": {"path": "a.txt"}}
+        ]}),
+    );
+    assert!(out.contains("AAA"));
+    assert!(out.starts_with("### [1] create_file\n"));
+    assert!(out.contains("\n\n### [2] read_file\n"));
+}
+
+#[test]
+fn batch_nested_blocked() {
+    let d = home();
+    let mut e = ex(d.path());
+    let out = e.run_tool(
+        "batch_tools",
+        &json!({"calls": [{"tool": "batch_tools", "args": {}}]}),
+    );
+    assert!(out.contains("禁止嵌套"));
+}
+
+#[test]
+fn batch_dangerous_still_blocked() {
+    let d = home();
+    let mut e = ex(d.path());
+    let out = e.run_tool(
+        "batch_tools",
+        &json!({"calls": [{"tool": "run_bash", "args": {"command": "rm -rf /x"}}]}),
+    );
+    assert!(out.contains("危险操作"));
+}
+
+#[test]
+fn batch_parallel_search_blocks_are_labelled_in_order() {
+    let d = home();
+    let mut e = ex(d.path());
+    let out = e.run_tool(
+        "batch_tools",
+        &json!({"calls": [
+            {"tool": "web_search_multi", "args": {"queries": ["x"], "max_results": 1}},
+            {"tool": "web_search", "args": {"query": "y"}},
+            {"tool": "list_dir", "args": {"path": "."}}
+        ]}),
+    );
+    let i1 = out.find("### [1] web_search_multi").expect("block 1");
+    let i2 = out.find("### [2] web_search").expect("block 2");
+    let i3 = out.find("### [3] list_dir").expect("block 3");
+    assert!(i1 < i2 && i2 < i3);
+    assert!(out.contains("[web_search error:"));
+}
+
+#[test]
+fn batch_network_calls_run_concurrently() {
+    // Two fetches against a server that answers each request after a delay: concurrent
+    // execution finishes well under twice the delay.
+    let d = home();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            if let Ok((mut sock, _)) = listener.accept() {
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf);
+                    std::thread::sleep(Duration::from_millis(600));
+                    let body = "<p>slow</p>";
+                    let _ = sock.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    );
+                });
+            }
+        }
+    });
+    let mut e = ex(d.path());
+    let t0 = std::time::Instant::now();
+    let out = e.run_tool(
+        "batch_tools",
+        &json!({"calls": [
+            {"tool": "web_fetch", "args": {"url": format!("http://{addr}/one")}},
+            {"tool": "web_fetch", "args": {"url": format!("http://{addr}/two")}}
+        ]}),
+    );
+    let el = t0.elapsed();
+    assert_eq!(out.matches("slow").count(), 2, "{out}");
+    assert!(el < Duration::from_millis(1100), "took {el:?}");
+}

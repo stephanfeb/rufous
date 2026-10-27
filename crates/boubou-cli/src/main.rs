@@ -71,6 +71,16 @@ enum Cmd {
     },
     /// Check the local setup: config, Ollama, models, skills, MCP servers.
     Doctor,
+    /// Run one tool call directly (debugging): `boubou tool web_search '{"query":"rust"}'`.
+    Tool {
+        name: String,
+        /// JSON object of arguments (default `{}`).
+        #[arg(default_value = "{}")]
+        args: String,
+        /// Workspace the tool runs in.
+        #[arg(long, default_value = ".")]
+        workdir: PathBuf,
+    },
 }
 
 fn install_dir() -> PathBuf {
@@ -116,6 +126,16 @@ fn main() -> Result<()> {
         Cmd::Doctor => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(doctor(&cfg))?;
+        }
+        Cmd::Tool {
+            name,
+            args,
+            workdir,
+        } => {
+            let args: serde_json::Value =
+                serde_json::from_str(&args).context("parsing tool arguments as JSON")?;
+            let mut ex = boubou_core::exec::Executor::new(std::path::absolute(workdir)?);
+            println!("{}", ex.run_tool(&name, &args));
         }
         Cmd::Run {
             model,

@@ -17,7 +17,9 @@ Core in progress. Typed protocol, config, skills, Ollama client, the five-ring s
 the tool executor (files, commands, todo, crawl guard), all pure guards and the agent loop
 (finish gates, anti-loop ladders, compaction, checkpoint/session/transcript files) are ported
 and tested. `boubou run <model> <taskfile> <workdir>` works end to end against a local Ollama;
-sessions it writes load in Mingbird and vice versa. Web, memory and MCP tools are next.
+sessions it writes load in Mingbird and vice versa. Web search/fetch (shared result cache),
+long-term memory and parallel `batch_tools` are in; MCP (`rmcp`) is next. `boubou tool <name>
+'<json>'` runs any single tool for debugging.
 See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)

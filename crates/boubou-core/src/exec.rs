@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::config::agent_home;
 use crate::guards::format_bash_out;
+use crate::memory;
 use crate::safety::{resolve_path, safe_path, Gate, SafetyPolicy};
 use crate::skills::SkillSet;
 use crate::text::{self, clen, head};
@@ -21,6 +22,7 @@ use crate::tools::{
     self, coerce_args, coerce_object, is_mcp_tool, resolve_alias, SkillsAction, ToolInvocation,
     ADVANCED_TOOL_NAMES, CORE_TOOL_NAMES,
 };
+use crate::web::Web;
 use crate::Error;
 
 /// Recycle bin inside the workspace. Kept as Mingbird's name so old workspaces stay readable.
@@ -77,6 +79,8 @@ pub struct Executor {
     pub bash_timeout: Duration,
     pub agent_home: PathBuf,
     pub install_dir: PathBuf,
+    /// Network side of the web tools (search backends, fetch, result cache).
+    pub web: Web,
 }
 
 impl std::fmt::Debug for Executor {
@@ -111,6 +115,7 @@ impl Executor {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(120),
             ),
+            web: Web::new(&agent_home()),
             agent_home: agent_home(),
             install_dir,
         }
@@ -134,35 +139,10 @@ impl Executor {
 
     /// Run one tool call as the model issued it and return the receipt text.
     pub fn run_tool(&mut self, name: &str, args: &Value) -> String {
-        let name = resolve_alias(name);
-        let mut map = match coerce_object(name, args) {
-            Ok(m) => m,
-            Err(e) => return format!("[tool error: {e}]"),
-        };
-        if let Err(msg) = coerce_args(name, &mut map) {
-            return msg;
+        match self.prepare(name, args) {
+            Ok(inv) => self.dispatch(inv),
+            Err(text) => text,
         }
-        if is_mcp_tool(name) {
-            return format!("[tool {name}: MCP tools are not yet ported in Boubou]");
-        }
-        let inv = match ToolInvocation::parse_map(name, &map) {
-            Ok(inv) => inv,
-            Err(Error::UnknownTool(_)) => return "[unknown tool]".to_string(),
-            Err(Error::ToolArgs { reason, .. }) => {
-                if let Some(key) = reason
-                    .strip_prefix("missing required argument `")
-                    .and_then(|r| r.strip_suffix('`'))
-                {
-                    return missing_arg_message(name, key, &map);
-                }
-                return format!("[tool error: {name}: {reason}]");
-            }
-            Err(e) => return format!("[tool error: {e}]"),
-        };
-        if let Some(blocked) = self.gate.check(&inv, &self.workdir) {
-            return blocked;
-        }
-        self.dispatch(inv)
     }
 
     fn dispatch(&mut self, inv: ToolInvocation) -> String {
@@ -188,15 +168,51 @@ impl Executor {
             ToolInvocation::EnableTools { tools } => self.enable_tools(&tools),
             ToolInvocation::Finish { summary } => format!("[TASK_COMPLETE] {summary}"),
             ToolInvocation::BatchTools { calls } => self.batch_tools(&calls),
-            ToolInvocation::WebSearch { .. }
+            ToolInvocation::MemoryStore { text } => memory::memory_store(&self.agent_home, &text),
+            ToolInvocation::MemoryRecall { query, limit } => memory::memory_recall(
+                &self.agent_home,
+                &query,
+                limit.map(|l| l as usize).unwrap_or(3),
+            ),
+            net @ (ToolInvocation::WebSearch { .. }
             | ToolInvocation::WebFetch { .. }
             | ToolInvocation::WebSearchMulti { .. }
-            | ToolInvocation::MemoryStore { .. }
-            | ToolInvocation::MemoryRecall { .. }
-            | ToolInvocation::McpCall { .. } => {
-                format!("[tool {}: not yet ported in Boubou]", inv.name())
-            }
+            | ToolInvocation::McpCall { .. }) => self.dispatch_network(&net),
         }
+    }
+
+    fn dispatch_network(&self, inv: &ToolInvocation) -> String {
+        net_dispatch(&self.web, &self.workdir, inv)
+    }
+
+    /// Alias → coerce → parse → gate, without executing. `Err` is the text to return.
+    fn prepare(&mut self, name: &str, args: &Value) -> std::result::Result<ToolInvocation, String> {
+        let name = resolve_alias(name);
+        let mut map = coerce_object(name, args).map_err(|e| format!("[tool error: {e}]"))?;
+        coerce_args(name, &mut map)?;
+        if is_mcp_tool(name) {
+            return Err(format!(
+                "[tool {name}: MCP tools are not yet ported in Boubou]"
+            ));
+        }
+        let inv = match ToolInvocation::parse_map(name, &map) {
+            Ok(inv) => inv,
+            Err(Error::UnknownTool(_)) => return Err("[unknown tool]".to_string()),
+            Err(Error::ToolArgs { reason, .. }) => {
+                if let Some(key) = reason
+                    .strip_prefix("missing required argument `")
+                    .and_then(|r| r.strip_suffix('`'))
+                {
+                    return Err(missing_arg_message(name, key, &map));
+                }
+                return Err(format!("[tool error: {name}: {reason}]"));
+            }
+            Err(e) => return Err(format!("[tool error: {e}]")),
+        };
+        if let Some(blocked) = self.gate.check(&inv, &self.workdir) {
+            return Err(blocked);
+        }
+        Ok(inv)
     }
 
     // ---- files ----
@@ -601,9 +617,9 @@ impl Executor {
         )
     }
 
-    /// Sub-calls go through `run_tool`, so gates and the crawl guard are shared.
-    /// Mingbird runs network sub-calls in parallel; here everything is sequential until
-    /// the network tools exist.
+    /// Sub-calls go through the same alias/coerce/parse/gate pipeline as `run_tool`.
+    /// Network tools run in parallel on threads; file and command tools run in order so a
+    /// `create_file` followed by a `read_file` cannot race. Cap 8, no nesting, 2000 chars each.
     fn batch_tools(&mut self, calls: &[tools::BatchCall]) -> String {
         if calls.is_empty() {
             return "[batch_tools: 需提供 calls 数组,形如 [{tool, args}, ...]]".to_string();
@@ -611,6 +627,37 @@ impl Executor {
         let calls = &calls[..calls.len().min(8)];
         if calls.iter().any(|c| c.tool == "batch_tools") {
             return "[batch_tools: 禁止嵌套 batch_tools]".to_string();
+        }
+        const PARALLEL_SAFE: [&str; 4] =
+            ["web_search", "web_fetch", "web_search_multi", "mcp_call"];
+        let mut results: Vec<Option<String>> = vec![None; calls.len()];
+        // Gate the network calls up front (needs `&mut`), then fan out on `&self`.
+        let mut net: Vec<(usize, ToolInvocation)> = Vec::new();
+        for (i, c) in calls.iter().enumerate() {
+            if PARALLEL_SAFE.contains(&resolve_alias(&c.tool)) {
+                match self.prepare(&c.tool, &c.args) {
+                    Ok(inv) => net.push((i, inv)),
+                    Err(text) => results[i] = Some(text),
+                }
+            }
+        }
+        if !net.is_empty() {
+            let (web, workdir) = (&self.web, self.workdir.as_path());
+            let outs: Vec<(usize, String)> = std::thread::scope(|s| {
+                let handles: Vec<_> = net
+                    .iter()
+                    .map(|(i, inv)| s.spawn(move || (*i, net_dispatch(web, workdir, inv))))
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok()).collect()
+            });
+            for (i, r) in outs {
+                results[i] = Some(r);
+            }
+        }
+        for (i, c) in calls.iter().enumerate() {
+            if results[i].is_none() {
+                results[i] = Some(self.run_tool(&c.tool, &c.args));
+            }
         }
         calls
             .iter()
@@ -621,11 +668,28 @@ impl Executor {
                 } else {
                     c.tool.as_str()
                 };
-                let r = self.run_tool(&c.tool, &c.args);
+                let r = results[i].take().unwrap_or_else(|| "(failed)".to_string());
                 format!("### [{}] {tool}\n{}", i + 1, head(&r, 2000))
             })
             .collect::<Vec<_>>()
             .join("\n\n")
+    }
+}
+
+/// The network tools need only the web client and the workdir, so `batch_tools` and
+/// `web_search_multi` can fan them out on threads without touching the executor.
+fn net_dispatch(web: &Web, workdir: &Path, inv: &ToolInvocation) -> String {
+    match inv {
+        ToolInvocation::WebSearch { query } => web.search(query, 5),
+        ToolInvocation::WebFetch { url } => web.fetch(url, Some(workdir)),
+        ToolInvocation::WebSearchMulti {
+            queries,
+            max_results,
+        } => web.search_multi(queries, max_results.map(|m| m as usize).unwrap_or(3)),
+        ToolInvocation::McpCall { .. } => {
+            "[tool mcp_call: MCP tools are not yet ported in Boubou]".to_string()
+        }
+        other => format!("[tool {}: not a network tool]", other.name()),
     }
 }
 
