@@ -71,6 +71,14 @@ enum Cmd {
     },
     /// Check the local setup: config, Ollama, models, skills, MCP servers.
     Doctor,
+    /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
+    Serve {
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+        /// Workspace the agent works in (default `~/agent_tasks/work`).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Run one tool call directly (debugging): `boubou tool web_search '{"query":"rust"}'`.
     Tool {
         name: String,
@@ -126,6 +134,23 @@ fn main() -> Result<()> {
         Cmd::Doctor => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(doctor(&cfg))?;
+        }
+        Cmd::Serve { port, workdir } => {
+            let wd = match workdir {
+                Some(w) => std::path::absolute(w)?,
+                None => boubou_web::state::default_workdir(),
+            };
+            let state = std::sync::Arc::new(boubou_web::AppState::new(agent_home(), wd));
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async move {
+                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                let (local, server) = boubou_web::bind(addr, state).await?;
+                println!(
+                    "Boubou Web UI {}: http://{local}  (local only · 仅本机访问)",
+                    boubou_core::VERSION
+                );
+                server.await
+            })?;
         }
         Cmd::Tool {
             name,

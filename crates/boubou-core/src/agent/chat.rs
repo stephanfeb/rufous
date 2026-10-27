@@ -2,6 +2,8 @@
 //! replies without a network, and so cloud / OpenAI-compatible backends can slot in later.
 
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use super::RunParams;
 use crate::ollama::{ChatRequest, Client, Message, Options, Role, ToolCall};
@@ -94,6 +96,10 @@ pub trait ChatBackend {
         tools: &[Value],
         on_piece: &mut dyn FnMut(StreamPiece<'_>),
     ) -> Result<ChatResponse, ChatError>;
+
+    /// A user-stop flag: when set mid-stream the backend abandons the request and returns
+    /// a transport error (the loop checks the same flag and ends the run). Default: ignored.
+    fn set_cancel(&mut self, _flag: Arc<AtomicBool>) {}
 }
 
 impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
@@ -106,13 +112,20 @@ impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
     ) -> Result<ChatResponse, ChatError> {
         (**self).chat(model, messages, tools, on_piece)
     }
+    fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
+        (**self).set_cancel(flag)
+    }
 }
+
+/// Text of the error a cancelled stream returns.
+pub const CANCELLED: &str = "cancelled by user";
 
 /// Streaming Ollama `/api/chat` backend. Owns a small runtime so the synchronous loop
 /// can run on any plain thread.
 pub struct OllamaBackend {
     client: Client,
     rt: tokio::runtime::Runtime,
+    cancel: Option<Arc<AtomicBool>>,
     pub num_ctx: u32,
     pub num_predict: i32,
     pub temperature: Option<f32>,
@@ -140,6 +153,7 @@ impl OllamaBackend {
         Ok(Self {
             client: Client::new(host),
             rt,
+            cancel: None,
             num_ctx: params.num_ctx,
             num_predict: params.num_predict,
             temperature: params.temperature,
@@ -179,7 +193,16 @@ impl OllamaBackend {
         let mut prompt_eval = None;
         let mut eval = None;
         let mut done_reason = None;
+        let mut aborted = false;
         self.rt.block_on(self.client.chat_stream(req, |chunk| {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed))
+            {
+                aborted = true;
+                return false;
+            }
             let m = &chunk.message;
             if !m.content.is_empty() {
                 on_piece(StreamPiece::Token(&m.content));
@@ -203,6 +226,9 @@ impl OllamaBackend {
             }
             true
         }))?;
+        if aborted {
+            return Err(ChatError::Transport(CANCELLED.to_string()));
+        }
         let mut message = Message::assistant(content);
         message.role = Role::Assistant;
         if !thinking.is_empty() {
@@ -236,5 +262,8 @@ impl ChatBackend for OllamaBackend {
             }
             other => other,
         }
+    }
+    fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
+        self.cancel = Some(flag);
     }
 }

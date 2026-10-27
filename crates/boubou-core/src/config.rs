@@ -130,6 +130,44 @@ impl Config {
     }
 
     /// Display name for a model tag, falling back to the tag itself.
+    /// `dedupe_model_entries`: one entry per digest (an `ollama cp` alias shares the weights).
+    /// Preference: a name the config maps > a non-`:latest` name > the shorter name.
+    /// Returns `(display name, tag)` pairs in the order the server listed them.
+    pub fn dedupe_model_entries(
+        &self,
+        models: &[crate::ollama::ModelInfo],
+    ) -> Vec<(String, String)> {
+        let mapped = |n: &str| self.models.values().any(|t| t == n);
+        let rank = |n: &str| (mapped(n), !n.ends_with(":latest"), -(n.len() as i64));
+        let mut order: Vec<String> = Vec::new();
+        let mut best: BTreeMap<String, String> = BTreeMap::new();
+        for m in models {
+            if m.name.is_empty() {
+                continue;
+            }
+            let key = if m.digest.is_empty() {
+                format!("name:{}", m.name)
+            } else {
+                m.digest.clone()
+            };
+            match best.get(&key) {
+                Some(cur) if rank(&m.name) <= rank(cur) => {}
+                Some(_) => {
+                    best.insert(key, m.name.clone());
+                }
+                None => {
+                    order.push(key.clone());
+                    best.insert(key, m.name.clone());
+                }
+            }
+        }
+        order
+            .iter()
+            .filter_map(|k| best.get(k))
+            .map(|tag| (self.display_name(tag).to_string(), tag.clone()))
+            .collect()
+    }
+
     pub fn display_name<'a>(&'a self, tag: &'a str) -> &'a str {
         self.models
             .iter()

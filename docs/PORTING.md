@@ -37,7 +37,9 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `run_python` (bundled interpreter) | — | **dropped** (decision 2026-10-27): no Python runtime in Boubou. The `office_word`, `office_excel` and `image_batch` skills went with it; `doc_digest` and `file_organizer` still mention `run_python` and need rewording. Revisit later. |
 | `voice_input.py` (sherpa-onnx) | `boubou-app` | todo: `sherpa-rs`; the one native lib that may ship as a DLL |
 | `agent_gui.py`, `ui_v4.py`, `ui_theme.py` (Tk) | dropped | replaced by Tauri shell |
-| `webui/server.py` | `boubou-app/src/` | todo: expose the `/api/*` surface below as Tauri commands or a loopback server |
+| `webui/server.py` (`/api/*`, SSE, `@@ASK@@` approval channel, `gui_prefs.json`, session rows, `kill_tree`) | `boubou-web/src/{api,state,runner,events,prefs}.rs` | ported, tested. axum on 127.0.0.1; the agent runs in-process on a thread, `AgentEvent`s map to the same SSE types (`tok`/`think`/`ask`/`dispatch`/`ctx`/`note`/`exit`); `WebConfirmer` replaces the stdin round-trip (only the current `ask_id` is accepted); stop = a shared flag the loop and the Ollama stream both check (no process to kill). Cloud backend settings are persisted but the engine is still Ollama (a note says so) |
+| `webui/static/index.html` | `boubou-web/static/index.html` | Mingbird's page rebranded (布布 · Boubou); `include_str!` into the binary, no static dir |
+| Tk GUI (`agent_gui.py`) | `boubou-app/src/main.rs` | Tauri 2 shell: starts the web server on a free loopback port and opens a window on it. Voice input not ported yet |
 | `mcp_utils_server.py` | — | keep as a Python example, or rewrite as a tiny Rust MCP server |
 | `tests/` (33 files, 556 test functions) | `boubou-core/tests/` | in progress, see below |
 
@@ -61,19 +63,25 @@ search-result parsing against bs4's output, `web_fetch` against a loopback serve
 proves two `web_fetch` calls in one `batch_tools` overlap. `tests/mcp.rs` covers
 `test_core.py::TestMcpManifest::test_expose_parser`, `test_v200_perf.py`'s probe / timeout-kill /
 stale-merge-and-short-TTL tests and `mcp_tool_defs` filtering, plus the executor calling a real
-stdio server (`tests/fixtures/fake_mcp.py`, needs `python3`, skipped when absent). 148 tests total.
+stdio server (`tests/fixtures/fake_mcp.py`, needs `python3`, skipped when absent).
+`boubou-web/tests/api.rs` drives a real loopback server with a scripted runner: status shape,
+prefs round-trip and `prefver` migration, session rows / detail / select / newchat, plan,
+chat → SSE (`note`, `tok`, `ask` with `ask_id`, `exit`), 409 on busy and on a stale ask id,
+stop, offline and cloud config writes. 159 tests total.
 
 Counts are test functions, not parametrised cases. Several Python tests were merged where they
 shared a fixture; the assertions are all present.
 
 ## Web UI contract (`webui/server.py`)
 
-GET: `/api/status`, `/api/sessions`, `/api/session`, `/api/plan`, `/api/events` (SSE).
-POST: `/api/chat`, `/api/stop`, `/api/ask`, `/api/newchat`, `/api/offline`, `/api/cloud`,
-`/api/session`, `/api/prefs`.
-
-`crates/boubou-app/webui/index.html` is Mingbird's page, copied verbatim. It will render but
-every call fails until the shell implements this surface.
+GET: `/api/status`, `/api/sessions`, `/api/session?name=`, `/api/plan`, `/api/events` (SSE),
+`/api/prefs`. POST: `/api/chat`, `/api/stop`, `/api/ask`, `/api/newchat`, `/api/offline`,
+`/api/cloud`, `/api/session`, `/api/prefs`. Implemented in `boubou-web`, byte-for-byte the
+shapes Mingbird's page expects. `boubou serve --port 8765` for a browser; `boubou-app` for a
+window. Differences from Mingbird: `dispatch` events carry every tool call (`kind` = tool name,
+`name` = first 80 chars of the arguments) rather than sub-agent dispatches; `log` events are
+emitted but the page ignores them, as it did; a non-empty `finish` summary is pushed as answer
+text (`tok`) so a tool-only run still shows a reply (Mingbird printed it as an ignored log line).
 
 ## Static linking
 
@@ -88,25 +96,27 @@ every call fails until the shell implements this surface.
 2. ~~Agent loop against the deferred wiring tests above; checkpoint/transcript formats byte-compatible.~~ Done 2026-10-27 (119 tests green; live run against gemma4:12b created a file, verified it, resumed with `--append`; Mingbird's Python loaders read the files Boubou wrote).
 3. ~~web_search / web_fetch / memory tools, then `batch_tools` parallelism for network calls.~~ Done 2026-10-27 (135 tests green; `boubou tool web_search '{"query":…}'` and `boubou tool web_fetch …` return real results; `mcp_call` is the last stub).
 4. ~~MCP client via `rmcp`.~~ Done 2026-10-27 (148 tests green; `boubou doctor` probes every server in parallel and lists its tools; live-checked against the fake server and `npx @modelcontextprotocol/server-filesystem`: flattened `filesystem.read_text_file` with a relative path resolved against the workdir, sandbox hint on a refused path, manifest cache written).
-5. Tauri shell: `/api/*` surface, then voice input.
+5. ~~Tauri shell: `/api/*` surface~~ Done 2026-10-27 (`boubou serve` + `boubou-app` window; 159 tests green). Voice input still open.
 6. Parallel dispatch.
 7. Child sandbox (ring 0) when sub-agents arrive.
 
-## Step 5 brief: Tauri shell (handoff notes, 2026-10-27)
+## Step 6 brief: parallel dispatch and voice (handoff notes, 2026-10-27)
 
-The web UI contract is listed above (`webui/server.py` → `/api/*`). `crates/boubou-app` holds
-Mingbird's `index.html` verbatim and a stub `main.rs`. Wire each endpoint as a Tauri command or
-a loopback HTTP server reusing `Agent::standard` with a sink that forwards `AgentEvent`s to the
-page (SSE in Mingbird; Tauri events are the natural replacement). Sessions, todo, skills, model
-list and MCP manifest already have core functions. Voice input (sherpa-onnx, Chinese 14M model)
-comes after the text path works. The toolchain is Rust 1.99 now, so `tauri 2` / `dlopen2 0.8`
-compile; `rust-version` is 1.88 (the `rmcp` floor).
+Parallel dispatch: Mingbird's `parallel_config.py` / child-agent dispatch (`@@DISPATCH@@`
+events, `_child_sandbox`, exit 53 on a serious violation). `Config.parallel` is kept opaque in
+`config.rs`; `ToolInvocation::BatchTools` already fans network calls out. Start from the Python
+tests `tests/test_parallel_safety.py`. The child sandbox (ring 0) belongs with it.
+
+Voice: Mingbird uses sherpa-onnx (14M Chinese model, CPU) from the Tk GUI; the web page has no
+microphone button, so this needs a small UI addition plus a `/api/voice` upload endpoint or a
+Tauri command, and the `sherpa-rs` crate (onnxruntime is the one dependency that fights static
+linking).
+
+Loop: `restart_ollama` after four consecutive 500s, cloud / OpenAI-compatible backends behind
+`ChatBackend` (the web UI already persists the cloud settings), `_model_can_think` probing, the
+`main()` CLI tests.
 
 Search backends: Boubou defaults to Bing → DuckDuckGo HTML → Baidu (western-first; the user is
 in Southeast Asia). Mingbird's `cn.bing.com` host is therefore not shared in the search cache;
 `web_fetch` entries still are. `AGENT_SEARCH_BACKENDS` overrides the list.
 
-Known loop gaps to pick up when convenient: `restart_ollama` after four consecutive 500s (needs
-`ollama_exe`/`ollama_env` from `Config`), the cloud / OpenAI-compatible backends behind
-`ChatBackend`, `_model_can_think` probing, and the `main()` CLI tests (drive `boubou run` with a
-scripted backend through a test-only entry point).

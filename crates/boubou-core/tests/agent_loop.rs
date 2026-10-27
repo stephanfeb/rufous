@@ -710,3 +710,31 @@ fn session_files_are_written_in_mingbird_shapes() {
     assert_eq!(meta["task"], TASK);
     assert!(meta["workdir"].as_str().is_some_and(|w| !w.is_empty()));
 }
+
+#[test]
+fn stop_flag_ends_the_run_before_the_next_turn_and_saves() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let d = tempfile::tempdir().expect("tmp");
+    let calls = vec![edit(0, true)];
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    let flag = Arc::new(AtomicBool::new(true)); // already raised: the loop must not take a turn
+    let mut agent = agent_for(d.path(), &calls)
+        .with_sink(move |e| sink.lock().expect("lock").push(e))
+        .with_stop(flag.clone());
+    assert!(agent.stop_flag().load(Ordering::SeqCst));
+    let out = agent
+        .run(start(TASK), Some("s1"), None)
+        .expect("stop is a clean exit");
+    assert_eq!(out.len(), 2, "no assistant turn was taken");
+    let ev = events.lock().expect("lock");
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Log(l) if l.contains("[stopped]"))));
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::ToolCall(_))));
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::MaxIterations)));
+    assert!(
+        d.path().join("sessions").join("s1.json").exists(),
+        "session saved on stop"
+    );
+}

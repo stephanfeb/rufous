@@ -168,6 +168,9 @@ pub struct ModelInfo {
     pub name: String,
     #[serde(default)]
     pub size: u64,
+    /// Same digest = same weights under another name (`ollama cp`); the UI dedupes on it.
+    #[serde(default)]
+    pub digest: String,
     #[serde(default)]
     pub details: Value,
 }

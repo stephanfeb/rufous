@@ -10,6 +10,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -173,6 +175,8 @@ pub struct Agent<B, T> {
     /// `~/.ollama_agent/sessions` unless relocated.
     pub sessions_dir: PathBuf,
     sink: Sink,
+    /// User stop (web UI "stop" button): ends the run at the next check, saving the session.
+    stop: Arc<AtomicBool>,
 }
 
 impl<B, T> std::fmt::Debug for Agent<B, T> {
@@ -208,7 +212,20 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             transcript: Transcript::new(),
             sessions_dir: session::sessions_dir(&home),
             sink: Box::new(|_| {}),
+            stop: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Share a stop flag with the caller; the backend abandons an in-flight stream when it
+    /// is set, and the loop ends before the next turn.
+    pub fn with_stop(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.backend.set_cancel(flag.clone());
+        self.stop = flag;
+        self
+    }
+
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
     }
 
     /// Receive every [`AgentEvent`] (streamed text, tool receipts, harness log lines).
@@ -252,6 +269,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             transcript,
             sessions_dir,
             sink,
+            stop,
         } = self;
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
@@ -350,6 +368,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut exhausted = true;
         for i in 0..params.max_iterations {
             transcript.flush(sessions_dir, session, &messages);
+            if stop.load(Ordering::Relaxed) {
+                log!("[stopped] 用户中止");
+                exhausted = false;
+                break;
+            }
             if casual_force {
                 log!("[收尾] 本轮已足够,强制结束(防问答重复/死循环)");
                 messages.push(Message::tool_output("[TASK_COMPLETE] 已回答,结束本轮"));
@@ -406,6 +429,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     r
                 }
                 Err(e) => {
+                    if stop.load(Ordering::Relaxed) {
+                        log!("[stopped] 用户中止(流中断)");
+                        dedupe_trailing_assistant(&mut messages);
+                        save!();
+                        return Ok(messages);
+                    }
                     let low = e.lower_text();
                     if e.is_4xx() {
                         // Structural 400 (consecutive assistant turns): clean and retry.

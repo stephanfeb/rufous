@@ -22,7 +22,9 @@ long-term memory, parallel `batch_tools` and MCP (stdio and streamable HTTP via 
 flattened into the categories as `server.tool`) are in. `boubou doctor` probes every MCP server;
 `boubou tool <name> '<json>'` runs any single tool, built-in or `server.tool`, for debugging.
 Web search defaults to Bing, then DuckDuckGo, then Baidu (`AGENT_SEARCH_BACKENDS` overrides).
-Next: the Tauri shell.
+`boubou serve` runs the local web UI (Mingbird's page and `/api/*` contract, agent in-process,
+approval dialogs, stop); `cargo run -p boubou-app` opens the same UI in a native window.
+Next: parallel dispatch, voice input.
 See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)

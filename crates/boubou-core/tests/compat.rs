@@ -219,3 +219,34 @@ fn mcp_config_example_parses_with_category_overrides() {
     assert!(!cfg["utils"].is_http());
     assert_eq!(mcp::qualified_name("utils", "calculate"), "utils.calculate");
 }
+
+#[test]
+fn model_dedupe_prefers_mapped_then_non_latest_then_shorter() {
+    use boubou_core::config::Config;
+    use boubou_core::ollama::ModelInfo;
+    let mi = |name: &str, digest: &str| ModelInfo {
+        name: name.into(),
+        size: 0,
+        digest: digest.into(),
+        details: serde_json::Value::Null,
+    };
+    let mut cfg = Config::default();
+    cfg.models.insert("Gemma".into(), "gemma4:e2b".into());
+    let list = [
+        mi("gemma4:latest", "d1"),
+        mi("gemma4:e2b", "d1"), // mapped wins over :latest and over the alias below
+        mi("my-gemma-alias", "d1"),
+        mi("qwen3:8b", "d2"),
+        mi("q", "d2"),         // shorter wins among unmapped non-latest
+        mi("solo:latest", ""), // no digest → keyed by name
+    ];
+    let out = cfg.dedupe_model_entries(&list);
+    assert_eq!(
+        out,
+        vec![
+            ("Gemma".to_string(), "gemma4:e2b".to_string()),
+            ("q".to_string(), "q".to_string()),
+            ("solo:latest".to_string(), "solo:latest".to_string()),
+        ]
+    );
+}

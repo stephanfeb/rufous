@@ -7,15 +7,7 @@
     "frontendDist": "webui"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Boubou · 布布",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 800,
-        "minHeight": 600
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
