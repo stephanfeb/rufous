@@ -167,9 +167,6 @@ impl Spawner for AgentSpawner {
                 let _ = std::fs::remove_file(req.workdir.join(stale));
             }
         }
-        if req.config.cloud.get("enabled") == Some(&Value::Bool(true)) {
-            bus.note("[cloud backend is not ported in Boubou yet; running on local Ollama]");
-        }
         let params = match params_from_prefs(&req.model, &req.workdir, &req.home, &req.prefs) {
             Ok(p) => p,
             Err(e) => {
@@ -187,14 +184,16 @@ impl Spawner for AgentSpawner {
                 .is_none_or(|v| v != "0"),
         );
         let sink_bus = bus.clone();
-        let mut agent =
-            match Agent::standard(params, req.config.ollama_host(), req.config.offline()) {
-                Ok(a) => a,
-                Err(e) => {
-                    bus.note(format!("[error] {e}"));
-                    return;
-                }
-            };
+        let mut agent = match Agent::standard(params, &req.config) {
+            Ok(a) => a,
+            Err(e) => {
+                bus.note(format!("[error] {e}"));
+                return;
+            }
+        };
+        if !agent.engine.starts_with("Ollama") {
+            bus.note(format!("[engine: {}]", agent.engine));
+        }
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), confirmer);
         let mut agent = agent
             .with_sink(move |ev| publish(&sink_bus, ev))

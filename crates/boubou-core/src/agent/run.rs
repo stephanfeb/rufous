@@ -16,12 +16,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
+use super::chat::DynBackend;
 use super::chat::{ChatBackend, StreamPiece};
 use super::face::{self, ToolFace, MUTATE, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
     attach_pending_images, compact_history, dedupe_trailing_assistant, estimate_messages_tokens,
     similar, workdir_files_text,
 };
+use super::openai::OpenAiBackend;
 use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
@@ -31,6 +33,7 @@ use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
 use crate::guards::{self, artifacts, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
+use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
 use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
 use crate::tools::{is_mcp_tool, resolve_alias};
@@ -188,6 +191,8 @@ pub struct Agent<B, T> {
     /// `_maybe_parallel_dispatch`: set by [`Agent::standard`] (or `with_parallel`); `None`
     /// means the hook is absent (tests, embedding).
     pub parallel: Option<DispatchHook>,
+    /// Human-readable engine label (`Ollama · host`, `cloud · model`, `OpenAI 兼容 · url`).
+    pub engine: String,
 }
 
 impl<B, T> std::fmt::Debug for Agent<B, T> {
@@ -196,21 +201,35 @@ impl<B, T> std::fmt::Debug for Agent<B, T> {
             .field("params", &self.params)
             .field("face", &self.face)
             .field("sessions_dir", &self.sessions_dir)
+            .field("engine", &self.engine)
             .finish()
     }
 }
 
-impl Agent<super::OllamaBackend, Executor> {
-    /// The production wiring: streaming Ollama backend, real executor in the workdir.
-    pub fn standard(params: RunParams, host: impl Into<String>, offline: bool) -> Result<Self> {
-        let host: String = host.into();
-        let backend = super::OllamaBackend::new(host.clone(), &params)?;
+impl Agent<DynBackend, Executor> {
+    /// The production wiring (`call_chat` dispatch): the cloud provider when enabled and
+    /// online, else the configured local engine (Ollama, restartable, or an OpenAI-compatible
+    /// server), plus the real executor in the workdir.
+    pub fn standard(params: RunParams, cfg: &crate::config::Config) -> Result<Self> {
+        let host = cfg.ollama_host();
+        let offline = cfg.offline();
+        let (backend, engine): (DynBackend, String) = if let Some(cp) = cfg.cloud_provider() {
+            let label = format!("cloud · {} ({})", cp.model, cp.base_url);
+            (Box::new(OpenAiBackend::cloud(&cp, &params)?), label)
+        } else if let Some(eng) = cfg.backend_openai() {
+            let label = format!("OpenAI 兼容 · {}", eng.base_url);
+            (Box::new(OpenAiBackend::local(&eng, &params)?), label)
+        } else {
+            let b = super::OllamaBackend::new(host.clone(), &params)?
+                .with_proc(OllamaProc::from_config(cfg));
+            (Box::new(b), format!("Ollama · {host}"))
+        };
         let mut tools = Executor::new(params.workdir.clone()).with_configured_mcp();
         tools.slim_output = params.slim_output;
-        let pcfg = ParallelConfig::from_config(&crate::config::Config::load().unwrap_or_default())
-            .with_env(&env_snapshot());
+        let pcfg = ParallelConfig::from_config(cfg).with_env(&env_snapshot());
         let child_mode = params.child_mode;
         let mut agent = Agent::new(params, backend, tools);
+        agent.engine = engine;
         agent.face.offline = offline;
         if child_mode {
             let allowed = agent.tools.install_child_mode(&pcfg);
@@ -234,6 +253,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sink: Box::new(|_| {}),
             stop: Arc::new(AtomicBool::new(false)),
             parallel: None,
+            engine: String::new(),
         }
     }
 
@@ -305,6 +325,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sink,
             stop,
             parallel,
+            engine: _,
         } = self;
         let child = params.child_mode;
         let model = params.model.as_str();
@@ -326,6 +347,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
         // Per-run counters (names follow the Python locals).
         let mut fails = 0usize;
+        // `_restarts`: engine restarts this run (≤3), the 500-degradation self-heal.
+        let mut restarts = 0usize;
         let mut fail_count: HashMap<String, usize> = HashMap::new();
         let mut redirect_warns = 0;
         let mut last_tool: Option<String> = None;
@@ -505,7 +528,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     save!();
                                     return Err(Error::Ollama(e.to_string()));
                                 }
-                                std::thread::sleep(Duration::from_secs(1));
+                                nap(1, params.sleep_scale);
                                 continue;
                             }
                         }
@@ -521,12 +544,34 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             compact(backend, model, messages, 3, todo, files, transcript, sink);
                         compact_lvl = 3;
                         fails = 0;
-                        std::thread::sleep(Duration::from_secs(1));
+                        nap(1, params.sleep_scale);
                         continue;
                     }
                     fails += 1;
-                    if e.is_500() && fails >= 4 {
-                        log!("[{i}] 连续 {fails} 次 500(Mingbird 在此自动重启 ollama;Boubou 尚未移植,继续压缩重试)");
+                    if e.is_500() && fails >= 4 && restarts < 3 {
+                        // ★ Root cause, not symptom: ≥4 consecutive 500s = a degraded
+                        // ollama process (temp=0 replays the same bad path; compaction and
+                        // waiting cannot escape). A restart recovers; the checkpoint keeps
+                        // the task. OpenAI-compatible engines are not ours to restart.
+                        match backend.restart_engine() {
+                            Some(ok) => {
+                                restarts += 1;
+                                log!(
+                                    "[{i}] 连续 {fails} 次 500 → 判定 ollama 进程退化,自动重启(第 {restarts}/3 次)..."
+                                );
+                                if ok {
+                                    log!("[{i}] ✓ ollama 已重启,继续任务");
+                                } else {
+                                    log!("[{i}] ⚠ ollama 重启未就绪,仍继续重试");
+                                }
+                                fails = 0;
+                                nap(3, params.sleep_scale);
+                                continue;
+                            }
+                            None => {
+                                log!("[{i}] 连续 {fails} 次 500(当前引擎不可由本程序重启,继续压缩重试)");
+                            }
+                        }
                     }
                     if e.is_500() && fails >= 2 {
                         if compact_lvl < 3 {
@@ -550,12 +595,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             ));
                             log!("[{i}] 500 错误,已注入继续提示(打破死循环路径)");
                         }
-                        std::thread::sleep(Duration::from_secs(2));
+                        nap(2, params.sleep_scale);
                         continue;
                     }
                     let wait = (3u64 << (fails - 1).min(10)).min(60);
                     log!("[{i}] API error: {e} (retry {fails}, wait {wait}s)");
-                    std::thread::sleep(Duration::from_secs(wait));
+                    nap(wait, params.sleep_scale);
                     if fails >= 8 {
                         log!("===== FAILED: ollama 连续错误(含重启后仍失败),已停止。修复后勾选'续跑'可从中断处继续 =====");
                         save!();
@@ -1206,6 +1251,14 @@ fn first_py_bak(workdir: &Path) -> Option<String> {
         .collect();
     baks.sort();
     baks.into_iter().next()
+}
+
+/// A retry/back-off sleep scaled by `RunParams::sleep_scale` (0 in tests).
+fn nap(secs: u64, scale: f32) {
+    let d = Duration::from_secs_f64(secs as f64 * f64::from(scale.max(0.0)));
+    if !d.is_zero() {
+        std::thread::sleep(d);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

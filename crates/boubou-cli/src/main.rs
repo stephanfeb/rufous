@@ -7,6 +7,8 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use boubou_core::agent::chat::model_can_think;
+use boubou_core::agent::openai;
 use boubou_core::agent::session::{self, load_checkpoint, load_session, sessions_dir};
 use boubou_core::agent::{Agent, AgentEvent, RunParams};
 use boubou_core::config::{agent_home, config_path, Config};
@@ -14,6 +16,7 @@ use boubou_core::guards::budget::{
     elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
 };
 use boubou_core::ollama::{Client, Message};
+use boubou_core::ollama_proc::OllamaProc;
 use boubou_core::parallel::{
     env_snapshot, format_capacity_table, progress_line, CapacityPlanner, ParallelConfig,
     ResourceProbe, SEVERE_EXIT_CODE,
@@ -77,6 +80,16 @@ enum Cmd {
     Doctor,
     /// Print this machine's parallel-dispatch capacity plan (read-only, nothing is spawned).
     Plan,
+    /// Transcribe a 16 kHz WAV file (local sherpa-onnx model, else an Ollama audio model).
+    Voice {
+        wav: PathBuf,
+        /// `zh` or `en` (which bundled model to use).
+        #[arg(long, default_value = "zh")]
+        lang: String,
+        /// Ollama audio-capable model to fall back to when no local model is installed.
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
     Serve {
         #[arg(long, default_value_t = 8765)]
@@ -140,6 +153,36 @@ fn main() -> Result<()> {
         Cmd::Doctor => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(doctor(&cfg))?;
+        }
+        Cmd::Voice { wav, lang, model } => {
+            let bytes =
+                std::fs::read(&wav).with_context(|| format!("reading {}", wav.display()))?;
+            let bases = boubou_voice::stt_bases(&install_dir(), &agent_home());
+            let host = cfg.ollama_host();
+            let req = boubou_voice::Request {
+                wav: &bytes,
+                lang: &lang,
+                bases: &bases,
+                ollama_host: &host,
+                fallback_model: model.as_deref(),
+            };
+            match boubou_voice::transcribe(&req) {
+                Ok(t) => {
+                    eprintln!(
+                        "[voice] engine={} {:.1}s",
+                        t.engine.as_str(),
+                        t.duration_secs
+                    );
+                    println!("{}", t.text);
+                }
+                Err(boubou_voice::VoiceError::Unavailable(why)) => {
+                    anyhow::bail!(
+                        "{why}: {}",
+                        boubou_voice::install_hint(&lang, &agent_home())
+                    );
+                }
+                Err(e) => anyhow::bail!("{e}"),
+            }
         }
         Cmd::Plan => {
             let pc = ParallelConfig::from_config(&cfg).with_env(&env_snapshot());
@@ -281,8 +324,9 @@ fn run_task(
         }
     }
 
-    let mut agent =
-        Agent::standard(params, cfg.ollama_host(), cfg.offline())?.with_sink(print_event);
+    ensure_engine(cfg);
+    let mut agent = Agent::standard(params, cfg)?.with_sink(print_event);
+    println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
     let session = opts.session.as_deref();
 
@@ -343,8 +387,9 @@ fn chat(
     std::fs::create_dir_all(&workdir)?;
     let params = RunParams::from_env(model, &workdir)?;
     let cli_tb = cli_budget(time_budget.as_deref());
-    let mut agent =
-        Agent::standard(params, cfg.ollama_host(), cfg.offline())?.with_sink(print_event);
+    ensure_engine(cfg);
+    let mut agent = Agent::standard(params, cfg)?.with_sink(print_event);
+    println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
     let mut msgs = session
         .as_deref()
@@ -378,6 +423,28 @@ fn chat(
 }
 
 /// Mingbird's stdout protocol: streamed text as is, harness lines verbatim.
+/// Start-up engine check (`main()`): an OpenAI-compatible engine is only probed (we cannot
+/// start someone else's server); Ollama is started when it is down (`ensure_ollama`); the
+/// cloud provider needs neither.
+fn ensure_engine(cfg: &Config) {
+    if let Some(eng) = cfg.backend_openai() {
+        if !openai::probe_blocking(
+            &eng.base_url,
+            &eng.api_key,
+            std::time::Duration::from_secs(3),
+        ) {
+            println!(
+                "⚠️ OpenAI 兼容引擎未就绪: {} — 请先启动 LM Studio / llama.app / llama-server 后重试。",
+                eng.base_url
+            );
+        }
+    } else if cfg.cloud_provider().is_none()
+        && !OllamaProc::from_config(cfg).ensure(std::time::Duration::from_secs(25))
+    {
+        println!("⚠️ 未能自动启动 ollama,请手动运行 ollama serve 后重试。");
+    }
+}
+
 fn print_event(ev: AgentEvent) {
     match ev {
         AgentEvent::Text(t) | AgentEvent::Thinking(t) => {
@@ -410,6 +477,24 @@ async fn doctor(cfg: &Config) -> Result<()> {
         }
     );
     println!("offline mode : {}", cfg.offline());
+    println!(
+        "engine       : {}{}",
+        cfg.engine_display_name(),
+        match (cfg.cloud_provider(), cfg.backend_openai()) {
+            (Some(cp), _) => format!(" (cloud enabled: {} @ {})", cp.model, cp.base_url),
+            (None, Some(e)) => format!(" @ {}", e.base_url),
+            _ => String::new(),
+        }
+    );
+    if let Some(eng) = cfg.backend_openai() {
+        let up = openai::probe(
+            &eng.base_url,
+            &eng.api_key,
+            std::time::Duration::from_secs(3),
+        )
+        .await;
+        println!("openai engine: {}", if up { "ok" } else { "unreachable" });
+    }
 
     let client = Client::new(cfg.ollama_host());
     print!("ollama       : {} ... ", client.base_url());
@@ -423,7 +508,16 @@ async fn doctor(cfg: &Config) -> Result<()> {
                 Ok(models) => {
                     println!("models       : {}", models.len());
                     for m in models {
-                        println!("  {:<38} {}", cfg.display_name(&m.name), human_size(m.size));
+                        let think = match model_can_think(cfg, &m.name) {
+                            Some(true) => "thinking",
+                            Some(false) => "-",
+                            None => "?",
+                        };
+                        println!(
+                            "  {:<38} {:>8}  {think}",
+                            cfg.display_name(&m.name),
+                            human_size(m.size)
+                        );
                     }
                 }
                 Err(e) => println!("models       : error: {e}"),

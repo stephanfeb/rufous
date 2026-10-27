@@ -24,14 +24,18 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `_claimed_missing_files`, `_plan_named_missing` | `boubou-core/src/guards/artifacts.rs` | ported, tested |
 | `_EditConvergenceGuard`, `_norm_p` | `boubou-core/src/guards/edit.rs` | ported, tested (case-insensitive on all platforms, by design) |
 | `parse_time_budget`, `parse_duration_str`, `resolve_time_budget`, `_budget_nudge`, elapsed sidecar | `boubou-core/src/guards/budget.rs` | ported, tested; module globals (`BUDGET_SEC`, `TIME_BUDGET_PARSE`) became explicit parameters |
-| `agent_loop` (empty-turn ladder, hard reset, six finish gates, dup/streak/research/todo anti-loop, failure ladder, budget pacing, stale-plan nudge, Q&A wrap-up), `_FAIL_MARKERS`, `_ws_note` | `boubou-core/src/agent/run.rs` | ported, tested against the scripted-loop suite and a live gemma4:12b run. `_maybe_parallel_dispatch` and child mode (`_child_sandbox`, `_CHILD_SYSTEM`, gate exemptions, exit 53) are in. Not yet: `restart_ollama` on 4× 500 (logged, falls through to compaction retry) |
-| `call_chat` (streaming, `think` 400 retry, tri-state options) | `boubou-core/src/agent/chat.rs` | ported as the `ChatBackend` trait + `OllamaBackend`; cloud / OpenAI-compatible backends todo |
+| `agent_loop` (empty-turn ladder, hard reset, six finish gates, dup/streak/research/todo anti-loop, failure ladder, budget pacing, stale-plan nudge, Q&A wrap-up), `_FAIL_MARKERS`, `_ws_note` | `boubou-core/src/agent/run.rs` | ported, tested against the scripted-loop suite and a live gemma4:12b run. `_maybe_parallel_dispatch` and child mode (`_child_sandbox`, `_CHILD_SYSTEM`, gate exemptions, exit 53) are in. `restart_ollama` on 4× 500 is in through `ChatBackend::restart_engine` (max 3 per run; an OpenAI-compatible engine returns `None` and the loop keeps the compaction retry) |
+| `call_chat` (streaming, `think` 400 retry, tri-state options) | `boubou-core/src/agent/chat.rs` | ported as the `ChatBackend` trait + `OllamaBackend` (owns an `OllamaProc` for restarts); `DynBackend` boxes the engine chosen by `Agent::standard(params, &cfg)` |
+| `_call_cloud`, `_call_openai_local`, `_cloud_to_openai_messages`, `_openai_normalize_message`, `_split_inline_thinking`, `_InlineThinkSplitter`, `probe_openai_backend` | `boubou-core/src/agent/openai.rs` | ported, tested (`OpenAiBackend` with `Flavor::Cloud` non-streaming / `Flavor::LocalEngine` SSE; tool-call deltas assembled by `index`; torn `<think>` tags held back; `probe`/`list_models` on `GET /models`) |
+| `appconfig.cloud_provider` / `local_backend` / `backend_openai` / `engine_display_name` | `boubou-core/src/config.rs` | ported, tested (cloud off in offline mode; `openai` without `base_url` → Ollama) |
+| `ensure_ollama`, `restart_ollama`, `_find_ollama_exe` | `boubou-core/src/ollama_proc.rs` | ported, tested (`OllamaProc`: kill `ollama serve` via taskkill/pkill, wait dead, respawn detached with `config.ollama_env`, wait for `/api/tags`). Not ported: Windows `_ollama_app_models_dir` sqlite lookup |
+| `_model_can_think` (`/api/show` capabilities, per-model cache) | `boubou-core/src/agent/chat.rs` | ported, tested; `None` on an OpenAI engine or probe failure; `boubou doctor` prints it per model |
 | `_active_tools`, `_disabled_tools`, `route_categories`, `tools_for_categories`, `_chat_tool_defs`, `_filter_offline_tools`, `_is_mcp_producing` | `boubou-core/src/agent/face.rs` | ported (`ToolFace`); MCP flattened tool defs join when the client lands |
 | `compact_history` L1/L2/L3, `_estimate_messages_tokens`, `_workdir_files_text`, `_dedupe_trailing_assistant`, `sanitize_ckpt`, `_similar`, `_attach_pending_images` | `boubou-core/src/agent/history.rs` | ported, tested; `_similar` is a difflib-style matching-blocks ratio without the autojunk heuristic |
 | `.agent_state.json`, `<s>.json`, `<s>.transcript.jsonl`, `<s>.meta.json`, `<s>.todo.json`, `_transcript_flush` cursor rules | `boubou-core/src/agent/session.rs` | ported, tested; verified cross-readable by Mingbird's `sanitize_ckpt`/`load_session` |
 | `SYSTEM`, `CHAT_SYSTEM`, `system_prompt()`, `platform_profile.prompt_block` | `boubou-core/src/agent/prompt.rs` | ported; `CHAT_SYSTEM` introduces itself as 布布 |
 | `_run_test_guard`, `_pytest_hint`, `_test_env_broken` | `boubou-core/src/agent/testguard.rs` | ported (runs `python -m pytest -q` in the workdir when `test_*.py` exist) |
-| `main()`: `--session/--new/--append/--time-budget`, checkpoint/session resume, `--chat` | `boubou-cli/src/main.rs` | ported; not covered by tests yet |
+| `main()`: `--session/--new/--append/--time-budget`, checkpoint/session resume, `--chat` | `boubou-cli/src/main.rs` | ported; `boubou-cli/tests/cli.rs` runs the binary headlessly (help, tools, skills, plan, tool, run with a missing task file, voice, doctor). `ensure_engine` runs before a task: probe an OpenAI engine (warn) or `OllamaProc::ensure` |
 | `platform_profile.py` | `boubou-core/src/agent/prompt.rs` (`Platform`, `platform_block`) | ported |
 | `parallel_config.py` (`DEFAULT_PARALLEL`, env overrides, `hard_disabled`, `current_depth`) | `boubou-core/src/parallel/config.rs` | ported, tested (`ParallelConfig`, typed; invalid values keep the current value; rule lists are data) |
 | `parallel_safety.py` (`ChildSandbox`, path boundary, dangerous-command rules, audit JSONL, fuse) | `boubou-core/src/parallel/sandbox.rs` | ported, tested. Windows-style paths (`..\x`, `C:\…`, `\\wsl$`) are judged on every platform so the Python cases hold on macOS/Linux; POSIX adds `/etc/`, `chmod -R`, `launchctl`/`systemctl` rules |
@@ -40,11 +44,11 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `parallel_dispatch.py` (`ParallelDispatcher`, `ResultIntegrator`, `summary_for_parent`, `@@DISPATCH@@`) | `boubou-core/src/parallel/dispatch.rs` | ported, tested with a scripted `Spawner`; children are `boubou run <model> task.md <dir> --session disp_<run>_NN --new` in their own process group; a worker pool of `max_parallel` scoped threads |
 | `_maybe_parallel_dispatch`, `install_child_mode`, `child_gate`, `_CHILD_SYSTEM` | `boubou-core/src/parallel/hook.rs`, `exec.rs` (`Executor::install_child_mode`, ring-0 check first in `prepare`), `agent/run.rs` (`RunParams::child_mode`, `AgentEvent::Dispatch`, `Agent::parallel`) | ported, tested. The library never calls `exit(53)`: the loop returns `Error::ChildTerminated` and the CLI maps it to exit 53 |
 | `run_python` (bundled interpreter) | — | **dropped** (decision 2026-10-27): no Python runtime in Boubou. The `office_word`, `office_excel` and `image_batch` skills went with it; `doc_digest` and `file_organizer` still mention `run_python` and need rewording. Revisit later. |
-| `voice_input.py` (sherpa-onnx) | `boubou-app` | todo: `sherpa-rs`; the one native lib that may ship as a DLL |
+| `voice_input.py` (sherpa-onnx, VAD recorder, `transcribe_ollama`, `pick_stt_model`) | `boubou-voice` crate, `boubou-web` `/api/voice` + mic button, `boubou voice` | ported behind cargo feature `voice` (`sherpa-onnx = "=2.0.1"` static; `sherpa-rs` only wraps offline recognizers). Default builds are native-free and report `built_without_voice_feature`. Same model dirs as Mingbird under `<install>/stt/`, `~/.ollama_agent/stt/` or `BOUBOU_STT_DIR`; no installer/downloader yet |
 | `agent_gui.py`, `ui_v4.py`, `ui_theme.py` (Tk) | dropped | replaced by Tauri shell |
-| `webui/server.py` (`/api/*`, SSE, `@@ASK@@` approval channel, `gui_prefs.json`, session rows, `kill_tree`) | `boubou-web/src/{api,state,runner,events,prefs}.rs` | ported, tested. axum on 127.0.0.1; the agent runs in-process on a thread, `AgentEvent`s map to the same SSE types (`tok`/`think`/`ask`/`dispatch`/`ctx`/`note`/`exit`); `WebConfirmer` replaces the stdin round-trip (only the current `ask_id` is accepted); stop = a shared flag the loop and the Ollama stream both check (no process to kill). Cloud backend settings are persisted but the engine is still Ollama (a note says so) |
+| `webui/server.py` (`/api/*`, SSE, `@@ASK@@` approval channel, `gui_prefs.json`, session rows, `kill_tree`) | `boubou-web/src/{api,state,runner,events,prefs}.rs` | ported, tested. axum on 127.0.0.1; the agent runs in-process on a thread, `AgentEvent`s map to the same SSE types (`tok`/`think`/`ask`/`dispatch`/`ctx`/`note`/`exit`); `WebConfirmer` replaces the stdin round-trip (only the current `ask_id` is accepted); stop = a shared flag the loop and the Ollama stream both check (no process to kill). Cloud / OpenAI-compatible settings now select the engine through `Agent::standard`; `/api/status` reports `engine` and `voice`; `POST /api/voice` transcribes an uploaded WAV |
 | `webui/static/index.html` | `boubou-web/static/index.html` | Mingbird's page rebranded (布布 · Boubou); `include_str!` into the binary, no static dir |
-| Tk GUI (`agent_gui.py`) | `boubou-app/src/main.rs` | Tauri 2 shell: starts the web server on a free loopback port and opens a window on it. Voice input not ported yet |
+| Tk GUI (`agent_gui.py`) | `boubou-app/src/main.rs` | Tauri 2 shell: starts the web server on a free loopback port and opens a window on it. Voice comes from the page's mic button; `Info.plist` carries `NSMicrophoneUsageDescription` but is not wired into the bundle config yet |
 | `mcp_utils_server.py` | — | keep as a Python example, or rewrite as a tiny Rust MCP server |
 | `tests/` (33 files, 556 test functions) | `boubou-core/tests/` | in progress, see below |
 
@@ -52,11 +56,13 @@ Tk GUI with a Tauri shell around the existing web UI.
 
 | Python file | Rust file | Ported | Still deferred |
 |---|---|---|---|
-| `test_guards.py` | `tests/guards.rs`, `tests/time_budget.rs`, `tests/safety.rs`, `tests/agent_loop.rs` | 80 of 96 | `main()` headless CLI (5), `_model_can_think` probe (2), `call_chat` payload shape (1), docstring checks |
+| `test_guards.py` | `tests/guards.rs`, `tests/time_budget.rs`, `tests/safety.rs`, `tests/agent_loop.rs` | 88 of 96 | docstring checks (the `main()` CLI, `_model_can_think` and `call_chat` payload cases live in `boubou-cli/tests/cli.rs` and `tests/openai_backend.rs`) |
 | `test_todo.py` | `tests/todo.rs`, `tests/guards.rs`, `tests/history.rs` | 26 of 27 | `test_mcp_tool_counts` folded into has_task_progress |
 | `test_safety_net.py` | `tests/safety.rs`, `tests/exec_tools.rs` | 17 of 17 | — (five-ring docstring check became the module doc) |
 | `test_crawl_guard.py` | `tests/exec_tools.rs` | 8 of 8 | — |
 | `test_output_cap.py` | `tests/guards.rs`, `tests/agent_loop.rs` | 4 of 5 | `NUM_PREDICT` env override at import time (Boubou reads it in `RunParams::from_env`; the default is asserted) |
+| `test_v211_backends.py`, cloud cases of `test_offline_mode.py` / `test_v203_fixes.py` | `tests/openai_backend.rs`, `tests/ollama_proc.rs` | all | — (plus loopback round trips against a one-shot TCP server and scripted 4×500 restart runs) |
+| `test_v191_universal.py::TestBilingualSTT` | `boubou-voice/tests/voice.rs` | all | — (the real zh transcription test runs only when the model is installed and the feature is on) |
 
 `tests/agent_loop.rs` also adds loop tests Mingbird never had: explicit `budget_sec` beating the
 env, substantive-summary delivery, the todo sync gate's two-refusal limit, `enable_tools`
@@ -78,7 +84,13 @@ stop, offline and cloud config writes. `tests/parallel_sandbox.rs`, `parallel_co
 child-mode cases of `test_integration_0901.py` (finish-gate exemption, Q&A stays task, receipt
 isolation, hook off-by-default / kill switch / idempotence, a dispatch through the hook with a
 fake spawner that marks the todo done, and a scripted loop ending in `Error::ChildTerminated`
-with the checkpoint saved). 247 tests total.
+with the checkpoint saved). `tests/openai_backend.rs` and `tests/ollama_proc.rs` cover the
+engine layer (config normalisation, message mapping, payload shapes, SSE assembly in 7-byte
+chunks, loopback captures, engine selection, think-probe gating, restart ladder);
+`boubou-cli/tests/cli.rs` is the headless `main()` suite; `boubou-voice/tests/voice.rs` covers
+WAV decode/encode/resample, model-dir resolution, the silence gate and the Ollama transcript
+post-processing. 296 tests in the default build, plus 28 in the `voice` feature build (voice,
+web, cli; the real zh transcription test runs when the model is present).
 
 Counts are test functions, not parametrised cases. Several Python tests were merged where they
 shared a fixture; the assertions are all present.
@@ -110,6 +122,7 @@ text (`tok`) so a tool-only run still shows a reply (Mingbird printed it as an i
 5. ~~Tauri shell: `/api/*` surface~~ Done 2026-10-27 (`boubou serve` + `boubou-app` window; 159 tests green). Voice input still open.
 6. ~~Parallel dispatch.~~ Done 2026-10-28 (247 tests green; `boubou plan` live; one real child run under `AGENT_CHILD_SANDBOX=1` against gemma4:12b).
 7. ~~Child sandbox (ring 0) when sub-agents arrive.~~ Done with 6 (same commit).
+8. ~~Voice input, `restart_ollama`, cloud / OpenAI-compatible engines, `_model_can_think`, CLI tests.~~ Done 2026-10-28 (296 + 28 tests green; `boubou voice` and `/api/voice` transcribed the zh model's sample WAVs through sherpa-onnx; `boubou doctor` shows the engine and a per-model thinking column).
 
 ## Parallel dispatch as shipped (step 6, 2026-10-28)
 
@@ -129,16 +142,54 @@ marks todo items done and appends the receipt message. Known gap: a parent run s
 web UI dispatches too, but the page only shows the `dispatch` chips; there is no cancel for an
 in-flight batch except the run's stop flag (checked between children).
 
-## Step 7 brief (handoff notes, 2026-10-28)
+## Engines and voice as shipped (step 7, 2026-10-28)
 
-Voice: Mingbird uses sherpa-onnx (14M Chinese model, CPU) from the Tk GUI; the web page has no
-microphone button, so this needs a small UI addition plus a `/api/voice` upload endpoint or a
-Tauri command, and the `sherpa-rs` crate (onnxruntime is the one dependency that fights static
-linking).
+Engines: `Agent::standard(params, &cfg)` returns `Agent<DynBackend, Executor>` and picks, in
+Mingbird's order: a cloud provider (`cloud.enabled` + `base_url` + `model`, off in offline mode)
+→ `OpenAiBackend::cloud` (non-streaming `/chat/completions`, Bearer always,
+`enable_thinking: false`, 900 s timeout); `local_backend = "openai"` with a `base_url` →
+`OpenAiBackend::local` (SSE streaming, Bearer only with a key, inline `<think>` splitter that
+holds back torn tags, tool-call deltas assembled by `index`); otherwise `OllamaBackend` with an
+`OllamaProc`. Messages map through `to_openai_messages` (tool results paired FIFO to the
+preceding `tool_call_id`s; unparsable arguments become `{"_raw": …}`). The 4×500 ladder calls
+`ChatBackend::restart_engine`: Ollama kills `ollama serve`, waits for the API to die, respawns
+it detached with `config.ollama_env` and waits up to 40 s; OpenAI engines return `None` and the
+loop logs that the engine cannot be restarted by this program and keeps the compaction retry.
+At most three restarts per run. The CLI runs `ensure_engine` before a task (probe `GET /models`
+for an OpenAI engine and warn; `OllamaProc::ensure(25 s)` otherwise) and prints `[engine] …`.
+`model_can_think` probes `/api/show` capabilities with a per-process cache and returns `None`
+on an OpenAI engine. `AGENT_SLEEP_SCALE` scales the loop's recovery sleeps (tests use 0).
+`Agent.engine` is a display string (`Ollama · host`, `OpenAI 兼容 · base`, `cloud · model (base)`).
+Only loopback capture tests exercised the OpenAI path; no LM Studio / llama-server was available.
 
-Loop: `restart_ollama` after four consecutive 500s, cloud / OpenAI-compatible backends behind
-`ChatBackend` (the web UI already persists the cloud settings), `_model_can_think` probing, the
-`main()` CLI tests.
+Voice: crate `boubou-voice`, native engine behind feature `sherpa` (`sherpa-onnx = "=2.0.1"`,
+prebuilt static libs fetched at build time, ~12 s extra); `boubou-cli` and `boubou-web` expose it
+as feature `voice`. Models are Mingbird's streaming zipformers (zh 14M, en 20M; int8 weights +
+`tokens.txt`) looked up as `stt/<model dir>` under `BOUBOU_STT_DIR`, the install directory, then
+`~/.ollama_agent` (a base may also be the model directory itself). Pipeline: WAV of any PCM/float
+layout → mono → 16 kHz → silence gate (rms < 0.002 → `no_voice`) → sherpa for the requested
+language, then zh → Ollama audio model (`pick_stt_model`, whisper first; `images` base64, `think:
+false`, marker stripping, 500-char cap) → `Unavailable(no_stt_model_installed |
+built_without_voice_feature)`. Surface: `boubou voice <wav> [--lang zh|en] [--model]`,
+`POST /api/voice?lang=&model=` (400 bad audio, 422 no voice, 503 unavailable, 500 failed, 32 MB
+body limit), `/api/status.voice {local, fallback, langs, lang, feature, hint}`, pref `stt_lang`,
+and the page's mic button (hidden unless the status says voice is available; getUserMedia → 16 kHz
+PCM, RMS VAD 0.008, 1.2 s silence auto-stop, 60 s cap, same as Mingbird's recorder). Live: the zh
+model's `test_wavs/0.wav` (5.6 s) transcribed in 1.4 s through the CLI and `1.wav` through
+`/api/voice` on a running `boubou serve --features voice`.
+
+## Step 8 brief (handoff notes, 2026-10-28)
+
+- Voice model installer: `boubou voice --install <lang>` downloading the k2-fsa `tar.bz2`,
+  keeping only `*int8.onnx` + `tokens.txt` under `~/.ollama_agent/stt/`; today the hint text
+  only tells the user where to put the files.
+- Tauri bundling: wire `crates/boubou-app/Info.plist` into `tauri.conf.json`, bundle `stt/` as a
+  resource, build `boubou-app` with the `voice` feature, test the mic permission prompt.
+- Live-check an OpenAI-compatible engine (LM Studio / llama-server) and a real cloud provider;
+  only loopback capture tests cover `OpenAiBackend` so far.
+- Windows: `_ollama_app_models_dir` (sqlite lookup of the Ollama app's model dir) is not ported.
+- `doc_digest` / `file_organizer` skills still mention `run_python`.
+- Then the LRAB head-to-head: a `boubou` adapter in Mingbird's `bench/lrab/runners/run_bench.py`.
 
 Search backends: Boubou defaults to Bing → DuckDuckGo HTML → Baidu (western-first; the user is
 in Southeast Asia). Mingbird's `cn.bing.com` host is therefore not shared in the search cache;

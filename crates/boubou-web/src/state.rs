@@ -136,6 +136,8 @@ pub struct RunHandle {
 
 pub struct AppState {
     pub home: PathBuf,
+    /// Where bundled assets (skills, `stt/` models) sit next to the executable.
+    pub install_dir: PathBuf,
     pub bus: Arc<Bus>,
     pub ask: Arc<AskHub>,
     pub workdir: Mutex<PathBuf>,
@@ -162,6 +164,10 @@ impl AppState {
     pub fn with_spawner(home: PathBuf, workdir: PathBuf, spawner: Box<dyn Spawner>) -> Self {
         Self {
             home,
+            install_dir: std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from(".")),
             bus: Arc::new(Bus::new()),
             ask: Arc::new(AskHub::default()),
             workdir: Mutex::new(workdir),

@@ -18,6 +18,7 @@
 pub mod chat;
 pub mod face;
 pub mod history;
+pub mod openai;
 pub mod prompt;
 pub mod run;
 pub mod session;
@@ -30,8 +31,9 @@ use serde_json::Value;
 use crate::ollama::ToolCall;
 use crate::{Error, Result};
 
-pub use chat::{ChatBackend, ChatError, ChatResponse, OllamaBackend, StreamPiece};
+pub use chat::{ChatBackend, ChatError, ChatResponse, DynBackend, OllamaBackend, StreamPiece};
 pub use face::ToolFace;
+pub use openai::OpenAiBackend;
 pub use run::{Agent, ToolRunner};
 
 pub const DEFAULT_NUM_CTX: u32 = 131_072;
@@ -74,6 +76,8 @@ pub struct RunParams {
     /// `AGENT_CHILD_SANDBOX=1`: this process is a dispatched child (ring-0 sandbox,
     /// minimal prompt, narrowed tool face, never Q&A, never dispatches itself).
     pub child_mode: bool,
+    /// Multiplier on the loop's retry/back-off sleeps (`AGENT_SLEEP_SCALE`; tests use 0).
+    pub sleep_scale: f32,
 }
 
 impl RunParams {
@@ -111,6 +115,7 @@ impl RunParams {
                 .collect(),
             max_iterations: MAX_ITERATIONS,
             child_mode: std::env::var("AGENT_CHILD_SANDBOX").is_ok_and(|v| v == "1"),
+            sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
         })
     }
 
@@ -132,6 +137,7 @@ impl RunParams {
             ablation: Vec::new(),
             max_iterations: MAX_ITERATIONS,
             child_mode: false,
+            sleep_scale: 1.0,
         }
     }
 

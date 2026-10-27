@@ -7,7 +7,8 @@ use serde_json::{json, Map, Value};
 
 pub const PREFS_FILE: &str = "gui_prefs.json";
 /// Keys the status endpoint exposes and `POST /api/prefs` accepts.
-pub const KEYS: [&str; 7] = [
+pub const KEYS: [&str; 8] = [
+    "stt_lang",
     "ctx",
     "temp",
     "num_predict",

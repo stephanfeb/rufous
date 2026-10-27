@@ -225,7 +225,7 @@ fn status_shape_with_unreachable_ollama() {
     assert_eq!(p["think"], Value::Null);
     assert_eq!(p["num_predict"], json!(2048));
     assert_eq!(p["ui_mode"], json!("auto"));
-    assert_eq!(p.as_object().map(|m| m.len()), Some(7));
+    assert_eq!(p.as_object().map(|m| m.len()), Some(8)); // + stt_lang (step 7)
 }
 
 #[test]
@@ -536,4 +536,86 @@ fn finish_summary_is_surfaced_as_answer_text() {
         json!({"used": 300, "total": 1000, "pct": 30})
     );
     assert_eq!(bus.last_id(), 4);
+}
+
+// ---------------- step 7: engine label and voice ----------------
+
+#[test]
+fn status_reports_engine_and_voice_state() {
+    let (_s, sp) = scripted(false, false);
+    let srv = serve(sp);
+    let d = srv.get("/api/status");
+    assert_eq!(d["engine"], "Ollama");
+    let v = &d["voice"];
+    assert!(v.get("local").is_some() && v.get("langs").is_some());
+    assert_eq!(v["lang"], "zh");
+    assert_eq!(v["feature"], cfg!(feature = "voice"));
+    // No model installed under the scratch home → a hint tells the user where it goes.
+    if v["local"] == false {
+        assert!(v["hint"].as_str().is_some_and(|h| h.contains("stt")));
+    }
+    // An OpenAI-compatible local engine changes the label; its model list is probed (and
+    // the closed port makes it empty), never the Ollama tags.
+    std::fs::write(
+        srv.home.path().join("config.json"),
+        r#"{"ollama_host": "http://127.0.0.1:9", "local_backend": {"type": "openai", "base_url": "http://127.0.0.1:9/v1"}}"#,
+    )
+    .expect("cfg");
+    let d = srv.get("/api/status");
+    assert_eq!(d["engine"], "OpenAI 兼容");
+    assert_eq!(d["ollama_ok"], false);
+    assert_eq!(d["models"], json!([]));
+}
+
+#[test]
+fn voice_endpoint_status_codes() {
+    let (_s, sp) = scripted(false, false);
+    let srv = serve(sp);
+    let post_wav = |bytes: Vec<u8>| -> (u16, Value) {
+        let r = http()
+            .post(srv.url("/api/voice?lang=zh"))
+            .header("Content-Type", "audio/wav")
+            .body(bytes)
+            .send()
+            .expect("post");
+        let code = r.status().as_u16();
+        (code, r.json().unwrap_or(Value::Null))
+    };
+    let (code, body) = post_wav(b"this is not audio".to_vec());
+    assert_eq!(code, 400, "{body}");
+    assert_eq!(body["error"], "not_a_wav");
+    let silent = boubou_voice::encode_wav16(&boubou_voice::Pcm {
+        samples: vec![0.0; 8000],
+        sample_rate: 16_000,
+    });
+    let (code, body) = post_wav(silent);
+    assert_eq!(code, 422, "{body}");
+    assert_eq!(body["error"], "no_voice");
+    // Loud audio with no local model and an unreachable Ollama: no engine (503), unless a
+    // model happens to be installed where the test binary lives.
+    let loud = boubou_voice::encode_wav16(&boubou_voice::Pcm {
+        samples: (0..16_000)
+            .map(|i| 0.4 * ((i as f32) * 0.3).sin())
+            .collect(),
+        sample_rate: 16_000,
+    });
+    let (code, body) = post_wav(loud);
+    // 503 without an engine; with a local model present (BOUBOU_STT_DIR) a sine tone decodes
+    // to nothing (422) or to some text (200).
+    assert!(matches!(code, 200 | 422 | 503), "{code} {body}");
+    if code == 503 {
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("no_stt_model") || e.starts_with("built_without")));
+    }
+}
+
+#[test]
+fn prefs_accept_stt_lang() {
+    let (_s, sp) = scripted(false, false);
+    let srv = serve(sp);
+    let (code, d) = srv.post("/api/prefs", json!({"stt_lang": "en"}));
+    assert_eq!(code, 200);
+    assert_eq!(d["prefs"]["stt_lang"], "en");
+    assert_eq!(srv.get("/api/status")["voice"]["lang"], "en");
 }

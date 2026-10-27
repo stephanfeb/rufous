@@ -304,6 +304,34 @@ impl Client {
         Ok(parse_ps(&v))
     }
 
+    /// `POST /api/show`: the model card (capabilities, details, template…).
+    pub async fn show(&self, model: &str) -> Result<Value> {
+        let v: Value = self
+            .http
+            .post(format!("{}/api/show", self.base))
+            .json(&serde_json::json!({"model": model}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(v)
+    }
+
+    /// The `capabilities` list of a model (`completion`, `tools`, `thinking`, `vision`…).
+    pub async fn capabilities(&self, model: &str) -> Result<Vec<String>> {
+        let v = self.show(model).await?;
+        Ok(v.get("capabilities")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let t: TagsResponse = self
             .http

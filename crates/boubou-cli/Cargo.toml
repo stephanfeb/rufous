@@ -12,9 +12,15 @@ description = "Boubou command-line agent"
 name = "boubou"
 path = "src/main.rs"
 
+[features]
+default = []
+# Local speech-to-text in `boubou serve` / `boubou voice` (sherpa-onnx native libs).
+voice = ["boubou-web/voice", "boubou-voice/sherpa"]
+
 [dependencies]
 boubou-core.workspace = true
 boubou-web.workspace = true
+boubou-voice.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
@@ -24,3 +30,6 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

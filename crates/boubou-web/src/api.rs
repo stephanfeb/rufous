@@ -42,6 +42,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/offline", post(offline))
         .route("/api/cloud", post(cloud))
         .route("/api/prefs", get(prefs_get).post(prefs_post))
+        .route("/api/voice", post(voice))
+        // A 60 s utterance at 16 kHz / 16-bit is ~1.9 MB; browsers may send 48 kHz float.
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
         .fallback(not_found)
         .with_state(state)
 }
@@ -83,9 +86,22 @@ fn cloud_public(cfg: &boubou_core::config::Config) -> Value {
 async fn status(State(st): St) -> Response {
     let cfg = st.load_config();
     let p = prefs::load(&st.home);
-    // Live model list from Ollama (3 s), deduped by digest; offline or unreachable → empty.
-    let client = Client::new(cfg.ollama_host());
-    let (models, ollama_ok) =
+    // Live model list (3 s), deduped by digest; offline or unreachable → empty rather than a
+    // stale list the user could pick a dead model from. An OpenAI-compatible engine answers
+    // `GET /models` in the OpenAI shape, normalised to the same rows.
+    let (models, ollama_ok) = if let Some(eng) = cfg.backend_openai() {
+        match boubou_core::agent::openai::list_models(
+            &eng.base_url,
+            &eng.api_key,
+            Duration::from_secs(3),
+        )
+        .await
+        {
+            Ok(ids) => (ids.into_iter().map(Value::String).collect::<Vec<_>>(), true),
+            Err(_) => (Vec::new(), false),
+        }
+    } else {
+        let client = Client::new(cfg.ollama_host());
         match tokio::time::timeout(Duration::from_secs(3), client.list_models()).await {
             Ok(Ok(list)) => (
                 cfg.dedupe_model_entries(&list)
@@ -95,19 +111,112 @@ async fn status(State(st): St) -> Response {
                 true,
             ),
             _ => (Vec::new(), false),
-        };
+        }
+    };
     ok(json!({
         "version": boubou_core::VERSION,
         "busy": st.busy(),
         "models": models,
         "ollama_ok": ollama_ok,
+        "engine": cfg.engine_display_name(),
         "session": st.session(),
         "workdir": st.workdir().to_string_lossy(),
         "offline": cfg.offline(),
         "cloud": cloud_public(&cfg),
         "ask_pending": st.ask.pending_id().is_some(),
         "prefs": prefs::public(&p),
+        "voice": voice_status(&st, &p, &models),
     }))
+}
+
+/// `refresh_voice_state`: can the mic button do anything here? Local STT needs the `voice`
+/// build and an installed model; otherwise an Ollama audio model (whisper) is the fallback.
+fn voice_status(st: &AppState, p: &Map<String, Value>, models: &[Value]) -> Value {
+    let bases = boubou_voice::stt_bases(&st.install_dir, &st.home);
+    let lang = p.get("stt_lang").and_then(Value::as_str).unwrap_or("zh");
+    let langs = boubou_voice::installed_langs(&bases);
+    let local = boubou_voice::local_stt_available(lang, &bases);
+    // Cheap fallback hint: a whisper model in the installed list (no per-model probing here).
+    let fallback = models
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|m| m.to_lowercase().contains("whisper"))
+        .map(str::to_string);
+    json!({
+        "local": local,
+        "fallback": fallback,
+        "langs": langs,
+        "lang": lang,
+        "feature": cfg!(feature = "voice"),
+        "hint": if local { Value::Null } else { Value::String(boubou_voice::install_hint(lang, &st.home)) },
+    })
+}
+
+#[derive(Deserialize)]
+struct VoiceQuery {
+    lang: Option<String>,
+    /// Ollama fallback model (the page passes the selected model); `whisper*` wins if installed.
+    model: Option<String>,
+}
+
+/// `POST /api/voice?lang=zh&model=…` with a WAV body → `{text, engine, lang, secs}`.
+/// 400 bad audio · 422 nothing said · 503 no engine · 500 transcription failed.
+async fn voice(State(st): St, Query(q): Query<VoiceQuery>, body: axum::body::Bytes) -> Response {
+    let cfg = st.load_config();
+    let p = prefs::load(&st.home);
+    let lang = q
+        .lang
+        .or_else(|| {
+            p.get("stt_lang")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "zh".to_string());
+    let bases = boubou_voice::stt_bases(&st.install_dir, &st.home);
+    let host = cfg.ollama_host();
+    let offline = cfg.offline();
+    let preferred = q.model.unwrap_or_default();
+    let wav = body.to_vec();
+    let res = tokio::task::spawn_blocking(move || {
+        // The Ollama fallback only when local STT cannot serve the request.
+        let fallback = if boubou_voice::local_stt_available(&lang, &bases)
+            || offline && preferred.is_empty()
+        {
+            None
+        } else {
+            let m = boubou_voice::ollama::pick_stt_model(&host, &preferred);
+            (!m.is_empty()
+                && (m.to_lowercase().contains("whisper")
+                    || boubou_voice::ollama::model_audio_capable(&host, &m)))
+            .then_some(m)
+        };
+        let req = boubou_voice::Request {
+            wav: &wav,
+            lang: &lang,
+            bases: &bases,
+            ollama_host: &host,
+            fallback_model: fallback.as_deref(),
+        };
+        boubou_voice::transcribe(&req).map(|t| (t, lang))
+    })
+    .await;
+    match res {
+        Ok(Ok((t, lang))) => ok(json!({
+            "text": t.text,
+            "engine": t.engine.as_str(),
+            "lang": lang,
+            "secs": t.duration_secs,
+        })),
+        Ok(Err(boubou_voice::VoiceError::BadAudio(e))) => err(StatusCode::BAD_REQUEST, &e),
+        Ok(Err(boubou_voice::VoiceError::NoVoice)) => {
+            err(StatusCode::UNPROCESSABLE_ENTITY, "no_voice")
+        }
+        Ok(Err(boubou_voice::VoiceError::Unavailable(e))) => {
+            err(StatusCode::SERVICE_UNAVAILABLE, &e)
+        }
+        Ok(Err(boubou_voice::VoiceError::Failed(e))) => err(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
 }
 
 /// `_first_user_text`: sidebar title from the first real user message.

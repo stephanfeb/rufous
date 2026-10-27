@@ -122,6 +122,9 @@ details.think .tbody{white-space:pre-wrap;margin-top:6px;line-height:1.6}
           margin:2px 6px 2px 0;font:11px var(--mono);color:var(--muted)}
 .noteline{color:var(--faint);font-size:12px;padding-left:2px}
 
+/* ---------- voice ---------- */
+#mic.rec{background:var(--danger,#c0392b);color:#fff;border-color:transparent}
+#mic.busy{opacity:.6;pointer-events:none}
 /* ---------- composer ---------- */
 #composer{margin:8px 24px 4px;background:var(--surface);border:1px solid var(--border);
           border-radius:16px;padding:12px 14px 10px;box-shadow:var(--shadow);flex:0 0 auto}
@@ -260,6 +263,7 @@ textarea.sys{width:100%;min-height:120px;font:12px/1.55 var(--mono);resize:verti
           <span data-i18n="resume">续跑</span></label>
         <span class="grow"></span>
         <span class="hint">Enter <span data-i18n="send">发送</span> · Shift+Enter <span data-i18n="newline">换行</span></span>
+        <button id="mic" class="btn hidden" title="voice">🎤 <span data-i18n="voice">语音</span></button>
         <button id="stop" class="btn danger hidden" data-i18n="stop">停止</button>
         <button id="send" class="sendbtn" title="send">↑</button>
       </div>
@@ -391,7 +395,11 @@ const I18N = {
        endpoint:"端点", cloud_note:"启用后仅联网可用；api_key 只存本机 config.json。",
        cloud_mode:"联网 · 云端模型",
        cloud_offline_note:"云端模型需联网：先切回本地模型再开断网",
-       cloud_incomplete:"请先在设置里填写云端端点与模型名"},
+       cloud_incomplete:"请先在设置里填写云端端点与模型名",
+       voice:"语音", voice_stop:"■ 停止录音", voice_rec:"[录音中… 说完话自动停止]",
+       voice_busy:"转写中…", voice_none:"未捕捉到声音,请重试", voice_fail:"转写失败: ",
+       voice_timeout:"[录音超时,自动停止]", voice_nomic:"[无法打开麦克风: ",
+       voice_unavail:"[语音不可用: "},
   en: {brand:"Boubou", newchat:"New chat", search:"Search chats", settings:"Settings",
        about:"About", tagline:"Local-first · small-model-first", model:"Model",
        thinking:"Thinking", think_def:"default", think_on:"on", think_off:"off",
@@ -418,7 +426,11 @@ const I18N = {
        endpoint:"Endpoint", cloud_note:"Cloud needs network; api_key stays in the local config.",
        cloud_mode:"Online · cloud model",
        cloud_offline_note:"Cloud models need network; switch to a local model first",
-       cloud_incomplete:"Fill in the cloud endpoint and model in Settings first"}
+       cloud_incomplete:"Fill in the cloud endpoint and model in Settings first",
+       voice:"Voice", voice_stop:"■ Stop", voice_rec:"[Recording… stops when you pause]",
+       voice_busy:"Transcribing…", voice_none:"No voice captured, please retry", voice_fail:"Transcription failed: ",
+       voice_timeout:"[Recording timed out]", voice_nomic:"[Cannot open microphone: ",
+       voice_unavail:"[Voice unavailable: "}
 };
 let LANG = localStorage.getItem("mb_lang") || (navigator.language.startsWith("zh") ? "zh" : "en");
 const $ = id => document.getElementById(id);
@@ -618,6 +630,97 @@ function send(){
   $("send").disabled = true;
   $("stop").classList.remove("hidden");
   if (!curSession) setHeader(t("newchat"), t("tagline"));
+}
+
+/* ---------------- voice input ----------------
+   The desktop recorder's energy VAD, in the page: 16 kHz mono float, auto-stop after
+   ~1.2 s of silence once speech was heard, 60 s cap, WAV posted to /api/voice. */
+let voice = {available:false, lang:"zh", hint:""};
+let rec = null;   // {ctx, stream, node, frames, rate, speech, silenceSince, timer, tick}
+function micLabel(state){
+  const b = $("mic");
+  b.classList.toggle("rec", state === "rec");
+  b.classList.toggle("busy", state === "busy");
+  b.innerHTML = state === "rec" ? t("voice_stop") : (state === "busy" ? t("voice_busy") : "🎤 " + t("voice"));
+}
+function encodeWav(samples, rate){
+  const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++){
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 32768 : s * 32767, true);
+  }
+  return new Blob([buf], {type: "audio/wav"});
+}
+async function voiceStart(){
+  if (rec) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    let ctx;
+    try { ctx = new AudioContext({sampleRate: 16000}); } catch(e){ ctx = new AudioContext(); }
+    const src = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(1024, 1, 1);   // ~64 ms blocks at 16 kHz
+    rec = {ctx, stream, node, frames: [], rate: ctx.sampleRate, speech: false, silenceSince: null, timer: null};
+    node.onaudioprocess = e => {
+      if (!rec) return;
+      const d = e.inputBuffer.getChannelData(0);
+      rec.frames.push(new Float32Array(d));
+      let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+      const rms = Math.sqrt(sum / d.length);
+      if (rms > 0.008){ rec.speech = true; rec.silenceSince = null; }
+      else if (rec.speech){
+        if (rec.silenceSince === null) rec.silenceSince = performance.now();
+        else if (performance.now() - rec.silenceSince > 1200) voiceStop(false);
+      }
+    };
+    src.connect(node); node.connect(ctx.destination);
+    rec.timer = setTimeout(() => { if (rec){ addNote(t("voice_timeout")); voiceStop(false); } }, 60000);
+    micLabel("rec");
+    addNote(t("voice_rec"));
+  } catch(e){
+    rec = null;
+    addNote(t("voice_nomic") + (e && e.message ? e.message : e) + "]");
+  }
+}
+function voiceStop(cancel){
+  const r = rec; if (!r) return;
+  rec = null;
+  clearTimeout(r.timer);
+  try { r.node.disconnect(); r.stream.getTracks().forEach(tr => tr.stop()); r.ctx.close(); } catch(e){}
+  if (cancel){ micLabel("idle"); return; }
+  const n = r.frames.reduce((a, f) => a + f.length, 0);
+  const all = new Float32Array(n); let o = 0;
+  r.frames.forEach(f => { all.set(f, o); o += f.length; });
+  if (!r.speech || n === 0){ micLabel("idle"); addNote(t("voice_none")); return; }
+  micLabel("busy");
+  const q = "?lang=" + encodeURIComponent(voice.lang || "zh") + "&model=" + encodeURIComponent(modelSel || "");
+  fetch("/api/voice" + q, {method: "POST", headers: {"Content-Type": "audio/wav"}, body: encodeWav(all, r.rate)})
+    .then(async res => {
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.text){
+        const inp = $("input");
+        inp.value = (inp.value ? inp.value.replace(/\s*$/, " ") : "") + d.text;
+        inp.dispatchEvent(new Event("input")); inp.focus();
+      } else if (res.status === 422){
+        addNote(t("voice_none"));
+      } else {
+        addNote(t("voice_fail") + (d.error || res.status));
+      }
+    })
+    .catch(e => addNote(t("voice_fail") + e))
+    .finally(() => micLabel("idle"));
+}
+$("mic").onclick = () => { if (rec) voiceStop(false); else voiceStart(); };
+function updateVoiceUI(v){
+  voice = Object.assign(voice, v || {});
+  const can = !!(voice.local || voice.fallback) && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  voice.available = can;
+  $("mic").classList.toggle("hidden", !can);
+  if (!rec) micLabel("idle");
 }
 
 /* ---------------- sessions ---------------- */
@@ -907,8 +1010,9 @@ function refreshStatus(){
     cloud = d.cloud || cloud;
     updateOfflineUI(lastOffline);
     updateModelName();
-    $("ollamadot").textContent = "Ollama " + (d.ollama_ok ? "✓" : "✗");
+    $("ollamadot").textContent = (d.engine || "Ollama") + " " + (d.ollama_ok ? "✓" : "✗");
     $("ollamadot").className = d.ollama_ok ? "ok" : "bad";
+    updateVoiceUI(d.voice);
     const joined = (d.models || []).join("|");
     if (joined !== lastModels){
       lastModels = joined;

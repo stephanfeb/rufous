@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{Error, Result};
 
@@ -50,6 +51,29 @@ impl Default for Config {
             parallel: Default::default(),
         }
     }
+}
+
+/// An enabled, complete cloud provider (`config.cloud`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudProvider {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+/// An OpenAI-compatible local engine (`config.local_backend`): LM Studio `:1234/v1`,
+/// llama.app `:9931/v1`, llama-server `:8080/v1`, Jan, vLLM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiEngine {
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// The local inference engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalBackend {
+    Ollama,
+    OpenAi(OpenAiEngine),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -166,6 +190,73 @@ impl Config {
             .filter_map(|k| best.get(k))
             .map(|tag| (self.display_name(tag).to_string(), tag.clone()))
             .collect()
+    }
+
+    /// `cloud_provider`: the cloud (OpenAI-compatible) provider when it is enabled and
+    /// complete (`base_url` + `model`). Offline mode disables it (local-first red line).
+    pub fn cloud_provider(&self) -> Option<CloudProvider> {
+        if self.offline() {
+            return None;
+        }
+        let s = |k: &str| {
+            self.cloud
+                .get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let enabled = match self.cloud.get("enabled") {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(x)) => !x.is_empty(),
+            _ => false,
+        };
+        let (base_url, model) = (s("base_url").trim_end_matches('/').to_string(), s("model"));
+        if !enabled || base_url.is_empty() || model.is_empty() {
+            return None;
+        }
+        Some(CloudProvider {
+            base_url,
+            api_key: s("api_key"),
+            model,
+        })
+    }
+
+    /// `local_backend`, normalised: an `openai` entry without a `base_url` falls back to
+    /// Ollama (a half-configured engine is not an engine).
+    pub fn local_backend(&self) -> LocalBackend {
+        let s = |k: &str| {
+            self.local_backend
+                .get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        if s("type") == "openai" && !s("base_url").is_empty() {
+            return LocalBackend::OpenAi(OpenAiEngine {
+                base_url: s("base_url").trim_end_matches('/').to_string(),
+                api_key: s("api_key"),
+            });
+        }
+        LocalBackend::Ollama
+    }
+
+    /// `backend_openai`: the local engine when it is an OpenAI-compatible server.
+    pub fn backend_openai(&self) -> Option<OpenAiEngine> {
+        match self.local_backend() {
+            LocalBackend::OpenAi(e) => Some(e),
+            LocalBackend::Ollama => None,
+        }
+    }
+
+    /// `engine_display_name`: product names, not translated.
+    pub fn engine_display_name(&self) -> &'static str {
+        if self.backend_openai().is_some() {
+            "OpenAI 兼容"
+        } else {
+            "Ollama"
+        }
     }
 
     pub fn display_name<'a>(&'a self, tag: &'a str) -> &'a str {

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use super::RunParams;
 use crate::ollama::{ChatRequest, Client, Message, Options, Role, ToolCall};
+use crate::ollama_proc::OllamaProc;
 use crate::Error;
 
 /// One streamed fragment, answer text or thinking.
@@ -100,6 +101,35 @@ pub trait ChatBackend {
     /// A user-stop flag: when set mid-stream the backend abandons the request and returns
     /// a transport error (the loop checks the same flag and ends the run). Default: ignored.
     fn set_cancel(&mut self, _flag: Arc<AtomicBool>) {}
+
+    /// `restart_ollama`: after four consecutive 500s the loop asks the engine to restart.
+    /// `None` = this engine cannot be restarted from here (OpenAI-compatible servers, test
+    /// backends); `Some(ok)` = a restart was attempted and whether the API came back.
+    fn restart_engine(&mut self) -> Option<bool> {
+        None
+    }
+}
+
+/// A backend chosen at run time ([`super::Agent::standard`] picks Ollama, the cloud provider
+/// or a local OpenAI-compatible engine from the config).
+pub type DynBackend = Box<dyn ChatBackend + Send>;
+
+impl ChatBackend for DynBackend {
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on_piece: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        (**self).chat(model, messages, tools, on_piece)
+    }
+    fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
+        (**self).set_cancel(flag)
+    }
+    fn restart_engine(&mut self) -> Option<bool> {
+        (**self).restart_engine()
+    }
 }
 
 impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
@@ -115,6 +145,9 @@ impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
     fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
         (**self).set_cancel(flag)
     }
+    fn restart_engine(&mut self) -> Option<bool> {
+        (**self).restart_engine()
+    }
 }
 
 /// Text of the error a cancelled stream returns.
@@ -126,6 +159,8 @@ pub struct OllamaBackend {
     client: Client,
     rt: tokio::runtime::Runtime,
     cancel: Option<Arc<AtomicBool>>,
+    /// How to restart this machine's Ollama; `None` = a remote host we do not manage.
+    pub proc: Option<OllamaProc>,
     pub num_ctx: u32,
     pub num_predict: i32,
     pub temperature: Option<f32>,
@@ -154,6 +189,7 @@ impl OllamaBackend {
             client: Client::new(host),
             rt,
             cancel: None,
+            proc: None,
             num_ctx: params.num_ctx,
             num_predict: params.num_predict,
             temperature: params.temperature,
@@ -164,6 +200,12 @@ impl OllamaBackend {
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Make the backend restartable (the loop's 500-degradation self-heal).
+    pub fn with_proc(mut self, proc: OllamaProc) -> Self {
+        self.proc = Some(proc);
+        self
     }
 
     fn request(&self, model: &str, messages: &[Message], tools: &[Value]) -> ChatRequest {
@@ -266,4 +308,60 @@ impl ChatBackend for OllamaBackend {
     fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
         self.cancel = Some(flag);
     }
+    fn restart_engine(&mut self) -> Option<bool> {
+        self.proc
+            .as_ref()
+            .map(|p| p.restart(std::time::Duration::from_secs(40)))
+    }
+}
+
+// ---------------- `_model_can_think` ----------------
+
+static THINK_CAP_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Option<bool>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// `_model_can_think`: does the model advertise `thinking` in `/api/show` capabilities?
+/// `None` = unknown (probe failed, or the engine is OpenAI-compatible and has no
+/// `/api/show`). Cached per model for the process. Diagnostics only: the request path
+/// sends the tri-state `think` and relies on the 400 retry instead.
+pub fn model_can_think(cfg: &crate::config::Config, model: &str) -> Option<bool> {
+    if cfg.backend_openai().is_some() {
+        return None;
+    }
+    if let Some(v) = THINK_CAP_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(model).copied())
+    {
+        return v;
+    }
+    let host = cfg.ollama_host();
+    let m = model.to_string();
+    let v = crate::ollama_proc::block_on_fresh(async move {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()?;
+        let r: Value = http
+            .post(format!("{}/api/show", host.trim_end_matches('/')))
+            .json(&serde_json::json!({"model": m}))
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        Some(
+            r.get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|a| a.iter().any(|c| c.as_str() == Some("thinking"))),
+        )
+    });
+    if let Ok(mut c) = THINK_CAP_CACHE.lock() {
+        c.insert(model.to_string(), v);
+    }
+    v
 }

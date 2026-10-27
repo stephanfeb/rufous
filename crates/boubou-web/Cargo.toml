@@ -8,8 +8,14 @@ repository.workspace = true
 authors.workspace = true
 description = "Boubou local web UI: Mingbird's /api/* contract over the Rust agent loop"
 
+[features]
+default = []
+# Local speech-to-text (sherpa-onnx native libs); `cargo build --features voice`.
+voice = ["boubou-voice/sherpa"]
+
 [dependencies]
 boubou-core.workspace = true
+boubou-voice.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

@@ -28,7 +28,13 @@ Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, 
 "<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
 sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside
 the child directory, audit log, exit 53 on a severe violation). `boubou plan` shows what this
-machine could run. Next: voice input, `restart_ollama`, cloud backends.
+machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
+automatically after four consecutive 500s), an OpenAI-compatible local server (LM Studio,
+llama-server) or a cloud provider. Voice input is behind the `voice` cargo feature
+(`cargo build --features voice`, sherpa-onnx linked statically): `boubou voice <wav>` and the
+web UI's mic button transcribe with Mingbird's bundled zh/en models from `~/.ollama_agent/stt/`
+or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. Next: voice model installer, Tauri
+bundling, the LRAB bench adapter.
 See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)
