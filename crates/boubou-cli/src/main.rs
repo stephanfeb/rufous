@@ -1,12 +1,22 @@
-//! `boubou`: command-line entry point (counterpart of `ollama_agent.py`'s CLI).
+//! `boubou`: command-line entry point (counterpart of `ollama_agent.py`'s `main()`).
+//!
+//! The agent loop is synchronous and owns its own Ollama backend, so `main` is plain
+//! Rust; the async-only subcommands (model listing, doctor) run on a local runtime.
 
-use std::path::PathBuf;
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use boubou_core::agent::session::{self, load_checkpoint, load_session, sessions_dir};
 use boubou_core::agent::{Agent, AgentEvent, RunParams};
 use boubou_core::config::{agent_home, config_path, Config};
-use boubou_core::ollama::Client;
+use boubou_core::guards::budget::{
+    elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
+};
+use boubou_core::ollama::{Client, Message};
 use boubou_core::skills::SkillSet;
+use boubou_core::text::read_text;
+use boubou_core::todo::todo_file;
 use boubou_core::{mcp, tools};
 use clap::{Parser, Subcommand};
 
@@ -19,23 +29,33 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Run a task file to completion.
+    /// Run a task file to completion (resumes a checkpoint in the workdir by default).
     Run {
         model: String,
         taskfile: PathBuf,
         workdir: PathBuf,
-        /// Session name (resume by default, like Mingbird).
+        /// Session name under `~/.ollama_agent/sessions`.
         #[arg(long)]
         session: Option<String>,
-        /// Start fresh instead of resuming a checkpoint.
+        /// Start fresh: discard the checkpoint and the elapsed-time sidecar.
         #[arg(long)]
         new: bool,
-        /// Append the task to an existing conversation.
+        /// Continue the conversation: append the task to the saved session/checkpoint.
         #[arg(long)]
         append: bool,
+        /// Time budget in minutes, or with a unit: `40`, `1.5h`, `90m`, `半小时`.
+        #[arg(long = "time-budget")]
+        time_budget: Option<String>,
     },
     /// Interactive chat in a workspace.
-    Chat { model: String, workdir: PathBuf },
+    Chat {
+        model: String,
+        workdir: PathBuf,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long = "time-budget")]
+        time_budget: Option<String>,
+    },
     /// List models installed in Ollama.
     Models,
     /// List skills visible from a workspace.
@@ -60,8 +80,7 @@ fn install_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
@@ -74,8 +93,9 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Models => {
+            let rt = tokio::runtime::Runtime::new()?;
             let client = Client::new(cfg.ollama_host());
-            for m in client.list_models().await.context("GET /api/tags")? {
+            for m in rt.block_on(client.list_models()).context("GET /api/tags")? {
                 println!("{:<40} {}", m.name, human_size(m.size));
             }
         }
@@ -93,46 +113,212 @@ async fn main() -> Result<()> {
                 serde_json::to_string_pretty(&tools::tool_schemas(&enable))?
             );
         }
-        Cmd::Doctor => doctor(&cfg).await?,
+        Cmd::Doctor => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(doctor(&cfg))?;
+        }
         Cmd::Run {
             model,
             taskfile,
             workdir,
-            ..
+            session,
+            new,
+            append,
+            time_budget,
         } => {
-            let task = std::fs::read_to_string(&taskfile)
-                .with_context(|| format!("reading {}", taskfile.display()))?;
-            let params = RunParams::from_env(model, workdir)?;
-            let mut agent = Agent::new(params);
-            let summary = agent.run(&task, &mut print_event).await?;
-            println!("{summary}");
+            let opts = RunOpts {
+                session,
+                new,
+                append,
+                time_budget,
+            };
+            run_task(&cfg, model, &taskfile, &workdir, opts)?;
         }
-        Cmd::Chat { .. } => {
-            anyhow::bail!("interactive chat is not yet ported (see docs/PORTING.md)");
-        }
+        Cmd::Chat {
+            model,
+            workdir,
+            session,
+            time_budget,
+        } => chat(&cfg, model, &workdir, session, time_budget)?,
     }
     Ok(())
 }
 
+#[derive(Debug)]
+struct RunOpts {
+    session: Option<String>,
+    new: bool,
+    append: bool,
+    time_budget: Option<String>,
+}
+
+/// `--time-budget` value → minutes, with Mingbird's transparency lines.
+fn cli_budget(raw: Option<&str>) -> Option<f64> {
+    let raw = raw?;
+    match parse_duration_str(raw) {
+        Some(m) => {
+            println!("[time-budget] CLI 时限 {}", fmt_hm(m));
+            Some(m)
+        }
+        None => {
+            println!(
+                "[time-budget] 无法解析 --time-budget 的值,已忽略(示例: 40 / 1.5h / 90m / 半小时)"
+            );
+            None
+        }
+    }
+}
+
+fn budget_label(src: BudgetSource, minutes: f64) -> String {
+    let v = boubou_core::text::fmt_g(minutes);
+    match src {
+        BudgetSource::Prompt => format!("提示词识别到时限 {v} 分钟"),
+        BudgetSource::Cli => format!("CLI 时限 {v} 分钟"),
+        BudgetSource::Env => format!("环境变量时限 {v} 分钟"),
+        BudgetSource::Off => format!("{v} 分钟"),
+    }
+}
+
+fn run_task(
+    cfg: &Config,
+    model: String,
+    taskfile: &Path,
+    workdir: &Path,
+    opts: RunOpts,
+) -> Result<()> {
+    let workdir = std::path::absolute(workdir)?;
+    std::fs::create_dir_all(&workdir).with_context(|| format!("creating {}", workdir.display()))?;
+    let task = read_text(&std::path::absolute(taskfile)?)
+        .with_context(|| format!("reading {}", taskfile.display()))?;
+    let params = RunParams::from_env(model, &workdir)?;
+    let cli_tb = cli_budget(opts.time_budget.as_deref());
+
+    let (tb_min, tb_src) = resolve_time_budget(
+        cli_tb,
+        Some(&task),
+        params.budget_env_sec.unwrap_or(0.0),
+        std::env::var("AGENT_TIME_BUDGET_PARSE").map_or(true, |v| v != "0"),
+    );
+    if let Some(m) = tb_min {
+        println!("[time-budget] {} — {}", budget_label(tb_src, m), fmt_hm(m));
+    }
+    let budget_sec = tb_min.map(|m| m * 60.0);
+
+    let ckpt = session::checkpoint_path(&workdir);
+    if opts.new {
+        if ckpt.exists() {
+            std::fs::remove_file(&ckpt)?;
+        }
+        let meta = elapsed_meta_path(&workdir);
+        if meta.exists() {
+            std::fs::remove_file(meta)?;
+        }
+    }
+
+    let mut agent =
+        Agent::standard(params, cfg.ollama_host(), cfg.offline())?.with_sink(print_event);
+    let sdir = sessions_dir(&agent_home());
+    let session = opts.session.as_deref();
+
+    let msgs: Vec<Message> = if opts.new {
+        agent.task_messages(&task)
+    } else if opts.append {
+        let mut msgs = session
+            .and_then(|s| load_session(&sdir, s))
+            .or_else(|| load_checkpoint(&workdir))
+            .unwrap_or_default();
+        if msgs.is_empty() {
+            agent.task_messages(&task)
+        } else {
+            println!("[RESUMED: {} msgs + 追加新消息]", msgs.len());
+            msgs.push(Message::user(task.clone()));
+            msgs
+        }
+    } else if let Some(msgs) = load_checkpoint(&workdir) {
+        println!("[RESUMED checkpoint: {} msgs]", msgs.len());
+        msgs
+    } else if let Some(mut msgs) = session.and_then(|s| load_session(&sdir, s)) {
+        println!(
+            "[RESUMED session: {} ({} msgs)]",
+            session.unwrap_or_default(),
+            msgs.len()
+        );
+        msgs.push(Message::user("继续之前的对话,完成或回答当前需求。"));
+        msgs
+    } else {
+        agent.task_messages(&task)
+    };
+    if msgs.len() == 2 {
+        // A brand-new task: clear the previous task's plan so the panel does not show it.
+        let tj = todo_file(&workdir);
+        if tj.exists() {
+            let _ = std::fs::remove_file(tj);
+        }
+    }
+    agent.run(msgs, session, budget_sec)?;
+    Ok(())
+}
+
+fn chat(
+    cfg: &Config,
+    model: String,
+    workdir: &Path,
+    session: Option<String>,
+    time_budget: Option<String>,
+) -> Result<()> {
+    let workdir = std::path::absolute(workdir)?;
+    std::fs::create_dir_all(&workdir)?;
+    let params = RunParams::from_env(model, &workdir)?;
+    let cli_tb = cli_budget(time_budget.as_deref());
+    let mut agent =
+        Agent::standard(params, cfg.ollama_host(), cfg.offline())?.with_sink(print_event);
+    let sdir = sessions_dir(&agent_home());
+    let mut msgs = session
+        .as_deref()
+        .and_then(|s| load_session(&sdir, s))
+        .unwrap_or_else(|| {
+            let mut m = agent.task_messages("");
+            m.pop();
+            m
+        });
+    println!("[交互模式] 输入 exit 退出。");
+    let stdin = std::io::stdin();
+    loop {
+        print!("你> ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break;
+        }
+        let user = line.trim();
+        if user.is_empty() {
+            continue;
+        }
+        if user.eq_ignore_ascii_case("exit") || user.eq_ignore_ascii_case("quit") {
+            break;
+        }
+        msgs.push(Message::user(user));
+        msgs = agent.run(msgs, session.as_deref(), cli_tb.map(|m| m * 60.0))?;
+        println!();
+    }
+    Ok(())
+}
+
+/// Mingbird's stdout protocol: streamed text as is, harness lines verbatim.
 fn print_event(ev: AgentEvent) {
     match ev {
-        AgentEvent::Text(t) | AgentEvent::Thinking(t) => print!("{t}"),
-        AgentEvent::ToolCall(c) => println!("\n> {}({})", c.function.name, c.function.arguments),
-        AgentEvent::ToolResult {
-            name,
-            output,
-            blocked,
-        } => {
-            println!(
-                "< {name}{}: {output}",
-                if blocked { " [blocked]" } else { "" }
-            )
+        AgentEvent::Text(t) | AgentEvent::Thinking(t) => {
+            print!("{t}");
+            let _ = std::io::stdout().flush();
         }
-        AgentEvent::Finished { summary } => println!("\n[finished] {summary}"),
+        AgentEvent::Log(l) => println!("{l}"),
         AgentEvent::Error(e) => eprintln!("[error] {e}"),
-        AgentEvent::TodoUpdated(_)
+        AgentEvent::ToolCall(_)
+        | AgentEvent::ToolResult { .. }
         | AgentEvent::ContextUsage { .. }
-        | AgentEvent::Compacted { .. } => {}
+        | AgentEvent::Compacted { .. }
+        | AgentEvent::Finished { .. }
+        | AgentEvent::MaxIterations => {}
     }
 }
 

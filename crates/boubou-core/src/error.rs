@@ -16,6 +16,12 @@ pub enum Error {
     Config(String),
     #[error("ollama: {0}")]
     Ollama(String),
+    /// Non-2xx reply from the model server, body kept for the loop's 4xx/5xx triage.
+    #[error("HTTP {status}: {body}")]
+    Status { status: u16, body: String },
+    /// The agent loop stopped on purpose after saving its checkpoint (Mingbird `sys.exit(1)`).
+    #[error("agent stopped: {0}")]
+    Aborted(String),
     #[error("skill `{0}` not found")]
     SkillNotFound(String),
     #[error("skill file {path}: {reason}")]

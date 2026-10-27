@@ -1,0 +1,240 @@
+//! `call_chat`: the one place the loop talks to a model. Behind a trait so tests script
+//! replies without a network, and so cloud / OpenAI-compatible backends can slot in later.
+
+use serde_json::Value;
+
+use super::RunParams;
+use crate::ollama::{ChatRequest, Client, Message, Options, Role, ToolCall};
+use crate::Error;
+
+/// One streamed fragment, answer text or thinking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPiece<'a> {
+    Token(&'a str),
+    Think(&'a str),
+}
+
+/// What `call_chat` returns, normalised across streaming and non-streaming.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatResponse {
+    pub message: Message,
+    pub prompt_eval_count: Option<u64>,
+    pub eval_count: Option<u64>,
+    pub done_reason: Option<String>,
+}
+
+impl ChatResponse {
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            message: Message::assistant(content),
+            prompt_eval_count: None,
+            eval_count: None,
+            done_reason: None,
+        }
+    }
+
+    pub fn call(content: impl Into<String>, name: &str, args: Value) -> Self {
+        let mut m = Message::assistant_call(name, args);
+        m.content = content.into();
+        Self {
+            message: m,
+            prompt_eval_count: None,
+            eval_count: None,
+            done_reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ChatError {
+    #[error("HTTP {status}: {body}")]
+    Status { status: u16, body: String },
+    #[error("{0}")]
+    Transport(String),
+}
+
+impl ChatError {
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            ChatError::Status { status, .. } => Some(*status),
+            ChatError::Transport(_) => None,
+        }
+    }
+
+    pub fn is_4xx(&self) -> bool {
+        self.status().is_some_and(|s| (400..500).contains(&s))
+    }
+
+    pub fn is_500(&self) -> bool {
+        self.status() == Some(500)
+    }
+
+    /// Lower-cased error text (status line plus body) for keyword triage.
+    pub fn lower_text(&self) -> String {
+        self.to_string().to_lowercase()
+    }
+}
+
+impl From<Error> for ChatError {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::Status { status, body } => ChatError::Status { status, body },
+            other => ChatError::Transport(other.to_string()),
+        }
+    }
+}
+
+pub trait ChatBackend {
+    /// One model turn. `tools` is the schema list for this turn (may be empty).
+    /// Streaming fragments go to `on_piece`; the full reply comes back.
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on_piece: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError>;
+}
+
+impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on_piece: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        (**self).chat(model, messages, tools, on_piece)
+    }
+}
+
+/// Streaming Ollama `/api/chat` backend. Owns a small runtime so the synchronous loop
+/// can run on any plain thread.
+pub struct OllamaBackend {
+    client: Client,
+    rt: tokio::runtime::Runtime,
+    pub num_ctx: u32,
+    pub num_predict: i32,
+    pub temperature: Option<f32>,
+    pub think: Option<bool>,
+    pub keep_alive: Option<String>,
+}
+
+impl std::fmt::Debug for OllamaBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OllamaBackend")
+            .field("base_url", &self.client.base_url())
+            .field("num_ctx", &self.num_ctx)
+            .field("num_predict", &self.num_predict)
+            .field("think", &self.think)
+            .finish()
+    }
+}
+
+impl OllamaBackend {
+    pub fn new(host: impl Into<String>, params: &RunParams) -> crate::Result<Self> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Config(format!("tokio runtime: {e}")))?;
+        Ok(Self {
+            client: Client::new(host),
+            rt,
+            num_ctx: params.num_ctx,
+            num_predict: params.num_predict,
+            temperature: params.temperature,
+            think: params.think,
+            keep_alive: Some(params.keep_alive.clone()),
+        })
+    }
+
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    fn request(&self, model: &str, messages: &[Message], tools: &[Value]) -> ChatRequest {
+        ChatRequest {
+            model: model.to_string(),
+            messages: messages.to_vec(),
+            tools: tools.to_vec(),
+            stream: true,
+            think: self.think,
+            keep_alive: self.keep_alive.clone(),
+            options: Options {
+                num_ctx: self.num_ctx,
+                num_predict: self.num_predict,
+                temperature: self.temperature,
+            },
+        }
+    }
+
+    fn stream_once(
+        &self,
+        req: &ChatRequest,
+        on_piece: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut prompt_eval = None;
+        let mut eval = None;
+        let mut done_reason = None;
+        self.rt.block_on(self.client.chat_stream(req, |chunk| {
+            let m = &chunk.message;
+            if !m.content.is_empty() {
+                on_piece(StreamPiece::Token(&m.content));
+                content.push_str(&m.content);
+            }
+            if let Some(t) = m.thinking.as_deref().filter(|t| !t.is_empty()) {
+                on_piece(StreamPiece::Think(t));
+                thinking.push_str(t);
+            }
+            if !m.tool_calls.is_empty() {
+                tool_calls = m.tool_calls.clone();
+            }
+            if chunk.prompt_eval_count.is_some() {
+                prompt_eval = chunk.prompt_eval_count;
+            }
+            if chunk.eval_count.is_some() {
+                eval = chunk.eval_count;
+            }
+            if chunk.done_reason.is_some() {
+                done_reason = chunk.done_reason.clone();
+            }
+            true
+        }))?;
+        let mut message = Message::assistant(content);
+        message.role = Role::Assistant;
+        if !thinking.is_empty() {
+            message.thinking = Some(thinking);
+        }
+        message.tool_calls = tool_calls;
+        Ok(ChatResponse {
+            message,
+            prompt_eval_count: prompt_eval,
+            eval_count: eval,
+            done_reason,
+        })
+    }
+}
+
+impl ChatBackend for OllamaBackend {
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on_piece: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        let mut req = self.request(model, messages, tools);
+        match self.stream_once(&req, on_piece) {
+            // A non-thinking model may reject the `think` field with 400: retry without it
+            // (Mingbird does the same, once).
+            Err(ChatError::Status { status: 400, .. }) if req.think.is_some() => {
+                req.think = None;
+                self.stream_once(&req, on_piece)
+            }
+            other => other,
+        }
+    }
+}

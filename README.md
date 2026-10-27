@@ -14,8 +14,11 @@ that sings in duet. *Ferrugineus* means "rusty".
 ## Status
 
 Core in progress. Typed protocol, config, skills, Ollama client, the five-ring safety gate,
-the tool executor (files, commands, todo, crawl guard) and all pure guards are ported and tested.
-The agent loop is next. See [docs/PORTING.md](docs/PORTING.md).
+the tool executor (files, commands, todo, crawl guard), all pure guards and the agent loop
+(finish gates, anti-loop ladders, compaction, checkpoint/session/transcript files) are ported
+and tested. `boubou run <model> <taskfile> <workdir>` works end to end against a local Ollama;
+sessions it writes load in Mingbird and vice versa. Web, memory and MCP tools are next.
+See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)
 are not carried over; Boubou ships no Python runtime.

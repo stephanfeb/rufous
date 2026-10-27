@@ -751,16 +751,16 @@ pub fn bash_snapshot(cmd: &str, workdir: &Path) -> Vec<String> {
 }
 
 #[derive(Debug)]
-struct CommandRun {
-    code: i32,
-    stdout: String,
-    stderr: String,
-    timed_out: bool,
+pub(crate) struct CommandRun {
+    pub(crate) code: i32,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) timed_out: bool,
 }
 
 /// Run through the platform shell with a wall-clock limit; on timeout the whole process
 /// tree is killed (orphaned grandchildren would otherwise hold the pipes open forever).
-fn run_command(cmd: &str, cwd: &Path, timeout: Duration) -> CommandRun {
+pub(crate) fn run_command(cmd: &str, cwd: &Path, timeout: Duration) -> CommandRun {
     use std::process::{Command, Stdio};
     let mut command = if cfg!(windows) {
         let mut c = Command::new("cmd");

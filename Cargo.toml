@@ -29,6 +29,7 @@ anyhow = "1"
 tempfile = "3"
 regex = "1"
 encoding_rs = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

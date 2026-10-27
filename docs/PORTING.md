@@ -22,8 +22,15 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `_claimed_missing_files`, `_plan_named_missing` | `boubou-core/src/guards/artifacts.rs` | ported, tested |
 | `_EditConvergenceGuard`, `_norm_p` | `boubou-core/src/guards/edit.rs` | ported, tested (case-insensitive on all platforms, by design) |
 | `parse_time_budget`, `parse_duration_str`, `resolve_time_budget`, `_budget_nudge`, elapsed sidecar | `boubou-core/src/guards/budget.rs` | ported, tested; module globals (`BUDGET_SEC`, `TIME_BUDGET_PARSE`) became explicit parameters |
-| `agent_loop`: empty-turn ladder, hard reset, finish gates wiring, research-streak ban, compaction, checkpoints, transcript `.jsonl` | `boubou-core/src/agent.rs` | surface only; loop body is the next step |
-| `platform_profile.py` | `boubou-core/src/platform.rs` | todo |
+| `agent_loop` (empty-turn ladder, hard reset, six finish gates, dup/streak/research/todo anti-loop, failure ladder, budget pacing, stale-plan nudge, Q&A wrap-up), `_FAIL_MARKERS`, `_ws_note` | `boubou-core/src/agent/run.rs` | ported, tested against the scripted-loop suite and a live gemma4:12b run. Not yet: `restart_ollama` on 4× 500 (logged, falls through to compaction retry), `_maybe_parallel_dispatch`, `_child_sandbox` |
+| `call_chat` (streaming, `think` 400 retry, tri-state options) | `boubou-core/src/agent/chat.rs` | ported as the `ChatBackend` trait + `OllamaBackend`; cloud / OpenAI-compatible backends todo |
+| `_active_tools`, `_disabled_tools`, `route_categories`, `tools_for_categories`, `_chat_tool_defs`, `_filter_offline_tools`, `_is_mcp_producing` | `boubou-core/src/agent/face.rs` | ported (`ToolFace`); MCP flattened tool defs join when the client lands |
+| `compact_history` L1/L2/L3, `_estimate_messages_tokens`, `_workdir_files_text`, `_dedupe_trailing_assistant`, `sanitize_ckpt`, `_similar`, `_attach_pending_images` | `boubou-core/src/agent/history.rs` | ported, tested; `_similar` is a difflib-style matching-blocks ratio without the autojunk heuristic |
+| `.agent_state.json`, `<s>.json`, `<s>.transcript.jsonl`, `<s>.meta.json`, `<s>.todo.json`, `_transcript_flush` cursor rules | `boubou-core/src/agent/session.rs` | ported, tested; verified cross-readable by Mingbird's `sanitize_ckpt`/`load_session` |
+| `SYSTEM`, `CHAT_SYSTEM`, `system_prompt()`, `platform_profile.prompt_block` | `boubou-core/src/agent/prompt.rs` | ported; `CHAT_SYSTEM` introduces itself as 布布 |
+| `_run_test_guard`, `_pytest_hint`, `_test_env_broken` | `boubou-core/src/agent/testguard.rs` | ported (runs `python -m pytest -q` in the workdir when `test_*.py` exist) |
+| `main()`: `--session/--new/--append/--time-budget`, checkpoint/session resume, `--chat` | `boubou-cli/src/main.rs` | ported; not covered by tests yet |
+| `platform_profile.py` | `boubou-core/src/agent/prompt.rs` (`Platform`, `platform_block`) | ported |
 | `parallel_*.py` (dispatch, probe, safety, todo) | `boubou-core/src/parallel/` | todo; config section kept opaque in `Config::parallel` |
 | `run_python` (bundled interpreter) | — | **dropped** (decision 2026-10-27): no Python runtime in Boubou. The `office_word`, `office_excel` and `image_batch` skills went with it; `doc_digest` and `file_organizer` still mention `run_python` and need rewording. Revisit later. |
 | `voice_input.py` (sherpa-onnx) | `boubou-app` | todo: `sherpa-rs`; the one native lib that may ship as a DLL |
@@ -34,13 +41,19 @@ Tk GUI with a Tauri shell around the existing web UI.
 
 ## Test port status
 
-| Python file | Rust file | Ported | Deferred to the loop port |
+| Python file | Rust file | Ported | Still deferred |
 |---|---|---|---|
-| `test_guards.py` | `tests/guards.rs`, `tests/time_budget.rs`, `tests/safety.rs` | 61 of 96 | `_scripted_loop` wiring (shotgun/budget/finish/research-streak), `main()` CLI, `_model_can_think`, `call_chat` payload, docstring check |
-| `test_todo.py` | `tests/todo.rs`, `tests/guards.rs` | 23 of 27 | `compact_history` plan re-injection (3), `test_mcp_tool_counts` folded into has_task_progress |
+| `test_guards.py` | `tests/guards.rs`, `tests/time_budget.rs`, `tests/safety.rs`, `tests/agent_loop.rs` | 80 of 96 | `main()` headless CLI (5), `_model_can_think` probe (2), `call_chat` payload shape (1), docstring checks |
+| `test_todo.py` | `tests/todo.rs`, `tests/guards.rs`, `tests/history.rs` | 26 of 27 | `test_mcp_tool_counts` folded into has_task_progress |
 | `test_safety_net.py` | `tests/safety.rs`, `tests/exec_tools.rs` | 17 of 17 | — (five-ring docstring check became the module doc) |
 | `test_crawl_guard.py` | `tests/exec_tools.rs` | 8 of 8 | — |
-| `test_output_cap.py` | `tests/guards.rs` | 1 of 5 | `NUM_PREDICT` default/env (RunParams), truncation feedback and hard reset (loop) |
+| `test_output_cap.py` | `tests/guards.rs`, `tests/agent_loop.rs` | 4 of 5 | `NUM_PREDICT` env override at import time (Boubou reads it in `RunParams::from_env`; the default is asserted) |
+
+`tests/agent_loop.rs` also adds loop tests Mingbird never had: explicit `budget_sec` beating the
+env, substantive-summary delivery, the todo sync gate's two-refusal limit, `enable_tools`
+unlocking a ban, duplicate-call interception, the empty-ladder graceful exit, Q&A force-close,
+repeat-output dead loop, the harness-prefix invariant over a mixed run, and the session file
+shapes. 119 tests total.
 
 Counts are test functions, not parametrised cases. Several Python tests were merged where they
 shared a fixture; the assertions are all present.
@@ -64,46 +77,27 @@ every call fails until the shell implements this surface.
 ## Order of work
 
 1. ~~Port the guard/executor tests and implement against them.~~ Done 2026-10-27 (81 tests green).
-2. Agent loop against the deferred wiring tests above; checkpoint/transcript formats byte-compatible.
+2. ~~Agent loop against the deferred wiring tests above; checkpoint/transcript formats byte-compatible.~~ Done 2026-10-27 (119 tests green; live run against gemma4:12b created a file, verified it, resumed with `--append`; Mingbird's Python loaders read the files Boubou wrote).
 3. web_search / web_fetch / memory tools, then `batch_tools` parallelism for network calls.
 4. MCP client via `rmcp`.
 5. Tauri shell: `/api/*` surface, then voice input.
 6. Parallel dispatch.
 7. Child sandbox (ring 0) when sub-agents arrive.
 
-## Step 2 brief: the agent loop (handoff notes, 2026-10-27)
+## Step 3 brief: network and memory tools (handoff notes, 2026-10-27)
 
-Where the Python lives (`Mingbird-agent/ollama_agent.py`, v3.1.4 line numbers, approximate):
+Python: `web_search` (Bing/Baidu HTML scraping, ~line 700–900 of `ollama_agent.py`), `web_fetch`
+(saves full text under `sources/`, returns summary + path), `web_search_multi` (thread pool),
+`memory_store`/`memory_recall` (`~/.ollama_agent/memory.json`, word-overlap scoring; see
+`load_memory`/`memory_recall` just after `tools_for_categories`), and `batch_tools` parallelism for
+network calls (sequential in Boubou today, cap 8).
 
-| Function | Lines | Notes |
-|---|---|---|
-| `call_chat` | ~2328 | streaming + 400 retry; `THINK` tri-state → top-level `think`, never in `options` |
-| `_estimate_messages_tokens`, `_workdir_files_text` | ~2430 | compaction trigger inputs |
-| `compact_history(model, messages, level, todo_text, files_text)` | ~2449 | L2/L3 re-inject `[当前计划(todo)` block; summary via `call_chat` |
-| transcript `.transcript.jsonl`, checkpoint `.agent_state.json`, `[RESUMED checkpoint: N msgs]` | ~2572–2780 | byte-compatible formats required for resume |
-| `_TASK_HINTS` / `_QA_HINTS` / `_is_qa` | ~2803–2886 | ported (`guards/qa.rs`) |
-| `_dedupe_trailing_assistant` | ~2905 | ollama 400 "2 or more assistant messages" fix |
-| `_similar` (repeat-output detector) | ~2960 | difflib ratio > 0.75 on first 200 chars, whitespace stripped |
-| `agent_loop(model, messages, workdir, session, budget_sec=None)` | after ~2990 | the body to port |
+Rust hooks: `exec.rs` already dispatches `ToolInvocation::{WebSearch, WebFetch, WebSearchMulti,
+MemoryStore, MemoryRecall}` to stubs; `ToolFace::offline` hides them when `offline_mode` is set;
+`FAIL_MARKERS` already lists `[web_search error` / `[web_fetch error`. The loop is synchronous, so
+either use `reqwest::blocking` inside the executor or hand the executor a tokio `Handle`.
 
-Behaviours the deferred tests pin (all in `tests/test_guards.py` / `test_output_cap.py` / `test_todo.py`):
-
-- Empty-turn ladder: `_semantically_empty` turns count; ≥3 → correction, 6 → hard reset that injects
-  `上下文已重置` and re-seeds the original task. Truncated turn (`done_reason=length` + empty) gets a
-  one-time chunked-delivery hint mentioning `append_file 逐段追加` and the actual `num_predict` value.
-- Finish gates, in order: claimed-artifact check (`声称的以下产物`), plan-named check, then a one-time
-  task re-read injection (`⚠️ ... 交付前自查 ... 重新 finish`) before the first allowed finish; skipped
-  for Q&A. Bare finish with empty content *and* empty summary and no real work → `finish 被拒绝` with
-  `下一步三选一`, `create_file`/`answer.txt` template, `继续用工具推进`, `分析/讲解类任务`, and the
-  absolute workdir. Non-empty content or substantive summary = valid text delivery.
-- Edit convergence: only receipts starting `[edited` feed `EditConvergenceGuard`; hint injected as a
-  user message, tool never disabled.
-- Research streak: identical `web_search` / `web_search_multi` fingerprints repeated ≥6 turns →
-  `重复完全相同的网络查询` ban; distinct queries never banned. `enable_tools` unlocks a disabled tool.
-- Budget: `budget_sec` param > `BUDGET_SEC` env; resume adds `load_elapsed`; nudges once per mark;
-  sidecar written only when a budget is active.
-- `_HARNESS_NOTE_PREFIXES` invariant: every injected user message starts with one of them.
-- Compaction re-injects the todo text at L2 and L3; no marker when there is no plan.
-
-Rust pieces already waiting for the loop: `agent::RunParams`, `agent::AgentEvent`, `exec::Executor`
-(use `run_tool`), `guards::*`, `ollama::Client::chat_stream`, `todo::*`.
+Known loop gaps to pick up when convenient: `restart_ollama` after four consecutive 500s (needs
+`ollama_exe`/`ollama_env` from `Config`), the cloud / OpenAI-compatible backends behind
+`ChatBackend`, `_model_can_think` probing, and the `main()` CLI tests (drive `boubou run` with a
+scripted backend through a test-only entry point).

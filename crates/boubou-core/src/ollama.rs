@@ -39,18 +39,54 @@ pub enum Role {
     Tool,
 }
 
+impl Role {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        }
+    }
+}
+
+/// One conversation message. Deserialization is lenient about `null` in `content`,
+/// `tool_calls` and `images` so Mingbird checkpoints and raw Ollama chunks both load.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub role: Role,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub content: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "reasoning_content",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub thinking: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub tool_calls: Vec<ToolCall>,
     /// Ollama ≥0.4 echoes the tool name on `role: tool` messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// Base64 images attached for multimodal models (`_attach_pending_images`).
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub images: Vec<String>,
+}
+
+fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Option::unwrap_or_default)
 }
 
 impl Message {
@@ -75,6 +111,10 @@ impl Message {
             ..Self::new(Role::Assistant, "")
         }
     }
+    /// A tool result without `tool_name`: Mingbird's shape, so checkpoints match.
+    pub fn tool_output(content: impl Into<String>) -> Self {
+        Self::new(Role::Tool, content)
+    }
     pub fn tool(name: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             tool_name: Some(name.into()),
@@ -88,7 +128,13 @@ impl Message {
             thinking: None,
             tool_calls: Vec::new(),
             tool_name: None,
+            images: Vec::new(),
         }
+    }
+
+    /// `content` is empty or only whitespace and there is no tool call.
+    pub fn is_blank(&self) -> bool {
+        self.content.trim().is_empty() && self.tool_calls.is_empty()
     }
 }
 
@@ -235,9 +281,9 @@ impl Client {
             .send()
             .await?;
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Ollama(format!("{status}: {body}")));
+            return Err(Error::Status { status, body });
         }
 
         let mut stream = resp.bytes_stream();
