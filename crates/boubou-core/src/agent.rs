@@ -9,7 +9,9 @@ use crate::tools::ToolInvocation;
 use crate::{Error, Result};
 
 pub const DEFAULT_NUM_CTX: u32 = 131_072;
-pub const DEFAULT_NUM_PREDICT: i32 = 2048;
+pub const DEFAULT_NUM_PREDICT: i32 = 8192;
+/// `AGENT_BASH_TIMEOUT`, seconds.
+pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
 /// Context occupancy at which the history is compacted.
 pub const COMPACT_AT: f32 = 0.90;
 

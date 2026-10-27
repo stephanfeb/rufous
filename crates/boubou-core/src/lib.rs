@@ -8,9 +8,14 @@
 pub mod agent;
 pub mod config;
 pub mod error;
+pub mod exec;
+pub mod guards;
 pub mod mcp;
 pub mod ollama;
+pub mod safety;
 pub mod skills;
+pub mod text;
+pub mod todo;
 pub mod tools;
 
 pub use error::{Error, Result};

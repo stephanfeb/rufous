@@ -27,6 +27,8 @@ dirs = "6"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tempfile = "3"
+regex = "1"
+encoding_rs = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

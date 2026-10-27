@@ -60,6 +60,21 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self::new(Role::User, content)
     }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self::new(Role::Assistant, content)
+    }
+    /// An assistant turn that only calls `name` (arguments optional).
+    pub fn assistant_call(name: impl Into<String>, arguments: Value) -> Self {
+        Self {
+            tool_calls: vec![ToolCall {
+                function: FunctionCall {
+                    name: name.into(),
+                    arguments,
+                },
+            }],
+            ..Self::new(Role::Assistant, "")
+        }
+    }
     pub fn tool(name: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             tool_name: Some(name.into()),

@@ -1,10 +1,14 @@
 //! Tool protocol: the JSON schemas sent to the model (byte-for-byte the shape Mingbird
-//! sends, so the ~1250-token prefill budget is preserved) and the typed decoding of
+//! sends, so the ~1250-token prefill budget is preserved), the lenient pre-processing
+//! small models need (aliases, string→number/bool coercion), and the typed decoding of
 //! tool calls coming back.
+
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use crate::todo::TodoArgs;
 use crate::{Error, Result};
 
 /// Names of the nine tools that are always loaded.
@@ -20,9 +24,9 @@ pub const CORE_TOOL_NAMES: [&str; 9] = [
     "finish",
 ];
 
-/// Names a model may request through `enable_tools`.
-pub const ADVANCED_TOOL_NAMES: [&str; 11] = [
-    "run_python",
+/// Names a model may request through `enable_tools`. `run_python` (Mingbird's bundled
+/// interpreter) is intentionally absent: Boubou ships no Python runtime.
+pub const ADVANCED_TOOL_NAMES: [&str; 10] = [
     "append_file",
     "delete_file",
     "search_files",
@@ -34,6 +38,40 @@ pub const ADVANCED_TOOL_NAMES: [&str; 11] = [
     "memory_recall",
     "mcp_call",
 ];
+
+/// Industry-common names small models emit, mapped onto built-ins instead of rejected.
+pub const TOOL_ALIASES: [(&str, &str); 13] = [
+    ("write_file", "create_file"),
+    ("save_file", "create_file"),
+    ("read_text_file", "read_file"),
+    ("cat", "read_file"),
+    ("list_directory", "list_dir"),
+    ("ls", "list_dir"),
+    ("append_to_file", "append_file"),
+    ("edit", "edit_file"),
+    ("search_code", "search_files"),
+    ("grep", "search_files"),
+    ("delete", "delete_file"),
+    ("bash", "run_bash"),
+    ("shell", "run_bash"),
+];
+
+pub fn resolve_alias(name: &str) -> &str {
+    TOOL_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map(|(_, real)| *real)
+        .unwrap_or(name)
+}
+
+pub fn is_known_tool(name: &str) -> bool {
+    CORE_TOOL_NAMES.contains(&name) || ADVANCED_TOOL_NAMES.contains(&name)
+}
+
+/// MCP tools are flattened as `server.tool`; a dotted name is the only marker needed here.
+pub fn is_mcp_tool(name: &str) -> bool {
+    name.contains('.')
+}
 
 /// Equivalent of Python `_f(name, desc, props, req)`: a minimal function schema with no
 /// per-parameter descriptions.
@@ -88,8 +126,6 @@ pub fn core_tools() -> Vec<Value> {
 
 pub fn advanced_tools() -> Vec<Value> {
     vec![
-        spec("run_python", "Run Python code with the bundled interpreter (cwd=workspace; pandas/numpy/PIL available). Use for docs/spreadsheet/image processing instead of bash one-liners",
-            json!({"code": s()}), &["code"]),
         spec("append_file", "Append text to the end of a file", json!({"path": s(), "content": s()}), &["path", "content"]),
         spec("delete_file", "Delete a file (moved to .mingbird_trash/, recoverable)", json!({"path": s()}), &["path"]),
         spec("search_files", "Grep-like content search in a directory", json!({"path": s(), "pattern": s()}), &["path", "pattern"]),
@@ -118,6 +154,87 @@ pub fn tool_schemas(enabled: &[String]) -> Vec<Value> {
     out
 }
 
+/// `tool -> {arg -> schema type}` for every built-in, used by [`coerce_args`].
+fn arg_types() -> BTreeMap<String, BTreeMap<String, String>> {
+    core_tools()
+        .into_iter()
+        .chain(advanced_tools())
+        .filter_map(|t| {
+            let f = t.get("function")?;
+            let name = f.get("name")?.as_str()?.to_string();
+            let props = f.get("parameters")?.get("properties")?.as_object()?;
+            let types = props
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.get("type")?.as_str()?.to_string())))
+                .collect();
+            Some((name, types))
+        })
+        .collect()
+}
+
+/// Mingbird v3.0.0 argument type correction: `"3"` → `3`, `"true"` → `true` for
+/// number/boolean parameters. Unparseable strings return the structured error text the
+/// model is fed back; non-string shapes (lists, objects) pass through untouched.
+pub fn coerce_args(name: &str, args: &mut Map<String, Value>) -> std::result::Result<(), String> {
+    let types = arg_types();
+    let Some(types) = types.get(name) else {
+        return Ok(());
+    };
+    for (k, want) in types {
+        if want != "number" && want != "boolean" {
+            continue;
+        }
+        let Some(Value::String(v)) = args.get(k) else {
+            continue;
+        };
+        let s = v.trim();
+        if s.is_empty() {
+            continue; // optional field passed as "" = not provided
+        }
+        let fixed = if want == "number" && is_num_literal(s) {
+            let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+            if cleaned.contains('.') {
+                cleaned.parse::<f64>().ok().map(|f| json!(f))
+            } else {
+                cleaned.parse::<i64>().ok().map(|i| json!(i))
+            }
+        } else if want == "boolean" {
+            match s.to_ascii_lowercase().as_str() {
+                "true" | "1" => Some(json!(true)),
+                "false" | "0" => Some(json!(false)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        match fixed {
+            Some(v) => {
+                args.insert(k.clone(), v);
+            }
+            None => {
+                return Err(format!(
+                    "[tool error: {name} 参数 {k} 需要 {want} 类型(收到字符串: {}),请修正后重试。]",
+                    crate::text::head(s, 40)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `^[+-]?\d[\d_]*(\.[\d_]+)?$`
+fn is_num_literal(s: &str) -> bool {
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let mut parts = body.splitn(2, '.');
+    let int = parts.next().unwrap_or("");
+    let frac = parts.next();
+    let digits_or_underscore =
+        |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || c == '_');
+    int.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && digits_or_underscore(int)
+        && frac.is_none_or(digits_or_underscore)
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TodoAction {
@@ -135,9 +252,10 @@ pub enum SkillsAction {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct BatchCall {
+    #[serde(default)]
     pub tool: String,
     #[serde(default)]
-    pub args: Map<String, Value>,
+    pub args: Value,
 }
 
 /// A decoded, argument-checked tool call. Variants carry exactly the arguments the
@@ -165,12 +283,7 @@ pub enum ToolInvocation {
     RunBash {
         command: String,
     },
-    Todo {
-        action: TodoAction,
-        items: Vec<String>,
-        index: Option<u64>,
-        done: Option<bool>,
-    },
+    Todo(TodoArgs),
     Skills {
         action: SkillsAction,
         name: Option<String>,
@@ -180,9 +293,6 @@ pub enum ToolInvocation {
     },
     Finish {
         summary: String,
-    },
-    RunPython {
-        code: String,
     },
     AppendFile {
         path: String,
@@ -227,9 +337,13 @@ impl ToolInvocation {
     /// JSON object or as a string containing JSON (small models do that).
     pub fn parse(name: &str, arguments: &Value) -> Result<Self> {
         let args = coerce_object(name, arguments)?;
+        Self::parse_map(name, &args)
+    }
+
+    pub fn parse_map(name: &str, args: &Map<String, Value>) -> Result<Self> {
         macro_rules! arg {
             ($ty:ty, $key:literal) => {
-                decode_arg::<$ty>(&args, name, $key)?
+                decode_arg::<$ty>(args, name, $key)?
             };
         }
         let inv = match name {
@@ -249,29 +363,21 @@ impl ToolInvocation {
                 new: arg!(String, "new"),
             },
             "list_dir" => Self::ListDir {
-                path: arg!(String, "path"),
+                path: arg!(Option<String>, "path").unwrap_or_else(|| ".".into()),
             },
             "run_bash" => Self::RunBash {
                 command: arg!(String, "command"),
             },
-            "todo" => Self::Todo {
-                action: arg!(TodoAction, "action"),
-                items: arg!(Option<Vec<String>>, "items").unwrap_or_default(),
-                index: arg!(Option<u64>, "index"),
-                done: arg!(Option<bool>, "done"),
-            },
+            "todo" => Self::Todo(parse_todo(name, args)?),
             "skills" => Self::Skills {
-                action: arg!(SkillsAction, "action"),
+                action: arg!(Option<SkillsAction>, "action").unwrap_or(SkillsAction::List),
                 name: arg!(Option<String>, "name"),
             },
             "enable_tools" => Self::EnableTools {
-                tools: arg!(Vec<String>, "tools"),
+                tools: arg!(Option<Vec<String>>, "tools").unwrap_or_default(),
             },
             "finish" => Self::Finish {
-                summary: arg!(String, "summary"),
-            },
-            "run_python" => Self::RunPython {
-                code: arg!(String, "code"),
+                summary: arg!(Option<String>, "summary").unwrap_or_default(),
             },
             "append_file" => Self::AppendFile {
                 path: arg!(String, "path"),
@@ -291,11 +397,11 @@ impl ToolInvocation {
                 url: arg!(String, "url"),
             },
             "web_search_multi" => Self::WebSearchMulti {
-                queries: arg!(Vec<String>, "queries"),
+                queries: arg!(Option<Vec<String>>, "queries").unwrap_or_default(),
                 max_results: arg!(Option<u64>, "max_results"),
             },
             "batch_tools" => Self::BatchTools {
-                calls: arg!(Vec<BatchCall>, "calls"),
+                calls: arg!(Option<Vec<BatchCall>>, "calls").unwrap_or_default(),
             },
             "memory_store" => Self::MemoryStore {
                 text: arg!(String, "text"),
@@ -321,11 +427,10 @@ impl ToolInvocation {
             Self::EditFile { .. } => "edit_file",
             Self::ListDir { .. } => "list_dir",
             Self::RunBash { .. } => "run_bash",
-            Self::Todo { .. } => "todo",
+            Self::Todo(_) => "todo",
             Self::Skills { .. } => "skills",
             Self::EnableTools { .. } => "enable_tools",
             Self::Finish { .. } => "finish",
-            Self::RunPython { .. } => "run_python",
             Self::AppendFile { .. } => "append_file",
             Self::DeleteFile { .. } => "delete_file",
             Self::SearchFiles { .. } => "search_files",
@@ -346,9 +451,90 @@ impl ToolInvocation {
             Self::WebSearch { .. } | Self::WebFetch { .. } | Self::WebSearchMulti { .. }
         )
     }
+
+    /// Tools that change the workspace or run commands (evidence of "real work").
+    pub fn is_mutating(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateFile { .. }
+                | Self::EditFile { .. }
+                | Self::AppendFile { .. }
+                | Self::DeleteFile { .. }
+                | Self::RunBash { .. }
+        )
+    }
+
+    /// The path argument a file tool operates on, for the safety gate.
+    pub fn file_path(&self) -> Option<&str> {
+        match self {
+            Self::CreateFile { path, .. }
+            | Self::ReadFile { path, .. }
+            | Self::EditFile { path, .. }
+            | Self::ListDir { path }
+            | Self::AppendFile { path, .. }
+            | Self::DeleteFile { path }
+            | Self::SearchFiles { path, .. } => Some(path),
+            _ => None,
+        }
+    }
 }
 
-fn coerce_object(tool: &str, v: &Value) -> Result<Map<String, Value>> {
+/// The `todo` tool is deliberately more lenient than its schema: `plan`/`steps` aliases,
+/// a newline-separated string for items, a list for `index`, and `all=true`.
+fn parse_todo(name: &str, args: &Map<String, Value>) -> Result<TodoArgs> {
+    let action =
+        decode_arg::<Option<TodoAction>>(args, name, "action")?.unwrap_or(TodoAction::List);
+    let raw_items = ["items", "plan", "steps"]
+        .iter()
+        .find_map(|k| args.get(*k).filter(|v| !v.is_null()));
+    let items: Vec<String> = match raw_items {
+        Some(Value::String(s)) => s
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                l.trim_matches(|c: char| c == ' ' || c == '-' || c == '.' || c.is_ascii_digit())
+                    .to_string()
+            })
+            .collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let index: Vec<i64> = match args.get("index") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_f64())
+            .map(|f| f as i64)
+            .collect(),
+        Some(Value::Number(n)) => n.as_f64().map(|f| vec![f as i64]).unwrap_or_default(),
+        Some(Value::String(s)) => s
+            .trim()
+            .parse::<f64>()
+            .map(|f| vec![f as i64])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let all = matches!(args.get("all"), Some(Value::Bool(true)));
+    let done = match args.get("done") {
+        Some(Value::Bool(b)) => Some(*b),
+        _ => None,
+    };
+    Ok(TodoArgs {
+        action,
+        items,
+        index,
+        all,
+        done,
+    })
+}
+
+pub fn coerce_object(tool: &str, v: &Value) -> Result<Map<String, Value>> {
     match v {
         Value::Object(m) => Ok(m.clone()),
         Value::Null => Ok(Map::new()),

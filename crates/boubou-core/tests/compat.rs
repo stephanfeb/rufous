@@ -104,14 +104,13 @@ fn tool_calls_decode_into_typed_variants() {
         &json!(r#"{"action":"update","index":2,"done":true}"#),
     )
     .expect("string args accepted");
-    assert!(matches!(
-        inv,
-        ToolInvocation::Todo {
-            index: Some(2),
-            done: Some(true),
-            ..
+    match inv {
+        ToolInvocation::Todo(args) => {
+            assert_eq!(args.index, vec![2]);
+            assert_eq!(args.done, Some(true));
         }
-    ));
+        other => panic!("expected todo, got {other:?}"),
+    }
 }
 
 #[test]

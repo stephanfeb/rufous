@@ -17,6 +17,8 @@ reqwest.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
 dirs.workspace = true
+regex.workspace = true
+encoding_rs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
