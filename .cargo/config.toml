@@ -1,0 +1,15 @@
+# Static linking of the C runtime on Windows so the shipped exe has no MSVCRT dependency.
+# sherpa-onnx / onnxruntime (voice input, not yet ported) are the one place a DLL may still
+# be needed; see docs/PORTING.md.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Fully static Linux builds: `rustup target add x86_64-unknown-linux-musl`.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Cross-compiling to Windows from macOS/Linux: `cargo install cargo-xwin` then
+# `cargo xwin build --release --target x86_64-pc-windows-msvc`.

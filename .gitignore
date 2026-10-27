@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.DS_Store
+# local machine config lives in ~/.ollama_agent, never in the repo
+/config.json
+/mcp.json
+# Tauri build output
+/crates/boubou-app/gen
