@@ -189,11 +189,13 @@ model's `test_wavs/0.wav` (5.6 s) transcribed in 1.4 s through the CLI and `1.wa
   only loopback capture tests cover `OpenAiBackend` so far.
 - Windows: `_ollama_app_models_dir` (sqlite lookup of the Ollama app's model dir) is not ported.
 - `doc_digest` / `file_organizer` skills still mention `run_python`.
-- ~~LRAB adapter~~: Mingbird's `bench/lrab/runners/run_bench.py` has a `boubou` arm (2026-10-28):
-  binary from `BOUBOU_BIN` > PATH > sibling `boubou/target/{release,debug}`; same isolated
-  `~/.mingbird_bench` home, `AGENT_CTX=32768`, `AGENT_SLIM_OUTPUT=0`, `AGENT_UNATTENDED=1`, no
-  `--new` (kill-resume phase 2 resumes `.agent_state.json`). Smoke: WF-01 on gemma4:e2b scored
-  1.0 in 131 s. The head-to-head matrix itself is still to run.
+- LRAB head-to-head: `bench/lrab_h2h.py` (Boubou side; Mingbird is third-party and is never
+  modified). It runs Mingbird's own `run_bench.py --agent mingbird` for one arm, drives `boubou run`
+  itself for the other with the same isolated env (`~/.mingbird_bench` home, `AGENT_CTX=32768`,
+  `AGENT_SLIM_OUTPUT=0`, `AGENT_UNATTENDED=1`, no `--new` so kill-resume resumes `.agent_state.json`)
+  and scores both with Mingbird's `score_task` imported read-only. Needs `requests` +
+  `beautifulsoup4` for the mingbird arm: `uv run --with requests --with beautifulsoup4 python
+  bench/lrab_h2h.py --model gemma4:e2b`. WF-01 smoke on gemma4:e2b: Boubou 1.0 in 131 s.
 
 Search backends: Boubou defaults to Bing → DuckDuckGo HTML → Baidu (western-first; the user is
 in Southeast Asia). Mingbird's `cn.bing.com` host is therefore not shared in the search cache;
