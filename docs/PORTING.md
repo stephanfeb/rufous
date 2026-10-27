@@ -189,7 +189,11 @@ model's `test_wavs/0.wav` (5.6 s) transcribed in 1.4 s through the CLI and `1.wa
   only loopback capture tests cover `OpenAiBackend` so far.
 - Windows: `_ollama_app_models_dir` (sqlite lookup of the Ollama app's model dir) is not ported.
 - `doc_digest` / `file_organizer` skills still mention `run_python`.
-- Then the LRAB head-to-head: a `boubou` adapter in Mingbird's `bench/lrab/runners/run_bench.py`.
+- ~~LRAB adapter~~: Mingbird's `bench/lrab/runners/run_bench.py` has a `boubou` arm (2026-10-28):
+  binary from `BOUBOU_BIN` > PATH > sibling `boubou/target/{release,debug}`; same isolated
+  `~/.mingbird_bench` home, `AGENT_CTX=32768`, `AGENT_SLIM_OUTPUT=0`, `AGENT_UNATTENDED=1`, no
+  `--new` (kill-resume phase 2 resumes `.agent_state.json`). Smoke: WF-01 on gemma4:e2b scored
+  1.0 in 131 s. The head-to-head matrix itself is still to run.
 
 Search backends: Boubou defaults to Bing → DuckDuckGo HTML → Baidu (western-first; the user is
 in Southeast Asia). Mingbird's `cn.bing.com` host is therefore not shared in the search cache;
