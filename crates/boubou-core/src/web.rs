@@ -1,7 +1,8 @@
 //! `web_search`, `web_search_multi`, `web_fetch` and the on-disk result cache.
 //!
-//! Search scrapes the HTML of the configured backends (Bing and Baidu by default, overridable
-//! with `AGENT_SEARCH_BACKENDS`), the same selectors as Mingbird. Fetch stores the whole page
+//! Search scrapes the HTML of the configured backends (Bing, DuckDuckGo's HTML endpoint and
+//! Baidu by default, overridable with `AGENT_SEARCH_BACKENDS`); Bing/Baidu use Mingbird's
+//! selectors, DuckDuckGo is Boubou's addition. Fetch stores the whole page
 //! text under `<workdir>/sources/` and returns an 800-char summary plus the path, so the
 //! model can `read_file` any part later without the full text living in the context.
 //! Both are cached for an hour under `<agent home>/cache/`, keyed like Mingbird
@@ -16,7 +17,13 @@ use sha1::{Digest, Sha1};
 
 use crate::text::{clen, head};
 
-pub const DEFAULT_BACKENDS: [&str; 2] = ["https://cn.bing.com/search", "https://www.baidu.com/s"];
+/// Western-first (Boubou is used from Southeast Asia); Baidu stays as the last resort for
+/// Chinese queries. Override with `AGENT_SEARCH_BACKENDS` (comma-separated URLs).
+pub const DEFAULT_BACKENDS: [&str; 3] = [
+    "https://www.bing.com/search",
+    "https://html.duckduckgo.com/html/",
+    "https://www.baidu.com/s",
+];
 pub const CACHE_TTL: Duration = Duration::from_secs(3600);
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -87,35 +94,107 @@ fn text_spaced(el: ElementRef<'_>) -> String {
         .join(" ")
 }
 
-/// Result blocks (`• title\n  url\n  snippet`) from a Bing or Baidu results page.
-pub fn parse_search_results(html: &str, baidu: bool, max_results: usize) -> Vec<String> {
+/// Which result-page layout a backend serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Bing,
+    Baidu,
+    DuckDuckGo,
+}
+
+impl Engine {
+    /// Guess from the backend URL; anything unknown is parsed with Bing's selectors.
+    pub fn for_backend(url: &str) -> Self {
+        if url.contains("baidu") {
+            Self::Baidu
+        } else if url.contains("duckduckgo") {
+            Self::DuckDuckGo
+        } else {
+            Self::Bing
+        }
+    }
+}
+
+/// Result blocks (`• title\n  url\n  snippet`) from a Bing, Baidu or DuckDuckGo results page.
+pub fn parse_search_results(html: &str, engine: Engine, max_results: usize) -> Vec<String> {
     let doc = Html::parse_document(html);
-    let items = if baidu {
-        sel("div.result.c-container")
-    } else {
-        sel("li.b_algo")
+    let items = match engine {
+        Engine::Bing => sel("li.b_algo"),
+        Engine::Baidu => sel("div.result.c-container"),
+        Engine::DuckDuckGo => sel("div.result"),
     };
-    let (h2a, h3a) = (sel("h2 a"), sel("h3 a"));
-    let (cap_bing, cap_p, cap_baidu) = (sel(".b_caption p"), sel("p"), sel(".c-abstract"));
+    let (h2a, h3a, ddg_a) = (sel("h2 a"), sel("h3 a"), sel("a.result__a"));
+    let (cap_bing, cap_p, cap_baidu, cap_ddg) = (
+        sel(".b_caption p"),
+        sel("p"),
+        sel(".c-abstract"),
+        sel(".result__snippet"),
+    );
     let mut out = Vec::new();
     for li in doc.select(&items).take(max_results) {
-        let Some(a) = li.select(&h2a).next().or_else(|| li.select(&h3a).next()) else {
-            continue;
+        let a = match engine {
+            Engine::DuckDuckGo => li.select(&ddg_a).next(),
+            _ => li.select(&h2a).next().or_else(|| li.select(&h3a).next()),
         };
+        let Some(a) = a else { continue };
         let title = text_joined(a);
         let href = a.value().attr("href").unwrap_or("");
-        let snippet = li
-            .select(&cap_bing)
-            .next()
-            .or_else(|| li.select(&cap_p).next())
-            .or_else(|| li.select(&cap_baidu).next())
-            .map(|c| head(&text_joined(c), 200).to_string())
-            .unwrap_or_default();
+        let href = if engine == Engine::DuckDuckGo {
+            ddg_target(href)
+        } else {
+            href.to_string()
+        };
+        let snippet = match engine {
+            Engine::DuckDuckGo => li.select(&cap_ddg).next(),
+            _ => li
+                .select(&cap_bing)
+                .next()
+                .or_else(|| li.select(&cap_p).next())
+                .or_else(|| li.select(&cap_baidu).next()),
+        }
+        .map(|c| head(&text_spaced(c), 200).to_string())
+        .unwrap_or_default();
         if !title.is_empty() {
             out.push(format!("• {title}\n  {href}\n  {snippet}"));
         }
     }
     out
+}
+
+/// DuckDuckGo wraps result links as `//duckduckgo.com/l/?uddg=<encoded url>&rut=…`;
+/// return the real target (or the href unchanged when it is not a redirect).
+fn ddg_target(href: &str) -> String {
+    let Some(q) = href.split_once('?').map(|(_, q)| q) else {
+        return href.to_string();
+    };
+    for pair in q.split('&') {
+        if let Some(v) = pair.strip_prefix("uddg=") {
+            return urldecode(v);
+        }
+    }
+    href.to_string()
+}
+
+/// `urllib.parse.unquote_plus`.
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(b) => {
+                    out.push(b);
+                    i += 2;
+                }
+                Err(_) => out.push(b'%'),
+            },
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Page text with script/style/nav/footer/header/noscript removed, text nodes joined by
@@ -200,7 +279,8 @@ impl Web {
             };
             match self.get(&url, SEARCH_TIMEOUT) {
                 Ok(body) => {
-                    let out = parse_search_results(&body, backend.contains("baidu"), max_results);
+                    let out =
+                        parse_search_results(&body, Engine::for_backend(backend), max_results);
                     if !out.is_empty() {
                         let result = out.join("\n");
                         cache_set(&self.cache_dir, &key, &Value::String(result.clone()));

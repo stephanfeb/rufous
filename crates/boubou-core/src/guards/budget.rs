@@ -57,8 +57,8 @@ pub fn budget_nudge(
     let hit = BudgetMark::ALL
         .iter()
         .copied()
-        .filter(|m| ratio >= m.frac() && !fired.contains(m))
-        .last()?;
+        .rev()
+        .find(|m| ratio >= m.frac() && !fired.contains(m))?;
     for m in BudgetMark::ALL {
         if ratio >= m.frac() {
             fired.insert(m);

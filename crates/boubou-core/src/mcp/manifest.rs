@@ -1,0 +1,516 @@
+//! The probed tool manifest (`mcp_manifest`), its memory + disk cache, flattening into
+//! tool definitions (`mcp_tool_defs`), and MCP argument path resolution.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use super::{call_tool, probe_server, McpConfig, ProbedTool, ServerConfig};
+use crate::tools::{ADVANCED_TOOL_NAMES, CORE_TOOL_NAMES};
+
+/// `_MCP_TTL`: probes spawn processes, so results live this long.
+pub const MANIFEST_TTL: Duration = Duration::from_secs(300);
+/// `_MCP_CACHE_FILE` under the agent home.
+pub const CACHE_FILE: &str = "mcp_manifest_cache.json";
+/// When any probe failed the cache expires after this instead, so the retry comes soon.
+const FAILED_TTL: Duration = Duration::from_secs(60);
+const MAX_PARALLEL_PROBES: usize = 8;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestTool {
+    pub name: String,
+    #[serde(default)]
+    pub desc: String,
+    #[serde(default = "empty_schema")]
+    pub schema: Value,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default = "auto")]
+    pub expose: String,
+}
+
+fn auto() -> String {
+    "auto".to_string()
+}
+
+fn empty_schema() -> Value {
+    json!({"type": "object", "properties": {}})
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ServerManifest {
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tools: Vec<ManifestTool>,
+}
+
+/// `server → {categories, tools}`.
+pub type Manifest = BTreeMap<String, ServerManifest>;
+
+/// `_compact_schema`: parameter names + types + required only, and only the required
+/// ones when there are more than eight (prefill stays small).
+pub fn compact_schema(js: &Value) -> Value {
+    let Some(obj) = js.as_object() else {
+        return json!({"type": "object", "properties": {}, "required": []});
+    };
+    let mut props: Vec<(String, Value)> = Vec::new();
+    if let Some(p) = obj.get("properties").and_then(Value::as_object) {
+        for (k, v) in p {
+            if let Some(t) = v.get("type") {
+                if !t.is_null() {
+                    props.push((k.clone(), json!({"type": t})));
+                }
+            }
+        }
+    }
+    let req: Vec<String> = match obj.get("required").and_then(Value::as_array) {
+        Some(r) if !r.is_empty() => r
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => props.iter().map(|(k, _)| k.clone()).collect(),
+    };
+    if props.len() > 8 {
+        props.retain(|(k, _)| req.contains(k));
+    }
+    let mut m = serde_json::Map::new();
+    for (k, v) in props {
+        m.insert(k, v);
+    }
+    json!({"type": "object", "properties": m, "required": req})
+}
+
+/// How the registry discovers a server's tools. The real one spawns/connects via `rmcp`;
+/// tests script it.
+pub trait Prober: Send + Sync {
+    /// `None` = probe failed or timed out (distinct from `Some(vec![])` = no tools).
+    fn probe(&self, cfg: &ServerConfig) -> Option<Vec<ProbedTool>>;
+}
+
+#[derive(Debug, Default)]
+struct RmcpProber;
+
+impl Prober for RmcpProber {
+    fn probe(&self, cfg: &ServerConfig) -> Option<Vec<ProbedTool>> {
+        probe_server(cfg, super::PROBE_TIMEOUT)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DiskCache {
+    ts: f64,
+    data: Manifest,
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Configured servers plus the cached manifest. Shared by the loop (tool definitions)
+/// and the executor (calls); cheap to clone behind an `Arc`.
+pub struct McpRegistry {
+    pub servers: McpConfig,
+    cache_file: PathBuf,
+    mem: Mutex<Option<(f64, Manifest)>>,
+    prober: Box<dyn Prober>,
+}
+
+impl std::fmt::Debug for McpRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpRegistry")
+            .field("servers", &self.servers.keys().collect::<Vec<_>>())
+            .field("cache_file", &self.cache_file)
+            .finish()
+    }
+}
+
+impl McpRegistry {
+    pub fn new(agent_home: &Path, servers: McpConfig) -> Self {
+        Self::with_prober(agent_home, servers, Box::new(RmcpProber))
+    }
+
+    pub fn with_prober(agent_home: &Path, servers: McpConfig, prober: Box<dyn Prober>) -> Self {
+        Self {
+            servers,
+            cache_file: agent_home.join(CACHE_FILE),
+            mem: Mutex::new(None),
+            prober,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.servers.is_empty()
+    }
+
+    /// `is_mcp_tool`: `server.tool` with a configured server.
+    pub fn is_mcp_tool(&self, name: &str) -> bool {
+        super::split_qualified(name).is_some_and(|(s, _)| self.servers.contains_key(s))
+    }
+
+    /// Seconds-since-epoch of the current cache entry (tests check the shortened TTL).
+    pub fn cache_ts(&self) -> Option<f64> {
+        self.mem
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|(t, _)| *t))
+    }
+
+    fn load_disk(&self) -> Option<(f64, Manifest)> {
+        let raw = std::fs::read_to_string(&self.cache_file).ok()?;
+        let d: DiskCache = serde_json::from_str(&raw).ok()?;
+        Some((d.ts, d.data))
+    }
+
+    fn save_disk(&self, ts: f64, data: &Manifest) {
+        if let Some(dir) = self.cache_file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(s) = serde_json::to_string(&DiskCache {
+            ts,
+            data: data.clone(),
+        }) {
+            let _ = std::fs::write(&self.cache_file, s);
+        }
+    }
+
+    /// `mcp_manifest(force)`: memory cache → disk cache → parallel probe. A failed probe
+    /// keeps that server's previous tools (stale-while-revalidate) and shortens the TTL.
+    pub fn manifest(&self, force: bool) -> Manifest {
+        let now = now_secs();
+        let ttl = MANIFEST_TTL.as_secs_f64();
+        if !force {
+            if let Ok(g) = self.mem.lock() {
+                if let Some((t, data)) = g.as_ref() {
+                    if now - t < ttl {
+                        return data.clone();
+                    }
+                }
+            }
+            if let Some((t, data)) = self.load_disk() {
+                if !data.is_empty() && now - t < ttl {
+                    if let Ok(mut g) = self.mem.lock() {
+                        *g = Some((t, data.clone()));
+                    }
+                    return data;
+                }
+            }
+        }
+        let prev = self.load_disk().map(|(_, d)| d).unwrap_or_default();
+        let cand: Vec<(&String, &ServerConfig)> = self
+            .servers
+            .iter()
+            .filter(|(_, c)| c.is_runnable())
+            .collect();
+        let mut raws: Vec<Option<Vec<ProbedTool>>> = Vec::with_capacity(cand.len());
+        for chunk in cand.chunks(MAX_PARALLEL_PROBES) {
+            let outs: Vec<Option<Vec<ProbedTool>>> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(_, cfg)| s.spawn(move || self.prober.probe(cfg)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or(None))
+                    .collect()
+            });
+            raws.extend(outs);
+        }
+        let mut any_fail = false;
+        let mut manifest = Manifest::new();
+        for ((name, cfg), raw) in cand.into_iter().zip(raws) {
+            let tools: Vec<ProbedTool> = match raw {
+                Some(t) => t,
+                None => {
+                    any_fail = true;
+                    prev.get(name)
+                        .map(|m| {
+                            m.tools
+                                .iter()
+                                .map(|t| ProbedTool {
+                                    name: t.name.clone(),
+                                    desc: t.desc.clone(),
+                                    schema: t.schema.clone(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }
+            };
+            let server_cats = cfg.server_categories();
+            let tools = tools
+                .into_iter()
+                .map(|t| ManifestTool {
+                    categories: cfg.categories_for(&t.name),
+                    expose: cfg.expose_for(&t.name),
+                    schema: if t.schema.is_object() {
+                        t.schema
+                    } else {
+                        empty_schema()
+                    },
+                    name: t.name,
+                    desc: t.desc,
+                })
+                .collect();
+            manifest.insert(
+                name.clone(),
+                ServerManifest {
+                    categories: server_cats,
+                    tools,
+                },
+            );
+        }
+        let cache_t = if any_fail {
+            now - ttl + FAILED_TTL.as_secs_f64()
+        } else {
+            now
+        };
+        if let Ok(mut g) = self.mem.lock() {
+            *g = Some((cache_t, manifest.clone()));
+        }
+        self.save_disk(cache_t, &manifest);
+        manifest
+    }
+
+    /// `mcp_tool_defs(cats, extra)`: flattened `server.tool` definitions for the routed
+    /// categories. `auto` tools ride with their category; `on-demand`/`disabled` only when
+    /// `extra` names them; tools duplicating a built-in are skipped unless named; in
+    /// offline mode every `url` server is skipped.
+    pub fn tool_defs(
+        &self,
+        cats: &BTreeSet<String>,
+        extra: &BTreeSet<String>,
+        offline: bool,
+    ) -> Vec<Value> {
+        if self.servers.is_empty() {
+            return Vec::new();
+        }
+        let manifest = self.manifest(false);
+        let mut defs = Vec::new();
+        for (server, info) in &manifest {
+            if offline && self.servers.get(server).is_some_and(ServerConfig::is_http) {
+                continue;
+            }
+            for t in &info.tools {
+                let full = super::qualified_name(server, &t.name);
+                let named = extra.contains(&full);
+                if !named {
+                    if !t.categories.iter().any(|c| cats.contains(c)) {
+                        continue;
+                    }
+                    if t.expose != "auto" {
+                        continue;
+                    }
+                    if is_builtin_name(&t.name) {
+                        continue;
+                    }
+                    if t.categories.iter().any(|c| c == "文件")
+                        && FILE_DUP.iter().any(|(mcp, builtin)| {
+                            *mcp == t.name.as_str() && is_builtin_name(builtin)
+                        })
+                    {
+                        continue;
+                    }
+                }
+                let mut desc: String = t.desc.replace('\n', " ");
+                if desc.chars().count() > 60 {
+                    desc = format!("{}…", desc.chars().take(60).collect::<String>());
+                }
+                if desc.is_empty() {
+                    desc = format!("{server} 工具");
+                }
+                defs.push(json!({"type": "function", "function": {
+                    "name": full,
+                    "description": desc,
+                    "parameters": t.schema,
+                }}));
+            }
+        }
+        defs
+    }
+
+    /// Expected parameter names of a tool, from the manifest (for argument-error hints).
+    pub fn param_names(&self, server: &str, tool: &str) -> Option<Vec<String>> {
+        let m = self.manifest(false);
+        let t = m.get(server)?.tools.iter().find(|t| t.name == tool)?;
+        Some(
+            t.schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|p| p.keys().cloned().collect())
+                .unwrap_or_default(),
+        )
+    }
+
+    /// `mcp_call(server, tool, args)` as the dispatcher runs it: relative path arguments
+    /// resolved against `workdir`, the sandbox hint appended when an MCP file server
+    /// refuses a path.
+    pub fn call(
+        &self,
+        server: &str,
+        tool: &str,
+        args: &serde_json::Map<String, Value>,
+        workdir: &Path,
+    ) -> String {
+        let Some(cfg) = self.servers.get(server) else {
+            return format!(
+                "[MCP server '{server}' not configured. Edit {}: {{\"{server}\":{{\"command\":\"...\",\"args\":[...]}}}}]",
+                self.cache_file
+                    .with_file_name("mcp.json")
+                    .display()
+            );
+        };
+        let args = resolve_mcp_paths(args, workdir);
+        let mut res = call_tool(cfg, tool, args, super::CALL_TIMEOUT);
+        if res.starts_with("[mcp_call error:") && !res.contains("超时") {
+            if let Some(names) = self.param_names(server, tool) {
+                let names = if names.is_empty() {
+                    "(无参数)".to_string()
+                } else {
+                    names.join(", ")
+                };
+                res = format!("{res} 工具 {tool} 期望参数: {names}");
+            }
+        }
+        let low = res.to_lowercase();
+        if [
+            "access denied",
+            "outside allowed",
+            "not in allowed",
+            "outside the allowed",
+            "permission denied",
+            "越权",
+            "不在允许",
+        ]
+        .iter()
+        .any(|k| low.contains(k))
+        {
+            res.push_str(
+                "\n[提示:这是 MCP 文件服务器自己的沙箱目录。要读写 agent 工作目录的文件,\
+                 请用内置 create_file/read_file/edit_file/list_dir;\
+                 MCP 的文件工具只对它配置的根目录有效。]",
+            );
+        }
+        res
+    }
+}
+
+fn is_builtin_name(name: &str) -> bool {
+    CORE_TOOL_NAMES.contains(&name) || ADVANCED_TOOL_NAMES.contains(&name)
+}
+
+/// `_FILE_DUP`: MCP file verbs the built-ins already cover (the built-ins know the workdir).
+const FILE_DUP: [(&str, &str); 12] = [
+    ("write_file", "create_file"),
+    ("create_file", "create_file"),
+    ("read_file", "read_file"),
+    ("read_text_file", "read_file"),
+    ("list_directory", "list_dir"),
+    ("directory_tree", "list_dir"),
+    ("list_allowed_directories", "list_dir"),
+    ("search_files", "search_files"),
+    ("edit_file", "edit_file"),
+    ("delete_file", "delete_file"),
+    ("move_file", "create_file"),
+    ("append_file", "append_file"),
+];
+
+const PATH_ARGS: [&str; 17] = [
+    "path",
+    "filepath",
+    "file",
+    "dir",
+    "folder",
+    "filename",
+    "directory",
+    "output",
+    "out",
+    "dest",
+    "destination",
+    "doc",
+    "src",
+    "source",
+    "target",
+    "input",
+    "file_path",
+];
+
+/// `_is_path_key`: an argument name that carries a filesystem path.
+pub fn is_path_key(k: &str) -> bool {
+    let kl = k.to_lowercase();
+    PATH_ARGS.contains(&kl.as_str())
+        || [
+            "_path",
+            "_file",
+            "_dir",
+            "_folder",
+            "_filename",
+            "_pathname",
+        ]
+        .iter()
+        .any(|s| kl.ends_with(s))
+}
+
+fn is_abs(p: &str) -> bool {
+    let b = p.as_bytes();
+    (b.len() >= 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && matches!(b.get(2), Some(b'/') | Some(b'\\')))
+        || p.starts_with('/')
+        || p.starts_with('\\')
+        || ["http://", "https://", "file://", "data:"]
+            .iter()
+            .any(|s| p.starts_with(s))
+}
+
+/// `os.path.normpath(os.path.join(workdir, v))`: lexical, no filesystem access.
+fn normjoin(workdir: &Path, rel: &str) -> PathBuf {
+    let mut out = PathBuf::from(workdir);
+    for part in rel.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            p => out.push(p),
+        }
+    }
+    out
+}
+
+/// `_resolve_mcp_paths`: relative path-like arguments → absolute under `workdir`; URLs,
+/// absolute paths and non-path keys untouched.
+pub fn resolve_mcp_paths(
+    args: &serde_json::Map<String, Value>,
+    workdir: &Path,
+) -> serde_json::Map<String, Value> {
+    let mut out = args.clone();
+    for (k, v) in out.iter_mut() {
+        let Some(s) = v.as_str() else { continue };
+        if s.is_empty() || !is_path_key(k) {
+            continue;
+        }
+        let t = s.trim().trim_matches(['"', '\'']);
+        if t.is_empty() || is_abs(t) {
+            continue;
+        }
+        let tl = t.to_lowercase();
+        if t.contains("://")
+            || tl.starts_with("mailto:")
+            || tl.starts_with("tel:")
+            || t.starts_with('#')
+        {
+            continue;
+        }
+        *v = Value::String(normjoin(workdir, t).to_string_lossy().into_owned());
+    }
+    out
+}

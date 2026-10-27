@@ -134,7 +134,8 @@ fn main() -> Result<()> {
         } => {
             let args: serde_json::Value =
                 serde_json::from_str(&args).context("parsing tool arguments as JSON")?;
-            let mut ex = boubou_core::exec::Executor::new(std::path::absolute(workdir)?);
+            let mut ex = boubou_core::exec::Executor::new(std::path::absolute(workdir)?)
+                .with_configured_mcp();
             println!("{}", ex.run_tool(&name, &args));
         }
         Cmd::Run {
@@ -384,6 +385,12 @@ async fn doctor(cfg: &Config) -> Result<()> {
     match mcp::load(&home, &install_dir()) {
         Ok(servers) => {
             println!("mcp servers  : {}", servers.len());
+            let manifest = if servers.is_empty() {
+                Default::default()
+            } else {
+                println!("  (probing, up to {}s each)", mcp::PROBE_TIMEOUT.as_secs());
+                mcp::McpRegistry::new(&home, servers.clone()).manifest(true)
+            };
             for (name, s) in &servers {
                 let kind = if s.is_http() { "http" } else { "stdio" };
                 let bad = s.unknown_categories();
@@ -392,7 +399,18 @@ async fn doctor(cfg: &Config) -> Result<()> {
                 } else {
                     format!("  ⚠ unrouted categories: {}", bad.join(", "))
                 };
-                println!("  {name:<20} {kind}{warn}");
+                let tools = manifest.get(name).map(|m| &m.tools[..]).unwrap_or(&[]);
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).take(8).collect();
+                let more = if tools.len() > 8 {
+                    format!(" (+{} more)", tools.len() - 8)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  {name:<20} {kind}  {} tools: {}{more}{warn}",
+                    tools.len(),
+                    names.join(", ")
+                );
             }
         }
         Err(e) => println!("mcp servers  : error: {e}"),

@@ -18,8 +18,11 @@ the tool executor (files, commands, todo, crawl guard), all pure guards and the 
 (finish gates, anti-loop ladders, compaction, checkpoint/session/transcript files) are ported
 and tested. `boubou run <model> <taskfile> <workdir>` works end to end against a local Ollama;
 sessions it writes load in Mingbird and vice versa. Web search/fetch (shared result cache),
-long-term memory and parallel `batch_tools` are in; MCP (`rmcp`) is next. `boubou tool <name>
-'<json>'` runs any single tool for debugging.
+long-term memory, parallel `batch_tools` and MCP (stdio and streamable HTTP via `rmcp`, tools
+flattened into the categories as `server.tool`) are in. `boubou doctor` probes every MCP server;
+`boubou tool <name> '<json>'` runs any single tool, built-in or `server.tool`, for debugging.
+Web search defaults to Bing, then DuckDuckGo, then Baidu (`AGENT_SEARCH_BACKENDS` overrides).
+Next: the Tauri shell.
 See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)

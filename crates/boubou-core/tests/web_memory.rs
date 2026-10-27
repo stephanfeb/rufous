@@ -11,7 +11,8 @@ use boubou_core::exec::Executor;
 use boubou_core::memory::{load_memory, memory_recall, memory_store};
 use boubou_core::safety::SafetyPolicy;
 use boubou_core::web::{
-    cache_get, cache_key, cache_set, extract_text, parse_search_results, Web, CACHE_TTL,
+    cache_get, cache_key, cache_set, extract_text, parse_search_results, Engine, Web, CACHE_TTL,
+    DEFAULT_BACKENDS,
 };
 use serde_json::json;
 
@@ -73,7 +74,7 @@ fn cache_roundtrip_and_missing() {
 
 #[test]
 fn bing_results_parse_like_bs4() {
-    let out = parse_search_results(BING, false, 5);
+    let out = parse_search_results(BING, Engine::Bing, 5);
     assert_eq!(out.len(), 3); // the h2 without a link is skipped
     assert_eq!(
         out[0],
@@ -81,15 +82,50 @@ fn bing_results_parse_like_bs4() {
     );
     assert_eq!(out[1], "• Beta\n  https://a.example/2\n  Loose paragraph.");
     assert_eq!(out[2], "• Gamma\n  https://a.example/3\n  ");
-    assert_eq!(parse_search_results(BING, false, 1).len(), 1);
+    assert_eq!(parse_search_results(BING, Engine::Bing, 1).len(), 1);
 }
 
 #[test]
 fn baidu_results_parse_like_bs4() {
-    let out = parse_search_results(BAIDU, true, 5);
+    let out = parse_search_results(BAIDU, Engine::Baidu, 5);
     assert_eq!(out.len(), 2);
     assert_eq!(out[0], "• 百度 结果\n  http://b.example/x\n  摘要文字"); // bs4 strips only the ends of a text node
-    assert!(parse_search_results(BAIDU, false, 5).is_empty());
+    assert!(parse_search_results(BAIDU, Engine::Bing, 5).is_empty());
+}
+
+const DDG: &str = r#"<html><body><div id="links" class="results">
+<div class="result results_links results_links_deep web-result ">
+  <div class="links_main links_deep result__body">
+    <h2 class="result__title"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FSouthern_Boubou&amp;rut=78d2">Southern boubou - Wikipedia</a></h2>
+    <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FSouthern_Boubou&amp;rut=78d2">The <b>southern</b> <b>boubou</b> is a bushshrike.</a>
+  </div></div>
+<div class="result results_links results_links_deep web-result ">
+  <h2 class="result__title"><a rel="nofollow" class="result__a" href="https://ebird.org/species/soubou1">eBird</a></h2>
+</div>
+</div></body></html>"#;
+
+#[test]
+fn duckduckgo_results_unwrap_redirects() {
+    let out = parse_search_results(DDG, Engine::DuckDuckGo, 5);
+    assert_eq!(out.len(), 2);
+    assert_eq!(
+        out[0],
+        "• Southern boubou - Wikipedia\n  https://en.wikipedia.org/wiki/Southern_Boubou\n  The southern boubou is a bushshrike."
+    );
+    assert_eq!(out[1], "• eBird\n  https://ebird.org/species/soubou1\n  ");
+    assert!(parse_search_results(DDG, Engine::Bing, 5).is_empty());
+}
+
+#[test]
+fn default_backends_lean_western_and_map_to_engines() {
+    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[0]), Engine::Bing);
+    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[1]), Engine::DuckDuckGo);
+    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[2]), Engine::Baidu);
+    assert!(DEFAULT_BACKENDS[0].contains("www.bing.com"));
+    assert_eq!(
+        Engine::for_backend("https://example.org/s?q={query}"),
+        Engine::Bing
+    );
 }
 
 #[test]

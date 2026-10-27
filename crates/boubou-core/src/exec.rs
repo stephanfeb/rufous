@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::config::agent_home;
 use crate::guards::format_bash_out;
+use crate::mcp::{self, McpRegistry};
 use crate::memory;
 use crate::safety::{resolve_path, safe_path, Gate, SafetyPolicy};
 use crate::skills::SkillSet;
@@ -81,6 +82,8 @@ pub struct Executor {
     pub install_dir: PathBuf,
     /// Network side of the web tools (search backends, fetch, result cache).
     pub web: Web,
+    /// MCP servers and their probed manifest; an empty registry when none are configured.
+    pub mcp: Arc<McpRegistry>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -116,9 +119,23 @@ impl Executor {
                     .unwrap_or(120),
             ),
             web: Web::new(&agent_home()),
+            mcp: Arc::new(McpRegistry::new(&agent_home(), mcp::McpConfig::new())),
             agent_home: agent_home(),
             install_dir,
         }
+    }
+
+    /// Attach the MCP registry (shared with the loop, which asks it for tool definitions).
+    pub fn with_mcp(mut self, mcp: Arc<McpRegistry>) -> Self {
+        self.mcp = mcp;
+        self
+    }
+
+    /// Load `mcp.json` from the agent home / install dir and attach it.
+    pub fn with_configured_mcp(self) -> Self {
+        let servers = mcp::load(&self.agent_home, &self.install_dir).unwrap_or_default();
+        let reg = McpRegistry::new(&self.agent_home, servers);
+        self.with_mcp(Arc::new(reg))
     }
 
     /// Same-file key for the crawl guard (normalised, case-folded on Windows).
@@ -182,7 +199,7 @@ impl Executor {
     }
 
     fn dispatch_network(&self, inv: &ToolInvocation) -> String {
-        net_dispatch(&self.web, &self.workdir, inv)
+        net_dispatch(&self.web, &self.mcp, &self.workdir, inv)
     }
 
     /// Alias → coerce → parse → gate, without executing. `Err` is the text to return.
@@ -191,9 +208,19 @@ impl Executor {
         let mut map = coerce_object(name, args).map_err(|e| format!("[tool error: {e}]"))?;
         coerce_args(name, &mut map)?;
         if is_mcp_tool(name) {
-            return Err(format!(
-                "[tool {name}: MCP tools are not yet ported in Boubou]"
-            ));
+            // Flattened MCP tool `server.tool`: same gate, then the MCP dispatcher.
+            let Some((server, tool)) = mcp::split_qualified(name) else {
+                return Err("[unknown tool]".to_string());
+            };
+            let inv = ToolInvocation::McpCall {
+                server: server.to_string(),
+                tool: tool.to_string(),
+                args: map,
+            };
+            if let Some(blocked) = self.gate.check(&inv, &self.workdir) {
+                return Err(blocked);
+            }
+            return Ok(inv);
         }
         let inv = match ToolInvocation::parse_map(name, &map) {
             Ok(inv) => inv,
@@ -634,7 +661,8 @@ impl Executor {
         // Gate the network calls up front (needs `&mut`), then fan out on `&self`.
         let mut net: Vec<(usize, ToolInvocation)> = Vec::new();
         for (i, c) in calls.iter().enumerate() {
-            if PARALLEL_SAFE.contains(&resolve_alias(&c.tool)) {
+            let real = resolve_alias(&c.tool);
+            if PARALLEL_SAFE.contains(&real) || is_mcp_tool(real) {
                 match self.prepare(&c.tool, &c.args) {
                     Ok(inv) => net.push((i, inv)),
                     Err(text) => results[i] = Some(text),
@@ -642,11 +670,11 @@ impl Executor {
             }
         }
         if !net.is_empty() {
-            let (web, workdir) = (&self.web, self.workdir.as_path());
+            let (web, reg, workdir) = (&self.web, &self.mcp, self.workdir.as_path());
             let outs: Vec<(usize, String)> = std::thread::scope(|s| {
                 let handles: Vec<_> = net
                     .iter()
-                    .map(|(i, inv)| s.spawn(move || (*i, net_dispatch(web, workdir, inv))))
+                    .map(|(i, inv)| s.spawn(move || (*i, net_dispatch(web, reg, workdir, inv))))
                     .collect();
                 handles.into_iter().filter_map(|h| h.join().ok()).collect()
             });
@@ -678,7 +706,7 @@ impl Executor {
 
 /// The network tools need only the web client and the workdir, so `batch_tools` and
 /// `web_search_multi` can fan them out on threads without touching the executor.
-fn net_dispatch(web: &Web, workdir: &Path, inv: &ToolInvocation) -> String {
+fn net_dispatch(web: &Web, mcp: &McpRegistry, workdir: &Path, inv: &ToolInvocation) -> String {
     match inv {
         ToolInvocation::WebSearch { query } => web.search(query, 5),
         ToolInvocation::WebFetch { url } => web.fetch(url, Some(workdir)),
@@ -686,9 +714,7 @@ fn net_dispatch(web: &Web, workdir: &Path, inv: &ToolInvocation) -> String {
             queries,
             max_results,
         } => web.search_multi(queries, max_results.map(|m| m as usize).unwrap_or(3)),
-        ToolInvocation::McpCall { .. } => {
-            "[tool mcp_call: MCP tools are not yet ported in Boubou]".to_string()
-        }
+        ToolInvocation::McpCall { server, tool, args } => mcp.call(server, tool, args, workdir),
         other => format!("[tool {}: not a network tool]", other.name()),
     }
 }

@@ -89,6 +89,15 @@ pub trait ToolRunner {
     fn run_tool(&mut self, name: &str, args: &Value) -> String;
     /// `_SLIM_OUTPUT_MODE`: trim long command output (set once per run).
     fn set_slim_output(&mut self, _on: bool) {}
+    /// `mcp_tool_defs`: flattened `server.tool` definitions for the routed categories.
+    fn mcp_tool_defs(
+        &self,
+        _cats: &BTreeSet<String>,
+        _extra: &BTreeSet<String>,
+        _offline: bool,
+    ) -> Vec<Value> {
+        Vec::new()
+    }
 }
 
 impl ToolRunner for Executor {
@@ -97,6 +106,14 @@ impl ToolRunner for Executor {
     }
     fn set_slim_output(&mut self, on: bool) {
         self.slim_output = on;
+    }
+    fn mcp_tool_defs(
+        &self,
+        cats: &BTreeSet<String>,
+        extra: &BTreeSet<String>,
+        offline: bool,
+    ) -> Vec<Value> {
+        self.mcp.tool_defs(cats, extra, offline)
     }
 }
 
@@ -172,7 +189,7 @@ impl Agent<super::OllamaBackend, Executor> {
     /// The production wiring: streaming Ollama backend, real executor in the workdir.
     pub fn standard(params: RunParams, host: impl Into<String>, offline: bool) -> Result<Self> {
         let backend = super::OllamaBackend::new(host, &params)?;
-        let mut tools = Executor::new(params.workdir.clone());
+        let mut tools = Executor::new(params.workdir.clone()).with_configured_mcp();
         tools.slim_output = params.slim_output;
         let mut agent = Agent::new(params, backend, tools);
         agent.face.offline = offline;
@@ -342,7 +359,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             dedupe_trailing_assistant(&mut messages);
             let ct: Vec<Value> = match (&cats, qa) {
                 (_, true) => face.chat_tool_defs(),
-                (Some(c), false) if !params.ablated("flat_prefill") => face.tools_for_categories(c),
+                (Some(c), false) if !params.ablated("flat_prefill") => {
+                    let mut defs = face.tools_for_categories(c);
+                    defs.extend(tools.mcp_tool_defs(c, &face.extra, face.offline));
+                    defs
+                }
                 _ => face.active_defs(),
             };
             // Pre-call estimate: compact before the server has to refuse.
