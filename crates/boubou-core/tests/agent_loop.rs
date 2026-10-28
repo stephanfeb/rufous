@@ -738,3 +738,176 @@ fn stop_flag_ends_the_run_before_the_next_turn_and_saves() {
         "session saved on stop"
     );
 }
+
+// ---- missing-argument ladder and truncated tool calls (LRAB WF-08 post-mortem) ----
+
+const MISSING_PATH: &str = "[tool error: create_file 缺少参数 'path'。必须提供参数: [\"path\"]。你实际传了: [\"content\"]。 正确示例: create_file(path=\"app.py\", content=\"...文件内容...\")请补全参数后原样重试(内容不变,只补上缺失的参数)。]";
+
+fn pathless_calls(msgs: &[Message]) -> Vec<String> {
+    msgs.iter()
+        .filter(|m| m.role == Role::Assistant)
+        .flat_map(|m| m.tool_calls.iter())
+        .filter(|tc| {
+            tc.function.name == "create_file" && tc.function.arguments.get("path").is_none()
+        })
+        .map(|tc| {
+            tc.function.arguments["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn repeated_missing_path_prunes_history_and_prescribes_chunked_shape() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![
+        ("create_file", json!({"content": "A"}), MISSING_PATH),
+        ("create_file", json!({"content": "B"}), MISSING_PATH),
+        ("create_file", json!({"content": "C"}), MISSING_PATH),
+        (
+            "create_file",
+            json!({"path": "design_notes.md", "content": "D"}),
+            "[created design_notes.md (1 bytes)]",
+        ),
+    ];
+    let msgs = scripted(d.path(), &calls);
+    // Only the most recent failed call survives; A and B (and their errors) were pruned.
+    assert_eq!(pathless_calls(&msgs), vec!["C".to_string()]);
+    let errs = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content.contains("缺少参数 'path'"))
+        .count();
+    assert_eq!(errs, 1, "one missing-arg error left as the single example");
+    // One note (the earlier one went with its pair), prescribing a different call shape.
+    let notes = user_msgs(&msgs, "[参数缺失]");
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].content.contains("append_file"));
+    assert!(notes[0].content.contains("连续 3 次"));
+    assert!(
+        !notes[0].content.contains("计划里尚未生成"),
+        "no plan → no plan hint"
+    );
+    // The generic failure ladder did not fire for this class of error.
+    assert!(user_msgs(&msgs, "先用 list_dir / read_file 确认实际情况").is_empty());
+    // Order: kept failed call → its error → the note; system + task untouched.
+    assert_eq!(msgs[0].role, Role::System);
+    assert_eq!(msgs[1].content, TASK);
+    let c_idx = msgs
+        .iter()
+        .position(|m| {
+            m.role == Role::Assistant
+                && !m.tool_calls.is_empty()
+                && m.tool_calls[0].function.arguments.get("content") == Some(&json!("C"))
+        })
+        .expect("call C");
+    assert!(msgs[c_idx + 1].content.contains("缺少参数"));
+    assert!(msgs[c_idx + 2].content.starts_with("⚠️ [参数缺失]"));
+    // The successful write landed afterwards.
+    assert!(msgs
+        .iter()
+        .any(|m| m.content.starts_with("[created design_notes.md")));
+}
+
+#[test]
+fn complete_call_resets_missing_arg_ladder() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![
+        ("create_file", json!({"content": "A"}), MISSING_PATH),
+        (
+            "create_file",
+            json!({"path": "a.md", "content": "ok"}),
+            "[created a.md (2 bytes)]",
+        ),
+        ("create_file", json!({"content": "B"}), MISSING_PATH),
+    ];
+    let msgs = scripted(d.path(), &calls);
+    // Two isolated misses are not a streak: nothing pruned, no note.
+    assert_eq!(
+        pathless_calls(&msgs),
+        vec!["A".to_string(), "B".to_string()]
+    );
+    assert!(user_msgs(&msgs, "[参数缺失]").is_empty());
+}
+
+struct Recording(Arc<Mutex<Vec<String>>>);
+
+impl ToolRunner for Recording {
+    fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        self.0.lock().expect("lock").push(name.to_string());
+        match name {
+            "finish" => "[TASK_COMPLETE] ok".to_string(),
+            "create_file" => format!(
+                "[created {} (1 bytes)]",
+                args.get("path").and_then(Value::as_str).unwrap_or("?")
+            ),
+            _ => "[ok]".to_string(),
+        }
+    }
+}
+
+fn truncated(args: Value) -> ChatResponse {
+    let mut r = ChatResponse::call("", "create_file", args);
+    r.done_reason = Some("length".into());
+    r.eval_count = Some(8192);
+    r
+}
+
+fn run_recording<F: FnMut(usize) -> ChatResponse>(
+    workdir: &Path,
+    f: F,
+) -> (Vec<Message>, Vec<String>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", workdir),
+        Responder { n: 0, f },
+        Recording(seen.clone()),
+    );
+    let msgs = a
+        .run(start("写一个大文件并验证。"), None, None)
+        .expect("loop");
+    let calls = seen.lock().expect("lock").clone();
+    (msgs, calls)
+}
+
+#[test]
+fn truncated_tool_call_gets_chunking_advice_instead_of_verbatim_retry() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, calls) = run_recording(d.path(), |n| match n {
+        1 => truncated(json!({"content": "x".repeat(300)})),
+        2 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "app.py", "content": "print(1)"}),
+        ),
+        _ => ChatResponse::call("done", "finish", json!({"summary": "wrote app.py"})),
+    });
+    // The truncated call was never executed; only the complete one reached the tools.
+    assert_eq!(calls.iter().filter(|c| *c == "create_file").count(), 1);
+    let err = msgs
+        .iter()
+        .find(|m| m.role == Role::Tool && m.content.contains("截断"))
+        .expect("truncation tool error");
+    assert!(err.content.contains("done_reason=length"));
+    assert!(err.content.contains("\"path\""));
+    assert!(err.content.contains("8192"), "{}", err.content);
+    let note = user_msgs(&msgs, "触到生成 token 上限");
+    assert_eq!(note.len(), 1);
+    assert!(note[0].content.contains("append_file"));
+    assert!(!msgs.iter().any(|m| m.content.contains("原样重试")));
+}
+
+#[test]
+fn truncated_response_with_complete_call_runs_normally() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, calls) = run_recording(d.path(), |n| match n {
+        1 => truncated(json!({"path": "app.py", "content": "print(1)"})),
+        _ => ChatResponse::call("done", "finish", json!({"summary": "wrote app.py"})),
+    });
+    assert_eq!(calls.iter().filter(|c| *c == "create_file").count(), 1);
+    assert!(!msgs.iter().any(|m| m.content.contains("截断")));
+    assert!(msgs
+        .iter()
+        .any(|m| m.content.starts_with("[created app.py")));
+}

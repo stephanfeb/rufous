@@ -178,6 +178,27 @@ PCM, RMS VAD 0.008, 1.2 s silence auto-stop, 60 s cap, same as Mingbird's record
 model's `test_wavs/0.wav` (5.6 s) transcribed in 1.4 s through the CLI and `1.wav` through
 `/api/voice` on a running `boubou serve --features voice`.
 
+## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
+
+Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08
+run (37 consecutive `create_file` calls without `path`), and both are covered by scripted-loop
+tests in `tests/agent_loop.rs`:
+
+- **Missing-argument ladder.** gemma-class models drop a required argument about one call in
+  eight and then copy their own failed call from the history. From the second consecutive
+  missing-argument error for the same tool, the loop removes the earlier failed pairs (the
+  one-call assistant turn, its `缺少参数` tool error and the loop's own note) so one failed
+  example is all the model sees, and prescribes a different call shape (short `create_file`
+  with the key first, then `append_file`), with the plan's still-missing files as a hint.
+  Four notes per run at most; a complete call resets the streak. The generic failure ladder
+  (`先用 list_dir / read_file 确认实际情况`) no longer fires for this class.
+- **Truncated tool call.** When `done_reason=length` and a built-in call lacks required
+  arguments, Ollama has returned the leading arguments of a call cut off by `num_predict`
+  (`content` before `path`). The call is not executed; the tool error names the cap and the
+  missing keys and the chunking advice is injected (three times at most) instead of the
+  generic "retry with the same content". A truncated response whose call is complete runs
+  normally.
+
 ## Step 8 brief (handoff notes, 2026-10-28)
 
 - Voice model installer: `boubou voice --install <lang>` downloading the k2-fsa `tar.bz2`,

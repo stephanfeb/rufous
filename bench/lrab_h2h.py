@@ -290,6 +290,7 @@ def main():
     ap.add_argument("--summary", action="store_true", help="only print the table for --results")
     ap.add_argument("--dry-run", action="store_true", help="print the commands and exit")
     a = ap.parse_args()
+    a.results = os.path.abspath(a.results)   # the boubou arm runs with cwd=workdir
     os.makedirs(a.results, exist_ok=True)
     if a.summary:
         print(summary(a.results))

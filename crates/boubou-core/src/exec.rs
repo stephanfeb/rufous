@@ -795,15 +795,7 @@ fn net_dispatch(web: &Web, mcp: &McpRegistry, workdir: &Path, inv: &ToolInvocati
 /// `_REQ_ARGS`-style actionable message for a missing argument, with a correct example
 /// for the write tools (small models drop `path` three times in a row otherwise).
 fn missing_arg_message(name: &str, key: &str, got: &serde_json::Map<String, Value>) -> String {
-    let req: Vec<String> = tools::core_tools()
-        .into_iter()
-        .chain(tools::advanced_tools())
-        .find(|t| t["function"]["name"] == name)
-        .and_then(|t| t["function"]["parameters"]["required"].as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect();
+    let req = tools::required_args(name);
     let got_keys: Vec<&String> = got.keys().collect();
     let missing: Vec<&String> = if got_keys.is_empty() {
         req.iter().collect()

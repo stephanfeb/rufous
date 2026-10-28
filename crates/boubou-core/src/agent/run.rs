@@ -36,7 +36,7 @@ use crate::ollama::{FunctionCall, Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
 use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
-use crate::tools::{is_mcp_tool, resolve_alias};
+use crate::tools::{is_mcp_tool, required_args, resolve_alias};
 use crate::{text, Error, Result};
 
 /// `_FAIL_MARKERS`: a tool result that means "the action did not happen". Safety-ring
@@ -79,6 +79,72 @@ pub fn is_tool_error(res: &str) -> bool {
 
 const CONTINUE_NOTE: &str =
     "Continue: keep making real progress with tools, or call finish only when fully verified/answered.";
+
+/// Prefix of the loop's own missing-argument notes, so pruning can recognise them.
+const MISSING_ARG_NOTE_MARK: &str = "⚠️ [参数缺失] ";
+
+/// `'key'` named in an executor missing-argument error (`[tool error: X 缺少参数 'key'。…`).
+pub fn missing_arg_key(res: &str) -> Option<&str> {
+    let head = text::head(res, 200);
+    if !head.starts_with("[tool error:") {
+        return None;
+    }
+    let after = head.split("缺少参数 '").nth(1)?;
+    let key = after.split('\'').next()?;
+    (!key.is_empty()).then_some(key)
+}
+
+/// Required arguments of a built-in tool that `args` does not supply (MCP tools: none).
+fn missing_required(name: &str, args: &Map<String, Value>) -> Vec<String> {
+    if is_mcp_tool(name) {
+        return Vec::new();
+    }
+    required_args(name)
+        .into_iter()
+        .filter(|k| !args.contains_key(k))
+        .collect()
+}
+
+/// Remove earlier failed `tool` calls that lacked `key` — the assistant turn (one call), its
+/// missing-argument tool error and the loop's own note after it — so the model is not
+/// few-shotted by its own mistake. The last message (the call being handled now) is kept;
+/// the system message and the first user turn are never touched. Returns the number of
+/// turns removed.
+fn prune_missing_arg_calls(messages: &mut Vec<Message>, tool: &str, key: &str) -> usize {
+    let mut keep = vec![true; messages.len()];
+    let mut removed = 0;
+    let last = messages.len().saturating_sub(1);
+    let mut i = 2.min(last);
+    while i + 1 < last {
+        let m = &messages[i];
+        let failed_call = m.role == Role::Assistant
+            && m.tool_calls.len() == 1
+            && m.tool_calls[0].function.name == tool
+            && !args_map(&m.tool_calls[0].function.arguments).contains_key(key);
+        let next_is_error = messages[i + 1].role == Role::Tool
+            && missing_arg_key(&messages[i + 1].content) == Some(key);
+        if failed_call && next_is_error {
+            keep[i] = false;
+            keep[i + 1] = false;
+            removed += 1;
+            i += 2;
+            if i < last
+                && messages[i].role == Role::User
+                && messages[i].content.starts_with(MISSING_ARG_NOTE_MARK)
+            {
+                keep[i] = false;
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if removed > 0 {
+        let mut k = keep.into_iter();
+        messages.retain(|_| k.next().unwrap_or(true));
+    }
+    removed
+}
 
 const CTX_OVERFLOW_KEYS: [&str; 7] = [
     "prompt is too long",
@@ -371,6 +437,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut bash_teach_warns = 0;
         let mut empty_turns = 0;
         let mut len_truncated = false;
+        let mut missing_arg_streak: HashMap<String, usize> = HashMap::new();
+        let mut missing_arg_warns = 0;
+        let mut truncated_call_warns = 0;
         let mut empty_resets = 0;
         let mut empty_total = 0;
         let mut test_guard_warns = 0;
@@ -688,6 +757,23 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     tc.function.name = n.to_string();
                 }
             }
+            // A call cut off by the generation cap: Ollama still returns it, but only with
+            // the leading arguments (`content` before `path` for gemma), so it must not be
+            // executed as a plain missing-argument mistake — the model would be told to
+            // resend the same oversized content verbatim.
+            let truncated_calls: Vec<(String, Vec<String>)> = if r.done_reason.as_deref()
+                == Some("length")
+            {
+                tcs.iter()
+                    .filter_map(|tc| {
+                        let missing =
+                            missing_required(&tc.function.name, &args_map(&tc.function.arguments));
+                        (!missing.is_empty()).then(|| (tc.function.name.clone(), missing))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let mut turn = Message::assistant(content.clone());
             turn.tool_calls = tcs.clone();
             messages.push(turn);
@@ -777,6 +863,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 let args_v = Value::Object(args.clone());
                 let sig_json = args_v.to_string(); // keys sorted: serde_json Map is a BTreeMap
                 let res: String;
+                // A note that must follow this call's tool output (call → error → note).
+                let mut after_output: Option<String> = None;
                 let n = name.as_str();
 
                 if (face.is_disabled(n) || !face.is_active(n)) && !is_mcp_tool(n) {
@@ -814,6 +902,35 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             "⚠️ 工具 {name} 已不可用(被禁用或不在装配列表)且你已多次尝试调用它。再次调用也不会执行,该工具不会再出现在你的工具列表里。现在就换动作:用 create_file 写产出文件推进,需要看已有产物就用 read_file/list_dir。"
                         )));
                     }
+                } else if let Some((_, missing)) =
+                    truncated_calls.iter().find(|(nm, _)| *nm == name)
+                {
+                    // Truncated call (done_reason=length, required args missing): chunking
+                    // advice instead of the generic "retry with the same content".
+                    truncated_call_warns += 1;
+                    let res = format!(
+                        "[tool error: {name} 调用被生成 token 上限({})截断(done_reason=length, eval={}),参数不完整:缺 {missing:?}。这不是参数写错,是单次输出装不下。不要原样重发整段内容。]",
+                        params.num_predict,
+                        r.eval_count.map_or("?".to_string(), |v| v.to_string())
+                    );
+                    log!(
+                        "[{i}] ⚠️ 工具调用被截断: {name} 缺 {missing:?}(eval={:?})",
+                        r.eval_count
+                    );
+                    sink(AgentEvent::ToolResult {
+                        name: name.clone(),
+                        args: args_v.clone(),
+                        output: res.clone(),
+                        blocked: true,
+                    });
+                    messages.push(Message::tool_output(res));
+                    if truncated_call_warns <= 3 {
+                        messages.push(Message::user(format!(
+                            "⚠️ 你的上一轮 {name} 调用触到生成 token 上限({})被截断,后面的参数 {missing:?} 丢失了。大内容请分块交付:先用 create_file(path=\"<文件名>\", content=\"<开头部分>\") 写文件骨架或前半部分,再用 append_file(path=\"<文件名>\", content=\"<后续部分>\") 逐段追加(每次几百行以内);或者精简实现。每次调用都要先给 path 再给 content。",
+                            params.num_predict
+                        )));
+                    }
+                    continue;
                 } else if n != "finish"
                     && last_sig.as_ref() == Some(&(name.clone(), sig_json.clone()))
                     && dup_warns < 3
@@ -1088,35 +1205,69 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             "提示:run_bash 执行的是 Windows shell 命令(cmd),不能直接运行 Python 代码。正确做法:先用 create_file 把代码写入 .py 文件,再用 run_bash 运行:python 文件名.py",
                         ));
                     }
-                    let fc = fail_count.entry(name.clone()).or_insert(0);
-                    *fc += 1;
-                    if *fc >= 3 {
-                        if n == "edit_file" {
-                            face.disable("edit_file");
-                            messages.push(Message::user(
+                    if let Some(key) = missing_arg_key(&res).map(str::to_string) {
+                        // Missing-argument ladder: gemma-class models drop `path` about one
+                        // call in eight and then copy their own failed call from the history
+                        // (WF-08: 37 path-less create_file calls in a row). From the second
+                        // consecutive miss on, remove the earlier failed pairs and prescribe
+                        // a different call shape instead of "retry verbatim".
+                        let st = missing_arg_streak.entry(name.clone()).or_insert(0);
+                        *st += 1;
+                        let st = *st;
+                        if st >= 2 && missing_arg_warns < 4 {
+                            missing_arg_warns += 1;
+                            let pruned = prune_missing_arg_calls(&mut messages, n, &key);
+                            if pruned > 0 {
+                                save!();
+                            }
+                            let planned = artifacts::plan_named_missing(workdir);
+                            let plan_hint = if planned.is_empty() {
+                                String::new()
+                            } else {
+                                format!("计划里尚未生成的文件:{}。", planned.join(", "))
+                            };
+                            log!(
+                                "[{i}] ⚠️ {name} 连续 {st} 次缺少参数 '{key}',已移除 {pruned} 组失败调用,改派分块写法"
+                            );
+                            after_output = Some(format!(
+                                "{MISSING_ARG_NOTE_MARK}你已连续 {st} 次调用 {name} 都漏掉参数 '{key}'(之前失败的调用已从对话中移除,不要照抄它们)。不要整段重发同样的内容。换一种调用形状:先 {name}({key}=\"<文件名>\", content=\"<开头几行>\") 建立文件,再用 append_file(path=\"<文件名>\", content=\"<后续内容>\") 逐段追加。每次调用都必须同时带上 '{key}' 和 content,先写 {key}。{plan_hint}"
+                            ));
+                        }
+                    } else {
+                        let fc = fail_count.entry(name.clone()).or_insert(0);
+                        *fc += 1;
+                        if *fc >= 3 {
+                            if n == "edit_file" {
+                                face.disable("edit_file");
+                                messages.push(Message::user(
                                 "⚠️ edit_file 已连续 3 次失败,已被禁用。以后一律用 create_file 写入完整文件内容来修改文件。",
                             ));
-                            *fc = 0;
-                        } else if redirect_warns < 4 {
-                            redirect_warns += 1;
-                            let path_refused =
-                                res.contains("在工作目录之外") || res.contains("越界");
-                            let hint = if path_refused {
-                                "⚠️ 被拒绝的路径在工作目录之外。任务的全部输入文件都已经在你的工作目录里:立即执行 list_dir(path='.') 列出当前目录,直接读取列出的文件;不要再访问工作目录以外的任何路径。"
-                            } else if n == "run_bash" {
-                                "⚠️ 不要 cd 到 /workspace 等绝对路径——工作目录已设定,直接运行命令或用相对路径;先用 list_dir 确认目录内容,用 read_file/pwd 确认实际情况。"
-                            } else {
-                                "⚠️ 先用 list_dir / read_file 确认实际情况,重新构造参数;或换一个实现方式。"
-                            };
-                            let count = *fc;
-                            messages.push(Message::user(format!(
+                                *fc = 0;
+                            } else if redirect_warns < 4 {
+                                redirect_warns += 1;
+                                let path_refused =
+                                    res.contains("在工作目录之外") || res.contains("越界");
+                                let hint = if path_refused {
+                                    "⚠️ 被拒绝的路径在工作目录之外。任务的全部输入文件都已经在你的工作目录里:立即执行 list_dir(path='.') 列出当前目录,直接读取列出的文件;不要再访问工作目录以外的任何路径。"
+                                } else if n == "run_bash" {
+                                    "⚠️ 不要 cd 到 /workspace 等绝对路径——工作目录已设定,直接运行命令或用相对路径;先用 list_dir 确认目录内容,用 read_file/pwd 确认实际情况。"
+                                } else {
+                                    "⚠️ 先用 list_dir / read_file 确认实际情况,重新构造参数;或换一个实现方式。"
+                                };
+                                let count = *fc;
+                                messages.push(Message::user(format!(
                                 "⚠️ 你已连续 {count} 次调用 {name} 失败。立刻停止重试,必须换策略:{hint}"
                             )));
-                            *fc = 0;
+                                *fc = 0;
+                            }
                         }
                     }
-                } else if fail_count.get(n).is_some_and(|c| *c > 0) {
-                    fail_count.insert(name.clone(), 0); // only a success of the same tool resets
+                } else {
+                    // Only a success of the same tool resets its ladders.
+                    if fail_count.get(n).is_some_and(|c| *c > 0) {
+                        fail_count.insert(name.clone(), 0);
+                    }
+                    missing_arg_streak.insert(name.clone(), 0);
                 }
 
                 // Repeat-success streaks.
@@ -1209,6 +1360,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                 }
                 messages.push(Message::tool_output(res));
+                if let Some(note) = after_output.take() {
+                    messages.push(Message::user(note));
+                }
                 // Stale-plan reminder (never a block, twice at most).
                 if !qa && todo_nudge_warns < 2 && todo_stale >= TODO_STALE_NUDGE {
                     let (t_done, t_all) = todo_progress(&load_todo(workdir));

@@ -68,6 +68,19 @@ pub fn is_known_tool(name: &str) -> bool {
     CORE_TOOL_NAMES.contains(&name) || ADVANCED_TOOL_NAMES.contains(&name)
 }
 
+/// Required argument names of a built-in tool (empty for MCP and unknown tools).
+pub fn required_args(name: &str) -> Vec<String> {
+    core_tools()
+        .into_iter()
+        .chain(advanced_tools())
+        .find(|t| t["function"]["name"] == name)
+        .and_then(|t| t["function"]["parameters"]["required"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
 /// MCP tools are flattened as `server.tool`; a dotted name is the only marker needed here.
 pub fn is_mcp_tool(name: &str) -> bool {
     name.contains('.')
