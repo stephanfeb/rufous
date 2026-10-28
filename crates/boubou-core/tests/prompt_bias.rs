@@ -72,6 +72,7 @@ fn project_system_md_appends_or_replaces() {
         system_file: None,
         unattended: false,
         skills,
+        profile_note: None,
     };
     let base = prompt::system_prompt(&opts(vec![]));
     assert!(base.starts_with("You are an autonomous AI agent"));
@@ -113,6 +114,7 @@ fn project_system_md_appends_or_replaces() {
         system_file: Some(&wd.join("override.txt")),
         unattended: false,
         skills: vec![],
+        profile_note: None,
     });
     assert!(p.starts_with("OVERRIDE PROMPT") && p.contains("You are Tally"));
 
@@ -161,6 +163,43 @@ fn agent(wd: &Path, logs: Arc<Mutex<Vec<String>>>) -> Agent<Finish, OkTools> {
                 logs.lock().expect("lock").push(l);
             }
         })
+}
+
+#[test]
+fn a_profile_prompt_note_enters_the_task_prompt_only() {
+    // bead 65d.15: the honest-failure nudge is a per-tag profile setting. gemma4:12b carries
+    // it; gemma4:e2b (same family) does not. It sits in the system prompt, so the task turn
+    // and the Q&A routing that reads it are untouched.
+    let d = tempfile::tempdir().expect("tmp");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let mut a = agent(d.path(), logs);
+    let task = "Run python fetch.py and count the rows";
+    let m = a.task_messages(task);
+    assert_eq!(m[0].role, Role::System);
+    let note_at = m[0]
+        .content
+        .find("MODEL PROFILE NOTE")
+        .expect("note present for gemma4:12b");
+    assert!(m[0].content[note_at..].contains(boubou_core::profile::HONEST_FAILURE_NUDGE));
+    assert!(
+        note_at
+            < m[0]
+                .content
+                .find("Current working directory")
+                .expect("workdir line"),
+        "note comes before the dynamic workdir line"
+    );
+    assert_eq!(m[1].content, task, "the task turn is untouched");
+    // A question still routes to Q&A, whose prompt carries no profile note.
+    let q = a.task_messages("What does EBITDA stand for?");
+    let out = a.run(q, None, None).expect("loop");
+    assert!(out[0].content.contains("chatting with the user"));
+    assert!(!out[0].content.contains("MODEL PROFILE NOTE"));
+
+    let mut e2b = Agent::new(RunParams::plain("gemma4:e2b", d.path()), Finish, OkTools);
+    let m = e2b.task_messages(task);
+    assert!(!m[0].content.contains("MODEL PROFILE NOTE"));
+    assert_eq!(m[1].content, task);
 }
 
 #[test]

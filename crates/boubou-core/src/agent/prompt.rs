@@ -180,6 +180,9 @@ pub struct PromptOptions<'a> {
     pub unattended: bool,
     /// Skills in effect for this task (`name`, body), prefilled after the base prompt.
     pub skills: Vec<(String, String)>,
+    /// The model profile's prompt note (bead 65d.15), after the skills and before the
+    /// workdir line. Only the task prompt carries it; the Q&A prompt does not.
+    pub profile_note: Option<&'a str>,
 }
 
 /// `system_prompt()`: static prefill + project instructions + skills in effect + dynamic
@@ -204,6 +207,11 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
         base.push_str(&format!(
             "\n\nSKILL IN EFFECT FOR THIS TASK (follow it):\n### SKILL: {name}\n{}",
             body.trim_end()
+        ));
+    }
+    if let Some(note) = opts.profile_note.map(str::trim).filter(|n| !n.is_empty()) {
+        base.push_str(&format!(
+            "\n\nMODEL PROFILE NOTE (applies to this task):\n{note}"
         ));
     }
     if let Some(wd) = opts.workdir {

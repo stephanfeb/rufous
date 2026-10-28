@@ -34,9 +34,21 @@ pub struct ModelProfile {
     /// Format rescue: a text-only task turn ending in `Finish: …` (or a bare
     /// `finish{summary: …}`) is read as the `finish` call the model meant.
     pub finish_prose_rescue: bool,
+    /// A paragraph appended to the task system prompt (bead 65d.15). Wording that one model
+    /// needs and the others do not: it is in front of the model from the first turn, before
+    /// any gate or corrector note would be. It lives in the system prompt, not the task turn,
+    /// so Q&A routing and the gates' re-read of the task text stay unaffected.
+    pub prompt_note: Option<String>,
     /// One line of evidence, shown in the run-start log.
     pub note: String,
 }
+
+/// The honest-failure nudge (bead 65d.15). qwen3.5:9b and gemma4:12b read a failing
+/// `fetch.py` as "a stub", then rewrite it, copy the file from a sibling directory or type a
+/// dataset by hand and report success. The anti-fabrication wording the harness already has
+/// lives in the corrector notes, which fire only after two identical failures; these models
+/// vary the call instead, so that text never reaches them.
+pub const HONEST_FAILURE_NUDGE: &str = "If an input the task depends on cannot be obtained (a download or service fails, a file is missing), do not substitute it from elsewhere and do not generate it yourself: report the failure in the deliverable and in the finish summary, then finish. An honest failure report is the correct outcome in that case.";
 
 impl Default for ModelProfile {
     fn default() -> Self {
@@ -47,6 +59,7 @@ impl Default for ModelProfile {
             hide_tools: Vec::new(),
             max_prefill_skills: MAX_PREFILL_SKILLS,
             finish_prose_rescue: false,
+            prompt_note: None,
             note: String::new(),
         }
     }
@@ -62,6 +75,8 @@ pub struct ProfileOverride {
     pub hide_tools: Option<Vec<String>>,
     pub max_prefill_skills: Option<usize>,
     pub finish_prose_rescue: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -82,6 +97,10 @@ impl ProfileOverride {
         }
         if let Some(r) = self.finish_prose_rescue {
             p.finish_prose_rescue = r;
+        }
+        if let Some(t) = &self.prompt_note {
+            // An empty string in config.json switches a built-in note off.
+            p.prompt_note = (!t.trim().is_empty()).then(|| t.clone());
         }
         if let Some(n) = &self.note {
             p.note = n.clone();
@@ -109,9 +128,25 @@ fn builtin() -> Vec<(&'static str, ProfileOverride)> {
             "gemma4:12b",
             ProfileOverride {
                 think: Some(false),
+                prompt_note: Some(HONEST_FAILURE_NUDGE.to_string()),
                 note: Some(
                     "thinking runs away past the time budget on laptop hardware \
-                     (profiles false_finish: 9/10 trials killed at 4 min after 1–4 calls; loop 3/10)"
+                     (profiles false_finish: 9/10 trials killed at 4 min after 1–4 calls; loop 3/10); \
+                     with think off it types a dataset.csv by hand when fetch fails \
+                     (profiles_v2 loop t00/t01/t05 → 3/10)"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        ),
+        (
+            "qwen3.5:9b",
+            ProfileOverride {
+                prompt_note: Some(HONEST_FAILURE_NUDGE.to_string()),
+                note: Some(
+                    "reads a failing fetch.py as a stub and substitutes the input: rewrites the \
+                     script or copies dataset.csv from a sibling directory, then reports success \
+                     (profiles loop t00/t04/t06/t08 → 4/10, corrector never reached)"
                         .to_string(),
                 ),
                 ..Default::default()
@@ -171,6 +206,14 @@ impl ModelProfile {
         if self.finish_prose_rescue {
             parts.push("finish-prose rescue".to_string());
         }
+        if let Some(t) = &self.prompt_note {
+            let kind = if t == HONEST_FAILURE_NUDGE {
+                "honest-failure nudge"
+            } else {
+                "custom"
+            };
+            parts.push(format!("prompt note ({kind})"));
+        }
         if parts.is_empty() {
             "no model-specific settings".to_string()
         } else {
@@ -204,9 +247,44 @@ mod tests {
         assert_eq!(big.name, "gemma4:12b");
         assert!(big.finish_prose_rescue, "family setting kept");
         assert_eq!(big.think, Some(false));
+        assert_eq!(big.prompt_note.as_deref(), Some(HONEST_FAILURE_NUDGE));
         let q = builtin_for("qwen3.5:9b");
-        assert_eq!(q, ModelProfile::default());
-        assert_eq!(q.describe(), "no model-specific settings");
+        assert_eq!(q.name, "qwen3.5:9b");
+        assert_eq!(q.think, None, "the nudge is the only qwen setting");
+        assert!(!q.finish_prose_rescue);
+        assert_eq!(q.prompt_note.as_deref(), Some(HONEST_FAILURE_NUDGE));
+        assert_eq!(q.describe(), "prompt note (honest-failure nudge)");
+        let plain = builtin_for("llama3.1:8b");
+        assert_eq!(plain, ModelProfile::default());
+        assert_eq!(plain.describe(), "no model-specific settings");
+        let e4b = builtin_for("gemma4:e4b");
+        assert_eq!(
+            e4b.prompt_note, None,
+            "the nudge is per tag, not per family"
+        );
+    }
+
+    #[test]
+    fn an_empty_config_note_switches_the_built_in_one_off() {
+        let mut o = BTreeMap::new();
+        o.insert(
+            "qwen3.5:9b".to_string(),
+            ProfileOverride {
+                prompt_note: Some(String::new()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(resolve("qwen3.5:9b", &o).prompt_note, None);
+        o.insert(
+            "gemma4".to_string(),
+            ProfileOverride {
+                prompt_note: Some("Answer in French.".to_string()),
+                ..Default::default()
+            },
+        );
+        let p = resolve("gemma4:e2b", &o);
+        assert_eq!(p.prompt_note.as_deref(), Some("Answer in French."));
+        assert!(p.describe().contains("prompt note (custom)"));
     }
 
     #[test]
@@ -242,10 +320,13 @@ mod tests {
 
     #[test]
     fn override_round_trips_through_json() {
-        let text = r#"{"think": false, "max_prefill_skills": 1}"#;
+        let text = r#"{"think": false, "max_prefill_skills": 1, "prompt_note": "Be brief."}"#;
         let o: ProfileOverride = serde_json::from_str(text).expect("parse");
         assert_eq!(o.think, Some(false));
         assert_eq!(o.max_prefill_skills, Some(1));
         assert_eq!(o.temperature, None);
+        assert_eq!(o.prompt_note.as_deref(), Some("Be brief."));
+        let back = serde_json::to_string(&o).expect("serialise");
+        assert!(back.contains("Be brief.") && !back.contains("\"note\""));
     }
 }

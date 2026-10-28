@@ -411,6 +411,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             system_file: self.params.system_file.as_deref(),
             unattended: self.params.unattended,
             skills,
+            profile_note: self.params.profile.prompt_note.as_deref(),
         };
         vec![
             Message::system(prompt::system_prompt(&opts)),
@@ -1393,7 +1394,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 text::clen(&orig)
                             );
                             messages.push(Message::user(format!(
-                                "⚠️ Pre-delivery check: before finishing, go through the ORIGINAL TASK INSTRUCTIONS below point by point and confirm your final deliverable meets every one of them, especially the format of answers/artefacts (units, decimal places, rounding), naming, value ranges, and every sub-item the task names explicitly. Details of the brief are easily forgotten by the end of a long task.\nIf anything is not met: fix the deliverable first, then finish again. If everything is met: finish again and summarise the outcome for the user in two or three sentences in summary (what was done, what the artefact/answer is).\n--- original task instructions ---\n{orig}\n--- end of original task instructions ---"
+                                "⚠️ Pre-delivery check: before finishing, go through the ORIGINAL TASK INSTRUCTIONS below point by point and confirm your final deliverable meets every one of them, especially the format of answers/artefacts (units, decimal places, rounding), naming, value ranges, and every sub-item the task names explicitly. Details of the brief are easily forgotten by the end of a long task.\nIf anything is not met: fix the deliverable first, then finish again. A step that failed because of the environment (network, service, missing input) is not something to fix here: do not obtain or create that input another way; keep the failure stated in the deliverable and in the summary, and finish again. If everything is met: finish again and summarise the outcome for the user in two or three sentences in summary (what was done, what the artefact/answer is).\n--- original task instructions ---\n{orig}\n--- end of original task instructions ---"
                             )));
                             messages.push(Message::tool_output(
                                 "[finish pending self-check: verify against the original task instructions above, then finish again.]",

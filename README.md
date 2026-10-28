@@ -35,9 +35,10 @@ the child directory, audit log, exit 53 on a severe violation). `boubou plan` sh
 machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
 automatically after four consecutive 500s), an OpenAI-compatible local server (LM Studio,
 llama-server) or a cloud provider. Model-specific settings come from a per-model profile
-(`think`, `temperature`, hidden tools, prefill cap, the gemma4 finish-prose rescue), logged as
-`[profile] …` at run start; `"profiles": {"gemma4:12b": {"think": true}}` in `config.json`
-overrides a built-in entry per family or tag. Voice input is behind the `voice` cargo feature
+(`think`, `temperature`, hidden tools, prefill cap, the gemma4 finish-prose rescue, a
+`prompt_note` appended to the task prompt), logged as `[profile] …` at run start;
+`"profiles": {"gemma4:12b": {"think": true, "prompt_note": ""}}` in `config.json` overrides a
+built-in entry per family or tag (an empty note switches the built-in one off). Voice input is behind the `voice` cargo feature
 (`cargo build --features voice`, sherpa-onnx linked statically): `boubou voice <wav>` and the
 web UI's mic button transcribe with the bundled sherpa-onnx models (English by default, Chinese also supported) from `~/.ollama_agent/stt/`
 or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. Next: voice model installer, Tauri

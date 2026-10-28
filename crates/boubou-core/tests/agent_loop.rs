@@ -267,6 +267,12 @@ fn finish_reread_injects_task_once_then_passes() {
     assert!(rereads[0].content.contains(task));
     assert!(rereads[0].content.contains("finish again"));
     assert!(rereads[0].content.starts_with("⚠️"));
+    // bead 65d.14: the re-read carries the honest-failure clause gate 5 already has, so
+    // "fix the deliverable" cannot be read as "obtain the missing input another way"
+    // (profiles qwen3.5:9b loop t06, gemma4:12b loop t05).
+    assert!(rereads[0]
+        .content
+        .contains("do not obtain or create that input another way"));
     assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
 }
 
