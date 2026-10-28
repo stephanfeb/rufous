@@ -10,7 +10,11 @@ Mingbird's `_cmd_mingbird`, so the two arms differ only in the runtime under tes
 Usage (the mingbird arm needs `requests` and `beautifulsoup4` in the interpreter):
   uv run --with requests --with beautifulsoup4 python bench/lrab_h2h.py --model gemma4:e2b
   python bench/lrab_h2h.py --arms boubou --tasks WF-01,WF-07 --timeout-min 20
+  python bench/lrab_h2h.py --reps 3             # 3 replications, (task, arm) cells round-robin
   python bench/lrab_h2h.py --summary            # table from an existing results dir
+Every cell also gets process metrics (tool calls, peak prompt tokens, guard firings, integrity;
+see process_metrics.py) under score.json["process"], and the summary reports per-arm means with
+a bootstrap 95% CI over tasks when there is more than one replication.
 
 Env: MINGBIRD_ROOT (default: sibling `../Mingbird-agent`), BOUBOU_BIN (default: PATH, then
 this checkout's target/release then target/debug), AGENT_CTX / AGENT_SLIM_OUTPUT pass through.
@@ -22,7 +26,11 @@ import os
 import shutil
 import subprocess
 import sys
+import random
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import process_metrics  # noqa: E402  (same directory)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BOUBOU_ROOT = os.path.dirname(HERE)
@@ -76,7 +84,25 @@ def boubou_cmd(workdir, model):
     env["AGENT_SLIM_OUTPUT"] = os.environ.get("AGENT_SLIM_OUTPUT", "0")
     env["AGENT_UNATTENDED"] = "1"
     env.setdefault("PYTHONUTF8", "1")
+    ensure_python_on_path(env)
     return [boubou_exe(), "run", model, os.path.join(workdir, "task_input.txt"), workdir], env
+
+
+def ensure_python_on_path(env):
+    """The tasks say `python …`; macOS/Linux often only ship `python3`. Under `uv run` the venv
+    provides `python`, under plain `python3` it does not (probe smoke 2026-10-28: every command
+    exited 127). Prepend a shim dir with `python` -> this interpreter when it is missing."""
+    if os.name == "nt" or shutil.which("python", path=env.get("PATH")):
+        return env
+    shim = os.path.join(BENCH_HOME, "bin")
+    os.makedirs(shim, exist_ok=True)
+    link = os.path.join(shim, "python")
+    if os.path.islink(link) and os.readlink(link) != sys.executable:
+        os.remove(link)
+    if not os.path.exists(link):
+        os.symlink(sys.executable, link)
+    env["PATH"] = shim + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def _tree_kill(p):
@@ -215,13 +241,14 @@ def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at
         score["failure_mode"] = classify(rc, wall, out + err, score, workdir)
         if meta:
             score["resume"] = meta
+    score["process"] = process_metrics.cell_metrics(out + err, task["prompt"], workdir)
     with open(os.path.join(out_dir, "score.json"), "w", encoding="utf-8") as f:
         json.dump(score, f, ensure_ascii=False, indent=2)
     return score
 
 
 # -------------------------------------------------------------- mingbird arm
-def run_mingbird_arm(task_path, model, results, run_id, timeout_min, kill_at_pct, judge, log):
+def run_mingbird_arm(task_path, task, model, results, run_id, timeout_min, kill_at_pct, judge, log):
     """Mingbird's own runner, unmodified. It writes <results>/<run_id>/score.json itself."""
     cmd = [sys.executable, os.path.join(LRAB, "runners", "run_bench.py"), "--agent", "mingbird",
            "--task", task_path, "--model", model, "--results", results,
@@ -232,7 +259,10 @@ def run_mingbird_arm(task_path, model, results, run_id, timeout_min, kill_at_pct
         cmd += ["--judge", judge]
     subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=MINGBIRD_ROOT)
     sp = os.path.join(results, run_id, "score.json")
-    return json.load(open(sp, encoding="utf-8")) if os.path.exists(sp) else {}
+    if not os.path.exists(sp):
+        return {}
+    process_metrics.annotate_dir(os.path.join(results, run_id), task["prompt"])
+    return json.load(open(sp, encoding="utf-8"))
 
 
 # ------------------------------------------------------------------- driver
@@ -255,25 +285,92 @@ def cell(d):
     return f"{d.get('total', 0):.2f} ({d.get('wall_seconds', 0):.0f}s, {d.get('failure_mode')})"
 
 
+def cell_total(d):
+    return 0.0 if d.get("failure_mode") == "timeout" else float(d.get("total", 0) or 0)
+
+
+def cell_reps(ds):
+    """One task × arm over its replications: mean and spread."""
+    v = [cell_total(d) for d in ds]
+    m = sum(v) / len(v)
+    if len(v) == 1:
+        return cell(ds[0])
+    modes = sorted({d.get("failure_mode", "?") for d in ds})
+    return f"{m:.2f} [{min(v):.2f}–{max(v):.2f}] n={len(v)} ({'/'.join(modes)})"
+
+
+def bootstrap_ci(task_means, n=2000, seed=0):
+    """95% CI of the arm mean, resampling tasks with replacement (tasks are the unit)."""
+    if len(task_means) < 2:
+        return None
+    rng = random.Random(seed)
+    k = len(task_means)
+    boots = sorted(sum(rng.choice(task_means) for _ in range(k)) / k for _ in range(n))
+    return boots[int(0.025 * n)], boots[int(0.975 * n) - 1]
+
+
+PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("fail", "failed_calls"),
+                ("loop", "loop_interceptions"), ("refuse", "finish_refusals"),
+                ("empty", "empty_resets"), ("integrity", "integrity")]
+
+
 def summary(results):
     rows = {}
     for sp in glob.glob(os.path.join(results, "*", "score.json")):
         d = json.load(open(sp, encoding="utf-8"))
-        rows.setdefault(d["task_id"], {})[d["agent"]] = d
+        rows.setdefault(d["task_id"], {}).setdefault(d["agent"], []).append(d)
+    arms = ["mingbird", "boubou"]
+    order = sorted(rows, key=lambda x: (not x.startswith("WF"), x))
     lines = ["| task | mingbird | boubou |", "|---|---|---|"]
-    tot = {"mingbird": [], "boubou": []}
-    for tid in sorted(rows, key=lambda x: (not x.startswith("WF"), x)):
+    per_task = {a: [] for a in arms}
+    for tid in order:
         r = rows[tid]
-        lines.append(f"| {tid} | {cell(r.get('mingbird'))} | {cell(r.get('boubou'))} |")
-        for a in tot:
+        lines.append(f"| {tid} | {cell_reps(r['mingbird']) if 'mingbird' in r else '—'} "
+                     f"| {cell_reps(r['boubou']) if 'boubou' in r else '—'} |")
+        for a in arms:
             if a in r:
-                d = r[a]
-                tot[a].append((0 if d.get("failure_mode") == "timeout" else d.get("total", 0),
-                               d.get("wall_seconds", 0)))
-    for a, v in tot.items():
-        if v:
-            lines.append(f"\n{a}: n={len(v)} mean total={sum(x for x, _ in v) / len(v):.3f} "
-                         f"wall={sum(w for _, w in v) / 60:.0f} min")
+                per_task[a].append((sum(cell_total(d) for d in r[a]) / len(r[a]),
+                                    sum(d.get("wall_seconds", 0) for d in r[a])))
+    for a in arms:
+        v = per_task[a]
+        if not v:
+            continue
+        means = [m for m, _ in v]
+        reps = sum(len(rows[t].get(a, [])) for t in order)
+        line = (f"\n{a}: tasks={len(v)} cells={reps} mean total={sum(means) / len(means):.3f} "
+                f"wall={sum(w for _, w in v) / 60:.0f} min")
+        ci = bootstrap_ci(means)
+        if ci and reps > len(v):
+            line += f" 95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
+        lines.append(line)
+    # Process table: per-arm means over cells, then per task.
+    have = [d for r in rows.values() for ds in r.values() for d in ds if "process" in d]
+    if have:
+        lines.append("\n| process (mean per cell) | " + " | ".join(arms) + " |")
+        lines.append("|---|" + "---|" * len(arms))
+        for label, key in PROCESS_COLS:
+            vals = []
+            for a in arms:
+                cells = [d["process"][key] for t in order for d in rows[t].get(a, []) if "process" in d]
+                vals.append(f"{sum(cells) / len(cells):.1f}" if cells else "—")
+            lines.append(f"| {label} | " + " | ".join(vals) + " |")
+        lines.append("\n| task | " + " | ".join(f"{a} calls/peak/fail/loop/refuse/integrity" for a in arms) + " |")
+        lines.append("|---|" + "---|" * len(arms))
+        for tid in order:
+            parts = []
+            for a in arms:
+                ds = [d for d in rows[tid].get(a, []) if "process" in d]
+                if not ds:
+                    parts.append("—")
+                    continue
+                pm = [sum(d["process"][k] for d in ds) / len(ds) for _l, k in PROCESS_COLS if k != "empty_resets"]
+                parts.append("/".join(f"{x:.0f}" for x in pm))
+            lines.append(f"| {tid} | " + " | ".join(parts) + " |")
+        missing = [(d["agent"], d["task_id"], d["process"]["named_files_missing"]) for d in have
+                   if d["process"].get("named_files_missing")]
+        if missing:
+            lines.append("\nfinished with named deliverables missing: " +
+                         "; ".join(f"{a} {t} {m}" for a, t, m in missing))
     text = "\n".join(lines)
     with open(os.path.join(results, "summary.md"), "w", encoding="utf-8") as f:
         f.write(text + "\n")
@@ -291,6 +388,9 @@ def main():
     ap.add_argument("--timeout-min", type=int, default=20)
     ap.add_argument("--kill-at-pct", type=int, default=None, help="force kill-resume at this %% of budget")
     ap.add_argument("--judge", default="", help="judge model; empty = deterministic scoring only")
+    ap.add_argument("--reps", type=int, default=1,
+                    help="replications per cell; cells run round-robin over (rep, task, arm) with the "
+                         "arm order alternating per task so machine drift cannot follow one arm")
     ap.add_argument("--summary", action="store_true", help="only print the table for --results")
     ap.add_argument("--dry-run", action="store_true", help="print the commands and exit")
     a = ap.parse_args()
@@ -303,34 +403,47 @@ def main():
         sys.exit(f"Mingbird checkout not found at {MINGBIRD_ROOT} (set MINGBIRD_ROOT)")
     arms = [x for x in a.arms.split(",") if x]
     ids = {x for x in a.tasks.split(",") if x}
-    for task_path, task in list_tasks(a.tiers.split(","), ids, a.heldout):
+    tasks = list_tasks(a.tiers.split(","), ids, a.heldout)
+    cells = []
+    for rep in range(a.reps):
+        for ti, (task_path, task) in enumerate(tasks):
+            arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
+            for arm in arm_order:
+                cells.append((rep, task_path, task, arm))
+    for rep, task_path, task, arm in cells:
         kill_at = a.kill_at_pct if a.kill_at_pct is not None else task.get("kill_at_pct")
         budget = a.timeout_min
-        for arm in arms:
-            run_id = f"{arm}_{task['id']}"
-            out_dir = os.path.join(a.results, run_id)
-            if os.path.exists(os.path.join(out_dir, "score.json")):
-                print(f"skip {run_id} (scored)", flush=True)
-                continue
-            if a.dry_run:
-                if arm == "boubou":
-                    print(run_id, boubou_cmd(os.path.join(out_dir, "workdir"), a.model)[0])
-                else:
-                    print(run_id, "run_bench.py --agent mingbird --task", task_path)
-                continue
-            os.makedirs(out_dir, exist_ok=True)
-            print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m"
-                  + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
-            t0 = time.time()
+        run_id = f"{arm}_{task['id']}" + (f"_r{rep}" if a.reps > 1 else "")
+        out_dir = os.path.join(a.results, run_id)
+        if os.path.exists(os.path.join(out_dir, "score.json")):
+            print(f"skip {run_id} (scored)", flush=True)
+            continue
+        if a.dry_run:
             if arm == "boubou":
-                sc = run_boubou_arm(task_path, task, a.model, out_dir, run_id, budget, kill_at, a.judge)
+                print(run_id, boubou_cmd(os.path.join(out_dir, "workdir"), a.model)[0])
             else:
-                with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:
-                    sc = run_mingbird_arm(task_path, a.model, a.results, run_id, budget, kill_at, a.judge, log)
-            print(f"    {run_id}: total={sc.get('total')} ms={sc.get('milestone_score')} "
-                  f"fs={sc.get('final_score')} wall={sc.get('wall_seconds')} "
-                  f"mode={sc.get('failure_mode')} exit={sc.get('exit_code')} "
-                  f"({time.time() - t0:.0f}s)", flush=True)
+                print(run_id, "run_bench.py --agent mingbird --task", task_path)
+            continue
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m"
+              + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
+        t0 = time.time()
+        if arm == "boubou":
+            sc = run_boubou_arm(task_path, task, a.model, out_dir, run_id, budget, kill_at, a.judge)
+        else:
+            with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:
+                sc = run_mingbird_arm(task_path, task, a.model, a.results, run_id, budget, kill_at, a.judge, log)
+        if a.reps > 1 and sc:
+            sc["rep"] = rep
+            with open(os.path.join(out_dir, "score.json"), "w", encoding="utf-8") as f:
+                json.dump(sc, f, ensure_ascii=False, indent=2)
+        pm = sc.get("process", {})
+        print(f"    {run_id}: total={sc.get('total')} ms={sc.get('milestone_score')} "
+              f"fs={sc.get('final_score')} wall={sc.get('wall_seconds')} "
+              f"mode={sc.get('failure_mode')} exit={sc.get('exit_code')} "
+              f"calls={pm.get('tool_calls')} peak={pm.get('peak_prompt_tokens')} "
+              f"loop={pm.get('loop_interceptions')} refuse={pm.get('finish_refusals')} "
+              f"integrity={pm.get('integrity')} ({time.time() - t0:.0f}s)", flush=True)
     print("\nMATRIX DONE\n" + summary(a.results), flush=True)
 
 

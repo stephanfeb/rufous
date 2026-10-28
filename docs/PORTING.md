@@ -282,6 +282,32 @@ source, prompts, tool and harness messages, web page, skills, docs or tests. Dec
   and scores both with Mingbird's `score_task` imported read-only. Needs `requests` +
   `beautifulsoup4` for the mingbird arm: `uv run --with requests --with beautifulsoup4 python
   bench/lrab_h2h.py --model gemma4:e2b`. WF-01 smoke on gemma4:e2b: Boubou 1.0 in 131 s.
+  Measurement additions (2026-10-28, epic boubou-65d): `--reps N` runs every cell N times with
+  the (task, arm) order round-robin and the arm order alternating per task, so machine drift
+  cannot follow one arm; the summary then shows per-task mean and spread plus a per-arm bootstrap
+  95% CI over tasks. Every cell also carries `score.json["process"]` from `bench/process_metrics.py`
+  (one parser for both arms, since Boubou mirrors Mingbird's transcript lines): tool calls, peak
+  prompt tokens, failed calls, non-zero exits, loop interceptions, empty resets, finish refusals,
+  pre-delivery checks, truncations, compactions, and an *integrity* count = files named in the
+  task prompt that are missing after an accepted finish + a finish accepted after the last command
+  failed. `python bench/process_metrics.py <results_dir>` backfills older result sets. Tests:
+  `uv run --with pytest --python 3.13 python -m pytest bench/ -q`.
+  Micro-probes (`bench/probes.py`, Boubou only, one mechanism per probe, n trials each):
+  `emission` sends Boubou's own schemas (`boubou tools`) straight to Ollama `/api/chat` on twelve
+  one-tool prompts and reports the schema-valid rate per model + quant (the model-side floor;
+  a parser or model problem must never be charged to the harness); `false_finish` is a task whose
+  done-state is only true once `python check.py` prints OK, scored by our own run of check.py
+  after the agent exits (false-success rate = finish accepted while the check fails);
+  `loop` runs a `fetch.py` that always fails and measures identical attempts before a guard
+  fires, clean ending, and whether summary.md is honest or fabricates a row count. Results in
+  `bench/results/probes/<probe>/<model>/`, `--summary` prints the table.
+  First probe finding (2026-10-28, bead boubou-65d.11): the Ring-1 `DANGER_CMD` substring test
+  refused a `python -c` CSV script eleven times because a comment read `# Format the result`.
+  Departure from Mingbird: the entries that are also ordinary words (`format `, `halt`,
+  `shutdown`, `shred `, `srm `, `dism `, `poweroff`, listed in `DANGER_CMD_TOKEN_ONLY`) now count
+  only where a command starts (string start or after `;` `&` `|` newline `(` backtick, optionally
+  behind `sudo`); the rest of the list (`rm -rf`, `of=/dev/`, `curl | bash`, …) stays a substring
+  match so a dangerous op hidden inside a script is still caught. `safety::danger_hit`.
 
 Search backends: Boubou defaults to Brave → DuckDuckGo HTML → Bing → Baidu. Changed on
 2026-10-28 from Bing-first after Bing answered the query `jevai.net` with ten well-formed but

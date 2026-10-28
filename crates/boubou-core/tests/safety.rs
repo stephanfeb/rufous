@@ -120,6 +120,51 @@ fn dd_write_to_device_is_danger_but_plain_copy_passes() {
 }
 
 #[test]
+fn prose_words_in_a_script_do_not_trip_the_danger_gate_but_commands_do() {
+    use boubou_core::safety::{danger_hit, DANGER_CMD_TOKEN_ONLY};
+    for t in DANGER_CMD_TOKEN_ONLY {
+        assert!(DANGER_CMD.contains(&t), "{t} must stay in DANGER_CMD");
+    }
+    // The false_finish probe's exact shape: a python -c script whose comment says "Format the".
+    let script = "python -c \"import csv\ntotal = 0\n# Format the result to two decimal places\n\
+                  print(format(total, '.2f'))\n# halted here; dismiss the warning\n\"";
+    assert_eq!(danger_hit(&script.to_lowercase()), None);
+    assert_eq!(
+        danger_hit("echo the system was halted and shutdown was clean"),
+        None
+    );
+    // Real commands at a command start are still refused, with and without sudo/chaining.
+    for cmd in [
+        "format c:",
+        "format d: /q",
+        "sudo halt",
+        "echo hi; shutdown -h now",
+        "ls && poweroff",
+        "cd /tmp | shred -u secrets.txt",
+        "(dism /online /cleanup-image)",
+        "$(srm -r build)",
+    ] {
+        assert!(danger_hit(cmd).is_some(), "{cmd}");
+    }
+    // Substring entries are unchanged: a dangerous op hidden inside a script is still caught.
+    assert_eq!(
+        danger_hit("python -c \"import os; os.system('rm -rf /')\""),
+        Some("rm -rf")
+    );
+    assert_eq!(danger_hit("dd if=/dev/zero of=/dev/sda"), Some("of=/dev/"));
+    let d = tempfile::tempdir().expect("tmp");
+    let mut gate = Gate::headless(SafetyPolicy::unattended());
+    assert!(
+        gate.check(&bash(script), d.path()).is_none(),
+        "script passes the gate"
+    );
+    assert!(gate
+        .check(&bash("format c:"), d.path())
+        .expect("blocked")
+        .contains("dangerous operation"));
+}
+
+#[test]
 fn posix_mv_cp_out_of_home_matches_escape_patterns() {
     for cmd in [
         "mv x.txt ~/.config/",

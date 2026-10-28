@@ -87,6 +87,50 @@ pub const DANGER_CMD: [&str; 46] = [
     "userdel ",
 ];
 
+/// `DANGER_CMD` entries that are also ordinary words. A plain substring test refused a
+/// `python -c "…"` CSV script because a comment read `# Format the result` (false_finish probe,
+/// 2026-10-28, eleven refusals in one trial); `halt`, `shutdown`, `dism`, `shred`, `srm` sit in
+/// prose the same way. These count only where a command starts: at the start of the string or
+/// after `;`, `&`, `|`, a newline, `(` or a backtick, optionally behind `sudo`. Everything else
+/// in the list (`rm -rf`, `of=/dev/`, `curl | bash`, …) stays a substring match.
+pub const DANGER_CMD_TOKEN_ONLY: [&str; 12] = [
+    "format ",
+    "format c:",
+    "format c:\\",
+    "halt",
+    "halt ",
+    "shutdown",
+    "shutdown ",
+    "shred ",
+    "srm ",
+    "dism ",
+    "poweroff",
+    "poweroff ",
+];
+
+/// The `DANGER_CMD` entry a lower-cased command trips, if any.
+pub fn danger_hit(low: &str) -> Option<&'static str> {
+    DANGER_CMD.iter().copied().find(|d| {
+        if DANGER_CMD_TOKEN_ONLY.contains(d) {
+            starts_a_command(low, d)
+        } else {
+            low.contains(d)
+        }
+    })
+}
+
+/// Does `needle` begin one of the commands in `low` (see `DANGER_CMD_TOKEN_ONLY`)?
+fn starts_a_command(low: &str, needle: &str) -> bool {
+    low.split(['\n', ';', '&', '|', '(', '`'])
+        .map(str::trim_start)
+        .map(|seg| {
+            seg.strip_prefix("sudo ")
+                .map(str::trim_start)
+                .unwrap_or(seg)
+        })
+        .any(|seg| seg.starts_with(needle))
+}
+
 /// Ring 1: powershell is not blocked wholesale (too many legitimate queries), only these
 /// download-and-execute / injection / encoded / hidden-window / policy / elevation shapes.
 pub const PS_HIGH_RISK: [&str; 12] = [
@@ -527,7 +571,7 @@ impl Gate {
         let name = inv.name();
         if let ToolInvocation::RunBash { command } = inv {
             let low = command.to_lowercase();
-            if DANGER_CMD.iter().any(|d| low.contains(d)) {
+            if danger_hit(&low).is_some() {
                 return Some(format!(
                     "[safety gate: the command contains a dangerous operation; refused. Original command: {}]",
                     head(command, 80)

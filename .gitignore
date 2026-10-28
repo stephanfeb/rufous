@@ -16,3 +16,4 @@ bench/results/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+__pycache__/
