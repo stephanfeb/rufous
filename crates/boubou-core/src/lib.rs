@@ -15,6 +15,7 @@ pub mod memory;
 pub mod ollama;
 pub mod ollama_proc;
 pub mod parallel;
+pub mod profile;
 pub mod safety;
 pub mod skills;
 pub mod text;

@@ -1419,10 +1419,19 @@ fn run_fetch<F: FnMut(usize) -> ChatResponse>(
     ablation: &[&str],
     f: F,
 ) -> (Vec<Message>, Vec<(usize, String)>) {
+    run_fetch_as(d, "gemma4:12b", ablation, f)
+}
+
+fn run_fetch_as<F: FnMut(usize) -> ChatResponse>(
+    d: &Path,
+    model: &str,
+    ablation: &[&str],
+    f: F,
+) -> (Vec<Message>, Vec<(usize, String)>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     // The task names fetch.py: it must exist or gate 3b asks for it.
     std::fs::write(d.join("fetch.py"), "import sys; sys.exit(1)\n").expect("fixture");
-    let mut params = RunParams::plain("gemma4:12b", d);
+    let mut params = RunParams::plain(model, d);
     params
         .ablation
         .extend(ablation.iter().map(|s| s.to_string()));
@@ -1438,6 +1447,14 @@ fn run_fetch<F: FnMut(usize) -> ChatResponse>(
         },
     );
     a.sessions_dir = d.join("sessions");
+    // `BOUBOU_TEST_LOG=1 cargo test …` prints the loop's log lines.
+    let mut a = a.with_sink(|e| {
+        if std::env::var_os("BOUBOU_TEST_LOG").is_some() {
+            if let AgentEvent::Log(l) = e {
+                eprintln!("{l}");
+            }
+        }
+    });
     let msgs = a.run(start(FETCH_TASK), None, None).expect("loop");
     let seen = seen.lock().expect("lock").clone();
     (msgs, seen)
@@ -1612,5 +1629,129 @@ fn honest_failure_summary_is_not_bounced_into_ticking_the_plan() {
     assert!(
         user_msgs(&msgs, "finish was rejected").is_empty(),
         "stem mention excuses dataset.csv"
+    );
+}
+
+fn corrector_calls(seen: &[(usize, String)]) -> Vec<usize> {
+    seen.iter()
+        .enumerate()
+        .filter(|(_, (_, t))| t.contains("You are the corrector"))
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
+fn summary_write() -> ChatResponse {
+    ChatResponse::call(
+        "",
+        "create_file",
+        json!({"path": "summary.md", "content": "dataset.csv: download failed (HTTP 503); row count unknown."}),
+    )
+}
+
+#[test]
+fn a_successful_write_between_two_identical_failures_resets_the_corrector_count() {
+    // 65d.13: fetch fails, the model changes something, fetch fails again — that second
+    // failure is a fresh attempt (count 1), not the second strike. Only a third identical
+    // failure with nothing changed in between consults the corrector (chat call 6).
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, seen) = run_fetch(d.path(), &[], |n| match n {
+        1 => fetch_call(),
+        2 => summary_write(),
+        3 => fetch_call(),
+        4 => ChatResponse::call("", "list_dir", json!({"path": "."})),
+        5 => fetch_call(),
+        6 => ChatResponse::text("GIVE UP: the mirror answers HTTP 503 whatever the call."),
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "fetch.py failed with HTTP 503 twice; dataset.csv was not produced, summary.md says so."}),
+        ),
+    });
+    assert_eq!(
+        corrector_calls(&seen),
+        vec![6],
+        "consulted once, after the third failure"
+    );
+    assert_eq!(user_msgs(&msgs, "Corrector").len(), 1);
+}
+
+#[test]
+fn a_successful_write_lifts_a_corrector_block() {
+    // The block says "this exact call cannot succeed here"; once a write changed the world
+    // the call is allowed to run again (a verification command after a fix, in the probe).
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, seen) = run_fetch(d.path(), &[], |n| match n {
+        1 => fetch_call(),
+        2 => ChatResponse::call("", "list_dir", json!({"path": "."})),
+        3 => fetch_call(), // second strike → corrector is chat call 4
+        4 => ChatResponse::text("GIVE UP: the mirror answers HTTP 503 whatever the call."),
+        5 => summary_write(), // the world changed
+        6 => fetch_call(),    // runs again instead of being blocked
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "fetch.py failed with HTTP 503; dataset.csv was not produced, summary.md says so."}),
+        ),
+    });
+    assert_eq!(corrector_calls(&seen), vec![4]);
+    assert!(
+        msgs.iter()
+            .all(|m| !m.content.starts_with("[blocked: the corrector")),
+        "no blocked output after the write"
+    );
+    let fetch_runs = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content.contains("503"))
+        .count();
+    assert_eq!(fetch_runs, 3, "the third fetch ran for real");
+}
+
+#[test]
+fn gemma4_profile_reads_a_trailing_finish_line_as_the_finish_call() {
+    // profiles/gemma4_e2b loop t03/t04/t05: after the give-up note the model wrote
+    // "Finish: …" as prose and the dead-loop guard ended the run. Under the gemma4 profile
+    // the line is the finish call and goes through the gates; the honest summary passes.
+    let prose = "I cannot fix a remote outage from here.\nFinish: dataset.csv could not be produced (HTTP 503 from the mirror); summary.md records the failure.";
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, seen) = run_fetch_as(d.path(), "gemma4:e2b", &[], |n| match n {
+        1 => summary_write(),
+        _ => ChatResponse::text(prose),
+    });
+    // Call 2 is rescued and bounced once by the pre-delivery re-read (gate 6, no
+    // verification ran); call 3 is rescued again and accepted.
+    assert_eq!(seen.len(), 3, "prose turns ended the run through the gates");
+    assert!(msgs
+        .iter()
+        .any(|m| m.tool_calls.iter().any(|t| t.function.name == "finish")));
+    // An accepted finish ends the run on the assistant turn that carried it.
+    assert!(
+        msgs.last().is_some_and(|m| m.role == Role::Assistant
+            && m.tool_calls.iter().any(|t| t.function.name == "finish")),
+        "the rescued finish was accepted"
+    );
+
+    // A model without the profile flag gets the ordinary "continue with tools" turn instead.
+    let d2 = tempfile::tempdir().expect("tmp");
+    let (msgs2, seen2) = run_fetch_as(d2.path(), "qwen3.5:9b", &[], |n| match n {
+        1 => summary_write(),
+        2 => ChatResponse::text(prose),
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "dataset.csv could not be produced (HTTP 503); summary.md records the failure."}),
+        ),
+    });
+    // Prose → "continue with tools" nudge → real finish → gate 6 → finish again.
+    assert_eq!(
+        seen2.len(),
+        4,
+        "prose did not end the run without the profile"
+    );
+    assert!(
+        msgs2
+            .iter()
+            .filter(|m| m.role == Role::Assistant && m.content.contains("Finish:"))
+            .all(|m| m.tool_calls.is_empty()),
+        "the prose turn stayed prose"
     );
 }

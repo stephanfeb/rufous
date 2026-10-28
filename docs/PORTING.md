@@ -275,6 +275,86 @@ on single transcripts of one model, they are profile material (bead 65d.5), not 
 The generalisation check for the corrector is the held-out LRAB head-to-head, not more probe
 reps.
 
+## Per-model profiles (2026-10-29, bead boubou-65d.5, from the profile battery)
+
+`profile.rs`. The battery (`bench/profile_battery.sh`: four models × emission, false-finish,
+loop; n=10 agent trials, 120 emission calls; `bench/results/profiles/<tag>`; 2026-10-28
+22:47 → 01:23, think left at the engine default, 4-minute budget) is the first per-model
+measurement of the harness. Boubou only, no Mingbird arm.
+
+| model (nvfp4) | emission valid | false success | truth ok | honest (loop) | fabricated dataset | forced end (loop) | calls / wall (loop) |
+|---|---|---|---|---|---|---|---|
+| qwen3.5:9b (9.7B) | 1.00 | 0.00 | 1.00 | 0.60 | 0.10 | 0.00 | 13.9 / 99 s |
+| gemma4:12b (12.4B) | 0.77 | 0.00 | 0.30 | 0.50 | 0.10 | 0.00 | 12.5 / 247 s |
+| gemma4:e4b (8.1B) | 1.00 | 0.00 | 1.00 | 1.00 | 0.00 | 0.00 | 7.1 / 34 s |
+| gemma4:e2b (5.2B) | 1.00 | 0.00 | 0.80 | 0.60 | 0.10 | 0.30 | 7.6 / 45 s |
+
+False success stayed at zero for every model (integrity gate). Each finding was classified
+before anything was changed (mechanism/bug → shared code; wording → raise; quirk → profile):
+
+- **gemma4:12b, runaway thinking (quirk → profile).** 9/10 false-finish trials and 3/10 loop
+  trials were killed at the budget after one to four calls; the transcripts show a single
+  thinking episode (the arithmetic of the task, step by step) running for over three minutes.
+  `truth_ok` 0.30 is a timeout artefact, not a false claim. Built-in profile: `think: off` for
+  `gemma4:12b`. Hardware-dependent, so it is also the kind of entry a user overrides in config.
+- **gemma4:12b, `list_dir` first (quirk, recorded only).** All 28 emission misses are the
+  model choosing `list_dir` (or once `run_bash`) on prompts that call for `read_file` or
+  `edit_file`: a look-first habit, harmless in a run, no profile action.
+- **gemma4 (e2b), finish as prose (quirk → profile).** After the corrector's give-up note the
+  model wrote `Finish: <summary>` as the last line of a text turn (loop t03/t04/t05) or the
+  bare `finish{summary: …}` seen in probes_corrector2; the dead-loop guard then ended the run
+  (3/10 forced ends, honest summaries lost). Built-in family profile `finish_prose_rescue`:
+  `leak::parse_finish_prose` reads a trailing `Finish:` line or the bare brace form as the
+  `finish` call, so the finish gates judge the claim. Gated per profile because the generic
+  bare-argument parser over-captured prose (reverted on 65d.7).
+- **Corrector blocks a verification command after a fix (bug → shared code, bead 65d.13).**
+  e2b false-finish t00 and e4b t05: `python check.py` fails, the model rewrites `result.txt`,
+  check fails again, the corrector blocks the signature; the model then writes the right value
+  and can no longer verify, finishes honestly with FAIL, gate 6 bounces it, repeated output
+  forces an end although the ground truth was OK. Same rule as the integrity gate's
+  stale-evidence branch: a successful mutating action (file write that ran, or a non-read-only
+  command with exit 0) clears `sig_fails` and `corrector_blocked` for every *other* signature.
+  A failing command never resets its own count, so fetch.py → fetch.py still consults.
+- **qwen3.5:9b, substitutes the missing input (quirk, raised, not patched).** When fetch.py
+  fails it searches the filesystem (`find /Users/…`), copies a `dataset.csv` from a sibling
+  benchmark workdir or writes synthetic rows, and reports success (4/10 loop trials not
+  honest). The unattended safety gate stops `search_files` outside the workdir but not
+  `run_bash find/cp`. Candidate for the profile's nudge-wording variant; wording changes are
+  raised first, so nothing was changed.
+- **gemma4:e2b arithmetic (capability, recorded only).** Two honest failures in false-finish
+  (wrong sum, FAIL reported as FAIL); the claim gate caught every success claim after a
+  failed check (t07).
+
+Profile layer: `ModelProfile` (think, temperature, hide_tools, max_prefill_skills,
+finish_prose_rescue, note) resolved as built-in default → built-in family (`family_of`: tag
+base name) → built-in exact tag → `config.json` `profiles` overrides for family and tag, each
+setting only the fields it names. `RunParams` carries the built-in profile from construction;
+`Agent::standard` re-resolves with the config and lets the profile fill `think`/`temperature`
+only where the environment or UI left them unset. Hidden tools are disabled on the face in
+`Agent::new`; the prefill cap feeds `SkillSet::for_task_capped`. Every run logs
+`[profile] <model> → <entry>: <settings> (think=… temp=…). Evidence: …` before the first turn
+(children skip it). The nudge-wording variant from the bead description was not added: there
+is no measured need for a second variant yet.
+
+Measurement after the change (`bench/results/profiles_v2`, one run each, n=10, 01:42 → 02:23):
+
+| model, probe | before → after |
+|---|---|
+| gemma4:12b emission (think off) | valid 0.77 → 0.87 (all misses still `list_dir` first) |
+| gemma4:12b false-finish | truth ok 0.30 → 0.90, timeouts 9 → 1, calls 2.9 → 9.9, wall 276 → 57 s |
+| gemma4:12b loop | ended cleanly 0.70 → 1.00, wall 247 → 39 s; honest 0.50 → 0.60, fabricated dataset 0.10 → 0.30 |
+| gemma4:e2b false-finish | truth ok 0.80 → 0.90, forced end 0.10 → 0.00, corrector blocks 1 → 0 |
+| gemma4:e2b loop | honest 0.60 → 0.90, forced end 0.30 → 0.10 |
+
+Attribution, honestly: the 12b gain is the think-off entry (the `[profile]` line and zero
+thinking excerpts in every transcript confirm it took effect). The e2b gain is *not* the
+finish-prose rescue: it fired in none of the 20 trials, because the `Finish:` prose did not
+recur this run; the one remaining forced end is the known gate-6 shape (the model answers the
+re-injected task in prose). The corrector block on a verification command did not recur
+either, so the 65d.13 fix is covered by its tests, not by this run. With thinking off the 12b
+invents `dataset.csv` more often (3/10) and says so in its summary: the same substitution
+quirk as qwen3.5:9b, recorded, not patched. Generalisation check remains the LRAB head-to-head.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08

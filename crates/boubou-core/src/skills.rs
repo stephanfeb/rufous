@@ -179,10 +179,15 @@ impl SkillSet {
     /// Skills in effect for `task` (autoload, or a trigger found in the task text), in name
     /// order, capped at [`MAX_PREFILL_SKILLS`].
     pub fn for_task(&self, task: &str) -> Vec<&Skill> {
+        self.for_task_capped(task, MAX_PREFILL_SKILLS)
+    }
+
+    /// [`Self::for_task`] with the cap taken from the model's profile.
+    pub fn for_task_capped(&self, task: &str, cap: usize) -> Vec<&Skill> {
         let low = task.to_lowercase();
         self.iter()
             .filter(|s| s.applies_to(&low))
-            .take(MAX_PREFILL_SKILLS)
+            .take(cap)
             .collect()
     }
 

@@ -283,7 +283,10 @@ impl Agent<DynBackend, Executor> {
     /// The production wiring (`call_chat` dispatch): the cloud provider when enabled and
     /// online, else the configured local engine (Ollama, restartable, or an OpenAI-compatible
     /// server), plus the real executor in the workdir.
-    pub fn standard(params: RunParams, cfg: &crate::config::Config) -> Result<Self> {
+    pub fn standard(mut params: RunParams, cfg: &crate::config::Config) -> Result<Self> {
+        // The model's profile fills the think/temperature defaults before the backend is
+        // built; the loop logs the resolved profile at run start.
+        params.apply_profile(&cfg.profiles);
         let host = cfg.ollama_host();
         let offline = cfg.offline();
         let (backend, engine): (DynBackend, String) = if let Some(cp) = cfg.cloud_provider() {
@@ -321,11 +324,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             home.join("skills"),
             crate::skills::install_dir().join("skills"),
         ];
+        let mut face = ToolFace::new();
+        for t in &params.profile.hide_tools {
+            face.disable(t);
+        }
         Self {
             params,
             backend,
             tools,
-            face: ToolFace::new(),
+            face,
             transcript: Transcript::new(),
             sessions_dir: session::sessions_dir(&home),
             sink: Box::new(|_| {}),
@@ -383,7 +390,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         }
         let set = crate::skills::SkillSet::discover(&self.skill_dirs);
         let mut skills = Vec::new();
-        for s in set.for_task(task) {
+        for s in set.for_task_capped(task, self.params.profile.max_prefill_skills) {
             match s.load() {
                 Ok(body) => skills.push((s.name.clone(), body)),
                 Err(e) => (self.sink)(AgentEvent::Log(format!(
@@ -441,6 +448,34 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
+        }
+        if !child {
+            let prof = &params.profile;
+            let effective = format!(
+                "think={} temp={}",
+                match params.think {
+                    Some(true) => "on",
+                    Some(false) => "off",
+                    None => "engine default",
+                },
+                params
+                    .temperature
+                    .map_or_else(|| "engine default".to_string(), |t| t.to_string())
+            );
+            if prof.note.is_empty() {
+                log!(
+                    "[profile] {model} → {}: {} ({effective})",
+                    prof.name,
+                    prof.describe()
+                );
+            } else {
+                log!(
+                    "[profile] {model} → {}: {} ({effective}). Evidence: {}",
+                    prof.name,
+                    prof.describe(),
+                    prof.note
+                );
+            }
         }
         macro_rules! save {
             () => {
@@ -795,11 +830,25 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
             }
             if tcs.is_empty() && !qa {
-                // Format leak salvage: the model wrote the call as text.
-                if let Some(salvaged) = leak::try_parse_tool_calls(&content) {
+                // Format leak salvage: the model wrote the call as text. The generic shapes
+                // first; the profile's finish-prose rescue only for models known to end a
+                // text turn with `Finish: …`.
+                let generic = leak::try_parse_tool_calls(&content);
+                let rescued = generic.is_none() && params.profile.finish_prose_rescue;
+                let salvaged = generic.or_else(|| {
+                    rescued
+                        .then(|| leak::parse_finish_prose(&content))
+                        .flatten()
+                });
+                if let Some(salvaged) = salvaged {
                     let names: Vec<&str> = salvaged.iter().map(|(n, _)| n.as_str()).collect();
                     log!(
-                        "[{i}] ⚡ salvaged tool call(s) from text: {}",
+                        "[{i}] ⚡ salvaged tool call(s) from text{}: {}",
+                        if rescued {
+                            " (profile finish-prose rescue)"
+                        } else {
+                            ""
+                        },
                         names.join(", ")
                     );
                     tcs = salvaged
@@ -1109,6 +1158,18 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 ) {
                     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
                     cmd_records.push(integrity::CommandRecord::file_write(n, path, &res));
+                }
+                // A successful change to the world makes every earlier verdict about *other*
+                // calls stale (same rule as the integrity gate's stale-evidence branch): the
+                // corrector's failure counts and blocks for other signatures are lifted, so a
+                // verification command that failed before an edit is a fresh attempt after it.
+                if cmd_records
+                    .last()
+                    .is_some_and(|r| r.succeeded() && r.mutates())
+                {
+                    let me = (name.clone(), sig_json.clone());
+                    sig_fails.retain(|k, _| *k == me);
+                    corrector_blocked.retain(|k, _| *k == me);
                 }
                 log!(
                     "[{i}|+{}s] ⚙ {name} {} -> {}",
@@ -1466,6 +1527,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     cmd_records.push(integrity::CommandRecord::file_write(
                                         &cname, path, &cres,
                                     ));
+                                }
+                                if !cfailed && cmd_records.last().is_some_and(|r| r.mutates()) {
+                                    // The corrected call changed the world: other signatures'
+                                    // counts and blocks are stale now (see the main record site).
+                                    let me = (cname.clone(), cargs.to_string());
+                                    sig_fails.retain(|k, _| *k == me);
+                                    corrector_blocked.retain(|k, _| *k == me);
                                 }
                                 last_sig = Some((cname.clone(), cargs.to_string()));
                                 let outcome = if cfailed {

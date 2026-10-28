@@ -35,6 +35,9 @@ pub struct Config {
     pub slim_output: SlimOutput,
     /// Parallel sub-agent dispatch section (`parallel_config.py`); kept opaque until ported.
     pub parallel: serde_json::Map<String, serde_json::Value>,
+    /// Per-model profile overrides keyed by family (`gemma4`) or exact tag (`gemma4:12b`);
+    /// each sets only the fields it names on top of the built-in table (`profile.rs`).
+    pub profiles: BTreeMap<String, crate::profile::ProfileOverride>,
 }
 
 impl Default for Config {
@@ -49,6 +52,7 @@ impl Default for Config {
             local_backend: Default::default(),
             slim_output: SlimOutput::Auto,
             parallel: Default::default(),
+            profiles: BTreeMap::new(),
         }
     }
 }

@@ -90,6 +90,43 @@ pub fn try_parse_tool_calls(content: &str) -> Option<Vec<LeakedCall>> {
     parse_func_call_expr(&c)
 }
 
+static FINISH_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:^|[\s.!?])finish:\s*(.+?)\s*$").expect("regex"));
+static FINISH_BARE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^\s*finish\s*[\({]\s*summary\s*[:=]\s*(.+?)\s*[\)}]\s*$").expect("regex")
+});
+
+/// Profile-gated finish rescue (`ModelProfile::finish_prose_rescue`, gemma4): the model
+/// ends a text-only task turn with `Finish: <summary>` on its last line, or writes a bare
+/// `finish{summary: <text>}` without the placeholder quotes the generic parser needs.
+/// Both are read as `finish(summary)` so the finish gates can judge the claim instead of
+/// the dead-loop guard ending the run on repeated prose. The summary must be at least ten
+/// characters; `Finish:` inside an earlier line is left alone.
+pub fn parse_finish_prose(content: &str) -> Option<Vec<LeakedCall>> {
+    let c = content.trim();
+    if c.is_empty() {
+        return None;
+    }
+    let summary = if let Some(m) = FINISH_BARE.captures(c) {
+        let s = m[1].trim();
+        s.trim_matches(['"', '\''])
+            .trim_end_matches("<|\"|>")
+            .trim_start_matches("<|\"|>")
+            .trim()
+            .to_string()
+    } else {
+        let last = c.lines().rev().find(|l| !l.trim().is_empty())?;
+        let m = FINISH_LINE.captures(last.trim())?;
+        m[1].trim().to_string()
+    };
+    if summary.chars().count() < 10 {
+        return None;
+    }
+    let mut args = Map::new();
+    args.insert("summary".to_string(), Value::String(summary));
+    Some(vec![("finish".to_string(), args)])
+}
+
 /// Whole text is one `name(k=v, ...)` expression. Three rejection gates keep prose safe:
 /// any surrounding prose, any uncovered fragment between arguments (nested values), and
 /// unknown tool names without a dot (MCP names are `server.tool`).

@@ -80,6 +80,9 @@ pub struct RunParams {
     /// Interactive chat (`boubou chat`, the web page): a plain text reply ends the turn
     /// instead of drawing a "continue with tools" note.
     pub chat_mode: bool,
+    /// The model's profile (`profile.rs`): built-ins at construction, config overrides and
+    /// the think/temperature defaults applied by [`Agent::standard`].
+    pub profile: crate::profile::ModelProfile,
 }
 
 impl RunParams {
@@ -87,8 +90,10 @@ impl RunParams {
         let num_ctx = env_parse("AGENT_CTX")?.unwrap_or(DEFAULT_NUM_CTX);
         let slim_env: Option<u8> = env_parse("AGENT_SLIM_OUTPUT")?;
         let budget: Option<f64> = env_parse("AGENT_TIME_BUDGET_SEC")?;
+        let model = model.into();
+        let profile = crate::profile::builtin_for(&model);
         Ok(Self {
-            model: model.into(),
+            model,
             workdir: workdir.into(),
             num_ctx,
             num_predict: env_parse("AGENT_NUMPREDICT")?.unwrap_or(DEFAULT_NUM_PREDICT),
@@ -118,13 +123,16 @@ impl RunParams {
             child_mode: std::env::var("AGENT_CHILD_SANDBOX").is_ok_and(|v| v == "1"),
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
             chat_mode: false,
+            profile,
         })
     }
 
     /// Defaults with no environment lookups (tests, embedding).
     pub fn plain(model: impl Into<String>, workdir: impl Into<PathBuf>) -> Self {
+        let model = model.into();
+        let profile = crate::profile::builtin_for(&model);
         Self {
-            model: model.into(),
+            model,
             workdir: workdir.into(),
             num_ctx: DEFAULT_NUM_CTX,
             num_predict: DEFAULT_NUM_PREDICT,
@@ -140,6 +148,23 @@ impl RunParams {
             child_mode: false,
             sleep_scale: 1.0,
             chat_mode: false,
+            profile,
+        }
+    }
+
+    /// Re-resolve the profile with the user's config overrides and let it supply the
+    /// `think` / `temperature` defaults the environment (or UI) left unset. Explicit
+    /// settings always win over the profile.
+    pub fn apply_profile(
+        &mut self,
+        overrides: &std::collections::BTreeMap<String, crate::profile::ProfileOverride>,
+    ) {
+        self.profile = crate::profile::resolve(&self.model, overrides);
+        if self.think.is_none() {
+            self.think = self.profile.think;
+        }
+        if self.temperature.is_none() {
+            self.temperature = self.profile.temperature;
         }
     }
 

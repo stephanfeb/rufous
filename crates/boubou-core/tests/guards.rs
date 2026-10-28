@@ -5,7 +5,7 @@ use std::path::Path;
 
 use boubou_core::guards::artifacts::{claimed_missing_files, plan_named_missing};
 use boubou_core::guards::edit::EditConvergenceGuard;
-use boubou_core::guards::leak::try_parse_tool_calls;
+use boubou_core::guards::leak::{parse_finish_prose, try_parse_tool_calls};
 use boubou_core::guards::qa::{has_task_progress, is_qa, task_original_text};
 use boubou_core::guards::{
     estimate_tokens, format_bash_out, is_small_model, model_params_b, semantically_empty,
@@ -587,4 +587,74 @@ fn todo_schema_stays_within_prefill_budget() {
         f["parameters"]["properties"]["index"],
         json!({"type": "number"})
     );
+}
+
+// ---------------- profile-gated finish-prose rescue (gemma4) ----------------
+
+fn rescued_summary(text: &str) -> Option<String> {
+    let calls = parse_finish_prose(text)?;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "finish");
+    Some(calls[0].1["summary"].as_str().unwrap_or("").to_string())
+}
+
+#[test]
+fn finish_prose_rescue_reads_the_last_line_and_the_bare_brace_form() {
+    // profiles/gemma4_e2b loop t05: reasoning, then the summary as prose on the last line.
+    let t05 = "1. **Analyze the Request:** The user wants me to continue.\n\
+               7. **Final Decision:** the data is unobtainable.\n\
+               Finish: The task could not be completed because `dataset.csv` could not be downloaded.";
+    assert_eq!(
+        rescued_summary(t05).as_deref(),
+        Some("The task could not be completed because `dataset.csv` could not be downloaded.")
+    );
+    // loop t03: "finish." runs straight into "Finish:" with no newline.
+    let t03 = "I will proceed to write the required output and finish.Finish: The data download failed due to a connection error (HTTP 503).";
+    assert_eq!(
+        rescued_summary(t03).as_deref(),
+        Some("The data download failed due to a connection error (HTTP 503).")
+    );
+    // probes_corrector2 t00: bare brace form without placeholder quotes.
+    assert_eq!(
+        rescued_summary("finish{summary: check.py printed FAIL; the correct sum is 1234.56}")
+            .as_deref(),
+        Some("check.py printed FAIL; the correct sum is 1234.56")
+    );
+    assert_eq!(
+        rescued_summary(r#"finish(summary: "dataset.csv could not be produced (HTTP 503)")"#)
+            .as_deref(),
+        Some("dataset.csv could not be produced (HTTP 503)")
+    );
+    // The generic parser does not read any of these (that is why the rescue exists).
+    assert_eq!(try_parse_tool_calls(t05), None);
+    assert_eq!(try_parse_tool_calls(t03), None);
+}
+
+#[test]
+fn finish_prose_rescue_leaves_ordinary_prose_alone() {
+    assert_eq!(parse_finish_prose(""), None);
+    assert_eq!(
+        parse_finish_prose("Let me look at the directory structure first."),
+        None
+    );
+    // "finish" as a verb, not a label.
+    assert_eq!(
+        parse_finish_prose("I will finish the report after the tests pass."),
+        None
+    );
+    // The label on an earlier line is planning, not the exit.
+    assert_eq!(
+        parse_finish_prose("Finish: write the summary.\nFirst I need to read the data file."),
+        None
+    );
+    // Too short to be a summary.
+    assert_eq!(parse_finish_prose("Finish: done"), None);
+    // Other tools in brace prose stay prose (the over-capture that sank the generic version).
+    assert_eq!(
+        parse_finish_prose(
+            "I could use batch_tools{tools: [...]} to speed this up, as the docs say."
+        ),
+        None
+    );
+    assert_eq!(parse_finish_prose("Finish:"), None);
 }
