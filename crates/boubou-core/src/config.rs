@@ -38,6 +38,9 @@ pub struct Config {
     /// Per-model profile overrides keyed by family (`gemma4`) or exact tag (`gemma4:12b`);
     /// each sets only the fields it names on top of the built-in table (`profile.rs`).
     pub profiles: BTreeMap<String, crate::profile::ProfileOverride>,
+    /// System One decider (`decider.rs`): `{"mode": "off" | "shadow" | "on", "model": "d1:latest",
+    /// "timeout_ms": 1500, "threshold": 0.9}`. Off by default.
+    pub decider: crate::decider::DeciderConfig,
 }
 
 impl Default for Config {
@@ -53,6 +56,7 @@ impl Default for Config {
             slim_output: SlimOutput::Auto,
             parallel: Default::default(),
             profiles: BTreeMap::new(),
+            decider: Default::default(),
         }
     }
 }

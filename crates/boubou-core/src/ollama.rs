@@ -256,6 +256,63 @@ pub fn parse_ps(v: &Value) -> Vec<LoadedModel> {
         .unwrap_or_default()
 }
 
+/// One request to `/v1/systemone`: a state block and named typed questions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SystemOneRequest {
+    pub model: String,
+    pub state: String,
+    pub questions: std::collections::BTreeMap<String, SystemOneQuestion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
+}
+
+/// The three question types llama.cpp-backed decision models answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SystemOneQuestion {
+    /// Yes/no: the answer is the probability of "yes".
+    Noul { instructions: String },
+    /// One of the named options; `criteria` maps option name to its description.
+    Choice {
+        instructions: String,
+        criteria: std::collections::BTreeMap<String, String>,
+    },
+    /// A level on an ordered scale; `criteria` lists the levels, lowest first.
+    Score {
+        instructions: String,
+        criteria: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SystemOneAnswer {
+    Noul {
+        noul: f64,
+    },
+    Choice {
+        choice: String,
+        probabilities: std::collections::BTreeMap<String, f64>,
+        confidence: f64,
+    },
+    Score {
+        score: f64,
+        #[serde(default)]
+        legend: std::collections::BTreeMap<String, String>,
+        probabilities: std::collections::BTreeMap<String, f64>,
+        confidence: f64,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SystemOneResponse {
+    #[serde(default)]
+    pub model: String,
+    pub answers: std::collections::BTreeMap<String, SystemOneAnswer>,
+    #[serde(default)]
+    pub usage: Option<Value>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     base: String,
@@ -276,6 +333,31 @@ impl Client {
 
     pub fn base_url(&self) -> &str {
         &self.base
+    }
+
+    /// `POST /v1/systemone` (Ollama ≥ 0.40, models with the `decision` capability): typed
+    /// questions over a block of state, answered in one forward pass with probabilities.
+    pub async fn systemone(
+        &self,
+        req: &SystemOneRequest,
+        timeout: std::time::Duration,
+    ) -> Result<SystemOneResponse> {
+        let resp = self
+            .http
+            .post(format!("{}/v1/systemone", self.base))
+            .timeout(timeout)
+            .json(req)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body: crate::text::head(&body, 300).to_string(),
+            });
+        }
+        Ok(resp.json().await?)
     }
 
     pub async fn version(&self) -> Result<String> {

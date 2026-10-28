@@ -433,6 +433,23 @@ misses on a prose deliverable (WF-11 265/280, WF-14 338/400, WF-15 280/300) plus
 `fig_arrhenius.png` that is not a PNG (WF-15; last run the file was missing). The two means
 are within the single-run noise seen between v2 and v3; no regression is visible.
 
+## System One decider, step 1 (2026-10-29, bead boubou-acy.1)
+
+`decider.rs`, per `docs/system-one-decider.md` section 6 step 1, with the local backend changed
+to Ollama's native decision API (`/v1/systemone`, Ollama ≥ 0.40, `ollama pull d1`). The intent
+decision (question / task / follow-up) is the first and only call site. `guards/qa.rs` gained
+`intent_heuristic()` with an honest confidence (1.0 on a rule hit, 0.5 on a default) and the
+rule that fired; `is_qa()` wraps it. `LayeredDecider::intent_of()` runs the heuristic and, by
+`config.json` `decider.mode`, leaves it there (`off`, default), asks the model and logs both
+(`shadow`), or lets the model act only where the heuristic was guessing (`on`, below
+`threshold`). Failures fall back to the heuristic; three in a row stop the asking for the run.
+One `[decider] …` line per run; children never ask; `boubou doctor` probes the model.
+
+Zero behaviour change by default: 380 tests pass, the old `is_qa` tests untouched. Live check
+with a scratch agent home in shadow mode: d1:latest answers the 2026-10-28 chat sentence as a
+question at p=0.89 in about 0.3 s warm. Nothing is adopted yet; shadow transcripts are the
+labelled set the design's section 5 asks for before `on` is the default anywhere.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08

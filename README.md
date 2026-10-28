@@ -38,7 +38,9 @@ llama-server) or a cloud provider. Model-specific settings come from a per-model
 (`think`, `temperature`, hidden tools, prefill cap, the gemma4 finish-prose rescue, a
 `prompt_note` appended to the task prompt), logged as `[profile] …` at run start;
 `"profiles": {"gemma4:12b": {"think": true, "prompt_note": ""}}` in `config.json` overrides a
-built-in entry per family or tag (an empty note switches the built-in one off). Voice input is behind the `voice` cargo feature
+built-in entry per family or tag (an empty note switches the built-in one off). A System One
+decider (`"decider": {"mode": "shadow"}`, model `d1:latest` through Ollama's native decision
+API) can shadow or take over the question-or-task decision; off by default. Voice input is behind the `voice` cargo feature
 (`cargo build --features voice`, sherpa-onnx linked statically): `boubou voice <wav>` and the
 web UI's mic button transcribe with the bundled sherpa-onnx models (English by default, Chinese also supported) from `~/.ollama_agent/stt/`
 or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. Next: voice model installer, Tauri

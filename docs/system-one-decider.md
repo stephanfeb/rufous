@@ -1,6 +1,9 @@
 # Design note: a System One decider for Boubou
 
-*Draft, 28 October 2026. Status: proposal, nothing implemented.*
+*Draft, 28 October 2026. Status as of 29 October 2026: step 1 of section 6 is implemented
+(`crates/boubou-core/src/decider.rs`, bead boubou-acy.1), see the addendum at the end. The
+local backend is Ollama's native decision API rather than the Jev-compatible endpoint this note
+assumed; the llama-server logits spike (step 2) is dropped as unnecessary.*
 
 Companion to `system-one-models.md` (research notes gathered by another agent; the claims in
 it are treated as unverified until we reproduce them).
@@ -182,3 +185,35 @@ decider stays off by default.
 - **Training on our own transcripts.** Attractive, but transcripts contain user data. Any
   fine-tuning set is built locally, from the user's own sessions, by explicit command; nothing
   is collected.
+
+## Addendum, 29 October 2026: what was built
+
+Ollama 0.40 serves decision models natively (`ollama pull d1`, capability `decision`,
+`POST /v1/systemone`), with the three primitives this note wanted: `noul` (probability of yes),
+`choice` (option, per-option probabilities, confidence) and `score` (weighted level over an
+ordered scale). One request carries a `state` block and up to 64 named questions; no tokens are
+generated. The installed `d1:latest` (LFM, 2.7B, Q8_0) answers the intent question over a
+200-token state in about 0.3 s warm on the laptop, 10 s on cold load, deterministically. Open
+question 7 ("does Ollama expose logprobs?") is therefore moot.
+
+Step 1 as shipped:
+
+- `guards/qa.rs`: `intent_heuristic()` returns `{intent, confidence, rule, text, has_progress}`;
+  confidence is 1.0 on a rule hit (task hint, question hint, trailing `?`) and 0.5 on each
+  default (short message with or without progress, long message with no cue, no message).
+  `is_qa()` is a wrapper over it, so every existing test holds unchanged.
+- `decider.rs`: `DecisionBackend` trait (state + named questions → answers), `NullBackend`,
+  `OllamaSystemOne`, and `LayeredDecider::intent_of(messages)` with three modes from
+  `config.json` `decider.mode`: `off` (default; heuristic only, backend never built), `shadow`
+  (ask every run, log the answer, act on the heuristic), `on` (act on the model only where the
+  heuristic confidence is below `threshold`, default 0.9, that is only on the defaults). Any
+  backend error leaves the heuristic standing; after three consecutive failures the model is
+  not asked again that run.
+- `agent/run.rs`: the one `is_qa` call site goes through the decider and logs one line,
+  `[decider] intent=… ← heuristic|model (rule, confidence); d1: … p=… conf=… (ms) [DISAGREES]`.
+  Children never ask. `boubou doctor` probes the configured model with the 2026-10-28 chat
+  sentence and prints the latency.
+
+Shadow mode is the labelled-set collector section 5 asks for: every run's transcript records
+the heuristic's verdict, its rule, and the model's verdict side by side. Adoption (`on`) waits on
+that comparison; the acceptance numbers in section 5 stand.

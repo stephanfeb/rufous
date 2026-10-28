@@ -192,10 +192,58 @@ pub fn has_task_progress(messages: &[Message]) -> bool {
         })
 }
 
-/// `_is_qa`: is the latest real user message a question/greeting rather than a task?
-/// Task words win, then question words, then "short and no action verb" is Q&A unless
-/// the conversation already has progress (then it is a follow-up instruction).
-pub fn is_qa(messages: &[Message], has_progress: bool) -> bool {
+/// What the latest real user message is doing. Only `Question` changes the loop's path
+/// (the Q&A prompt and tool set); `Task` and `FollowUp` both run the task loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    Question,
+    Task,
+    FollowUp,
+}
+
+impl Intent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Intent::Question => "question",
+            Intent::Task => "task",
+            Intent::FollowUp => "follow_up",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "question" => Some(Intent::Question),
+            "task" => Some(Intent::Task),
+            "follow_up" | "followup" | "follow-up" => Some(Intent::FollowUp),
+            _ => None,
+        }
+    }
+}
+
+/// The heuristic's intent verdict with the honesty the decider layer needs: which rule
+/// fired, and 1.0 confidence on a rule hit against 0.5 on a fall-through default.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeuristicIntent {
+    pub intent: Intent,
+    pub confidence: f64,
+    /// The rule that decided, for the log and the labelled set.
+    pub rule: String,
+    /// The message classified (empty when there was no real user message).
+    pub text: String,
+    pub has_progress: bool,
+}
+
+/// `_is_qa` as a classifier. Task words win, then question words or a trailing `?`, then
+/// "short and no action verb" is a question unless the conversation already has progress
+/// (then it is a follow-up instruction); anything longer with no cue defaults to a task.
+pub fn intent_heuristic(messages: &[Message], has_progress: bool) -> HeuristicIntent {
+    let verdict = |intent, confidence, rule: String, text: &str| HeuristicIntent {
+        intent,
+        confidence,
+        rule,
+        text: text.to_string(),
+        has_progress,
+    };
     for m in messages.iter().rev() {
         if m.role != Role::User {
             continue;
@@ -205,18 +253,56 @@ pub fn is_qa(messages: &[Message], has_progress: bool) -> bool {
             continue;
         }
         let low = t.to_lowercase();
-        if TASK_HINTS.iter().any(|h| hint_hit(h, &low)) {
-            return false;
+        if let Some(h) = TASK_HINTS.iter().find(|h| hint_hit(h, &low)) {
+            return verdict(Intent::Task, 1.0, format!("task hint `{}`", h.trim()), t);
         }
-        if QA_HINTS.iter().any(|h| hint_hit(h, &low)) || ends_with_question(t) {
-            return true;
+        if let Some(h) = QA_HINTS.iter().find(|h| hint_hit(h, &low)) {
+            return verdict(
+                Intent::Question,
+                1.0,
+                format!("question hint `{}`", h.trim()),
+                t,
+            );
+        }
+        if ends_with_question(t) {
+            return verdict(Intent::Question, 1.0, "trailing `?`".to_string(), t);
         }
         if text::clen(t) <= 40 {
-            return !has_progress;
+            return if has_progress {
+                verdict(
+                    Intent::FollowUp,
+                    0.5,
+                    "default: short message after progress".to_string(),
+                    t,
+                )
+            } else {
+                verdict(
+                    Intent::Question,
+                    0.5,
+                    "default: short message, no progress".to_string(),
+                    t,
+                )
+            };
         }
-        return false;
+        return verdict(
+            Intent::Task,
+            0.5,
+            "default: no cue in a long message".to_string(),
+            t,
+        );
     }
-    false
+    verdict(
+        Intent::Task,
+        0.5,
+        "default: no user message".to_string(),
+        "",
+    )
+}
+
+/// `_is_qa`: is the latest real user message a question/greeting rather than a task?
+/// Thin wrapper over [`intent_heuristic`]; the loop goes through `decider::LayeredDecider`.
+pub fn is_qa(messages: &[Message], has_progress: bool) -> bool {
+    intent_heuristic(messages, has_progress).intent == Intent::Question
 }
 
 /// `_task_original_text`: the instruction this delivery answers = the most recent real

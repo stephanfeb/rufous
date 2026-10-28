@@ -29,9 +29,11 @@ use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
 use super::{AgentEvent, RunParams};
+use crate::decider::LayeredDecider;
 use crate::exec::Executor;
 use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
+use crate::guards::qa::Intent;
 use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
@@ -266,6 +268,8 @@ pub struct Agent<B, T> {
     /// Where skills are discovered for prefill, in precedence order (`<workdir>/skills`,
     /// `<agent_home>/skills`, `<install_dir>/skills`); tests narrow it.
     pub skill_dirs: Vec<PathBuf>,
+    /// System One decider (`decider.rs`): heuristics only unless `config.json` says otherwise.
+    pub decider: LayeredDecider,
 }
 
 impl<B, T> std::fmt::Debug for Agent<B, T> {
@@ -311,6 +315,7 @@ impl Agent<DynBackend, Executor> {
             let allowed = agent.tools.install_child_mode(&pcfg);
             agent.face.narrow_to(&allowed);
         }
+        agent.decider = LayeredDecider::from_config(&cfg.decider, &host);
         agent.parallel = Some(DispatchHook::new(pcfg, host).with_child_mode(child_mode));
         Ok(agent)
     }
@@ -340,7 +345,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             parallel: None,
             engine: String::new(),
             skill_dirs,
+            decider: LayeredDecider::off(),
         }
+    }
+
+    /// Replace the decider (tests; embedding with a scripted decision model).
+    pub fn with_decider(mut self, decider: LayeredDecider) -> Self {
+        self.decider = decider;
+        self
     }
 
     /// Restrict skill discovery to `dirs` (tests; embedding without a home directory).
@@ -440,6 +452,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             parallel,
             engine: _,
             skill_dirs: _,
+            decider,
         } = self;
         let child = params.child_mode;
         let model = params.model.as_str();
@@ -555,7 +568,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // Q&A or task? A session with real progress treats short follow-ups as task steps.
         // A child never counts as Q&A: its task text is mechanical by construction, and the
         // Q&A path would swap out the sandbox prompt and drop the producing tools.
-        let qa = !child && qa::is_qa(&messages, qa::has_task_progress(&messages));
+        let intent = decider.intent_of(&messages);
+        if !child {
+            log!("[decider] {}", intent.describe());
+        }
+        let qa = !child && intent.intent == Intent::Question;
         let cats: Option<BTreeSet<String>> = if qa {
             let cs = prompt::chat_system(Some(workdir));
             let mut m = vec![Message::system(cs)];

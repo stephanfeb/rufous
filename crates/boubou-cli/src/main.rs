@@ -534,6 +534,44 @@ async fn doctor(cfg: &Config) -> Result<()> {
         Err(e) => println!("unreachable ({e})"),
     }
 
+    match cfg.decider.mode {
+        boubou_core::decider::DeciderMode::Off => println!(
+            "decider      : off (config `decider.mode`: shadow | on; model {})",
+            cfg.decider.model
+        ),
+        mode => {
+            let b = boubou_core::decider::OllamaSystemOne::new(
+                cfg.ollama_host(),
+                cfg.decider.model.clone(),
+                std::time::Duration::from_millis(cfg.decider.timeout_ms.max(1)),
+            );
+            let h = boubou_core::guards::qa::intent_heuristic(
+                &[boubou_core::ollama::Message::user(
+                    "Are you capable of software development ?",
+                )],
+                false,
+            );
+            let mut qs = std::collections::BTreeMap::new();
+            qs.insert(
+                "intent".to_string(),
+                boubou_core::decider::intent_question(),
+            );
+            let t = std::time::Instant::now();
+            match b.ask(&boubou_core::decider::intent_state(&h), qs) {
+                Ok(a) => println!(
+                    "decider      : {mode:?} · {} ok ({} ms) probe answer: {:?}",
+                    cfg.decider.model,
+                    t.elapsed().as_millis(),
+                    a.get("intent")
+                ),
+                Err(e) => println!(
+                    "decider      : {mode:?} · {} unavailable ({e}); heuristics stand",
+                    cfg.decider.model
+                ),
+            }
+        }
+    }
+
     let skills = SkillSet::standard(&std::env::current_dir()?, &home, &install_dir());
     println!("skills       : {}", skills.len());
 
