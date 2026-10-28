@@ -169,7 +169,7 @@ fn child_qa_like_text_stays_task_mode() {
 #[test]
 fn child_prompt_is_minimal_and_parent_prompt_has_no_dispatch_text() {
     let d = tempfile::tempdir().expect("tmp");
-    let a = agent(d.path(), &[], true);
+    let mut a = agent(d.path(), &[], true);
     let m = a.task_messages("[simple] convert a.csv to a.md");
     assert!(m[0].content.starts_with(CHILD_SYSTEM));
     assert!(

@@ -1,6 +1,12 @@
 //! Progressive-disclosure skills: Markdown files with a `name`/`description` frontmatter.
 //! Only the one-line listing enters the prompt; the body is loaded on `skills(load)`.
 //!
+//! Two optional frontmatter keys make a skill apply without the model asking for it:
+//! `triggers: a, b, c` (case-insensitive substrings of the task text) and `autoload: true`
+//! (every task). Matching skills are prefilled into the task system prompt, at most
+//! [`MAX_PREFILL_SKILLS`] per task, in name order. This is the deliberate way to bias a run
+//! towards a domain: put the skill in `<workdir>/skills/` and it applies to that folder only.
+//!
 //! Lookup order (first match wins): `<workdir>/skills`, `<agent_home>/skills`,
 //! `<install_dir>/skills`.
 
@@ -9,11 +15,26 @@ use std::path::{Path, PathBuf};
 
 use crate::{Error, Result};
 
+/// Upper bound on skills prefilled into one task prompt (small models, small contexts).
+pub const MAX_PREFILL_SKILLS: usize = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    /// Lower-cased task-text substrings that put this skill in effect for a task.
+    pub triggers: Vec<String>,
+    /// In effect for every task found from its directory.
+    pub autoload: bool,
+}
+
+/// Directory of the running binary: built-in skills live in `<install_dir>/skills`.
+pub fn install_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl Skill {
@@ -30,11 +51,34 @@ impl Skill {
                 reason: format!("frontmatter lacks `{key}`"),
             })
         };
+        let triggers = meta
+            .get("triggers")
+            .map(|v| {
+                v.split(',')
+                    .map(|t| t.trim().to_lowercase())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let autoload = meta
+            .get("autoload")
+            .is_some_and(|v| matches!(v.to_lowercase().as_str(), "true" | "yes" | "1" | "on"));
         Ok(Self {
             name: get("name")?,
             description: get("description")?,
             path: path.to_path_buf(),
+            triggers,
+            autoload,
         })
+    }
+
+    /// Does this skill apply to `task` without being asked for?
+    pub fn applies_to(&self, task_lower: &str) -> bool {
+        self.autoload
+            || self
+                .triggers
+                .iter()
+                .any(|t| task_lower.contains(t.as_str()))
     }
 
     /// Full instructions (frontmatter stripped).
@@ -130,6 +174,16 @@ impl SkillSet {
 
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
+    }
+
+    /// Skills in effect for `task` (autoload, or a trigger found in the task text), in name
+    /// order, capped at [`MAX_PREFILL_SKILLS`].
+    pub fn for_task(&self, task: &str) -> Vec<&Skill> {
+        let low = task.to_lowercase();
+        self.iter()
+            .filter(|s| s.applies_to(&low))
+            .take(MAX_PREFILL_SKILLS)
+            .collect()
     }
 
     /// Prompt listing, one skill per line.

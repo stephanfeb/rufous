@@ -262,6 +262,9 @@ pub struct Agent<B, T> {
     pub parallel: Option<DispatchHook>,
     /// Human-readable engine label (`Ollama · host`, `cloud · model`, `OpenAI-compatible · url`).
     pub engine: String,
+    /// Where skills are discovered for prefill, in precedence order (`<workdir>/skills`,
+    /// `<agent_home>/skills`, `<install_dir>/skills`); tests narrow it.
+    pub skill_dirs: Vec<PathBuf>,
 }
 
 impl<B, T> std::fmt::Debug for Agent<B, T> {
@@ -312,6 +315,11 @@ impl Agent<DynBackend, Executor> {
 impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
     pub fn new(params: RunParams, backend: B, tools: T) -> Self {
         let home = crate::config::agent_home();
+        let skill_dirs = vec![
+            params.workdir.join("skills"),
+            home.join("skills"),
+            crate::skills::install_dir().join("skills"),
+        ];
         Self {
             params,
             backend,
@@ -323,7 +331,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             stop: Arc::new(AtomicBool::new(false)),
             parallel: None,
             engine: String::new(),
+            skill_dirs,
         }
+    }
+
+    /// Restrict skill discovery to `dirs` (tests; embedding without a home directory).
+    pub fn with_skill_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.skill_dirs = dirs;
+        self
     }
 
     /// Attach the parallel-dispatch hook (tests inject a probe and spawner through it).
@@ -354,8 +369,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         self.sink = Box::new(sink);
     }
 
-    /// Build the opening message list for a fresh task.
-    pub fn task_messages(&self, task: &str) -> Vec<Message> {
+    /// Build the opening message list for a fresh task. Skills whose triggers match the
+    /// task (or that autoload) and the workdir's `SYSTEM.md` enter the system prompt here;
+    /// a resumed session keeps the prompt it started with.
+    pub fn task_messages(&mut self, task: &str) -> Vec<Message> {
         if self.params.child_mode {
             // A dispatched child: the minimal prompt, no platform block.
             return vec![
@@ -363,10 +380,29 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 Message::user(task),
             ];
         }
+        let set = crate::skills::SkillSet::discover(&self.skill_dirs);
+        let mut skills = Vec::new();
+        for s in set.for_task(task) {
+            match s.load() {
+                Ok(body) => skills.push((s.name.clone(), body)),
+                Err(e) => (self.sink)(AgentEvent::Log(format!(
+                    "[skill {} unreadable: {e}]",
+                    s.name
+                ))),
+            }
+        }
+        if !skills.is_empty() {
+            let names: Vec<&str> = skills.iter().map(|(n, _)| n.as_str()).collect();
+            (self.sink)(AgentEvent::Log(format!(
+                "[skills in effect: {}]",
+                names.join(", ")
+            )));
+        }
         let opts = prompt::PromptOptions {
             workdir: Some(&self.params.workdir),
             system_file: self.params.system_file.as_deref(),
             unattended: self.params.unattended,
+            skills,
         };
         vec![
             Message::system(prompt::system_prompt(&opts)),
@@ -394,6 +430,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             stop,
             parallel,
             engine: _,
+            skill_dirs: _,
         } = self;
         let child = params.child_mode;
         let model = params.model.as_str();

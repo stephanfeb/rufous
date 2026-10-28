@@ -236,6 +236,11 @@ source, prompts, tool and harness messages, web page, skills, docs or tests. Dec
   accepts the English names case-insensitively and Mingbird's four Chinese tags (kept as
   `\u{..}` escapes in the source, never as characters), so an existing `mcp.json` and a
   manifest cache written by Mingbird still route.
+- Deliberate domain bias (post-v0.2.0): skills accept `triggers:` / `autoload:` frontmatter and
+  matching skills are prefilled into the task prompt (`SkillSet::for_task`, cap 3, logged as
+  `[skills in effect: …]`); `<workdir>/SYSTEM.md` is appended to the task and chat prompts, or
+  replaces them when it starts with `<!-- boubou: replace -->` (`prompt::project_system`). The
+  explicit override file still wins the base. Resumed sessions keep their original prompt.
 - Routing (`face::route_categories`) is domain-neutral since v0.2.0+: the code keyword list is
   programming vocabulary only (no `fix`/`test`/`error`/`calculate`/`run`), and the built-in
   `files` and `code` tools are offered on every task; routing only adds `web`/`memory`/`mcp`

@@ -21,6 +21,32 @@ Body: the operating steps (instructions for the model)...
 
 After restarting Boubou it appears under the "Skills" button in the UI. Follow the built-in skills in this directory as a model: step by step, tool names written in full (list_dir / run_bash / web_search ...), and the red lines (what must not be done) at the end.
 
+## Putting a skill in effect automatically
+Two optional metadata lines make a skill apply without the model asking for it:
+
+```
+---
+name: finance_analysis
+description: Reconcile and analyse ledgers and CSV exports
+triggers: ledger, invoice, reconcile, cash flow
+autoload: false
+---
+```
+
+`triggers` is a comma-separated list; when any entry occurs in the task text (case-insensitive) the
+skill's full body is placed in the system prompt before the run starts, under "SKILL IN EFFECT FOR
+THIS TASK". `autoload: true` does that for every task that can see the skill. At most three skills
+are prefilled per task, in name order, and the log shows `[skills in effect: …]`. Put domain skills
+in `<workdir>/skills/` so they apply to that folder only. A resumed session keeps the prompt it
+started with.
+
+## Per-folder instructions: SYSTEM.md
+A `SYSTEM.md` in the working directory is appended to the system prompt for task and chat turns
+alike, under "PROJECT INSTRUCTIONS". If its first line is `<!-- boubou: replace -->` it replaces the
+built-in prompt instead (the Settings → System prompt override, when enabled, still wins the base and
+the file is appended under it). Use append for a persona, house rules and output formats; use replace
+only when you also take over the intent judgement and workspace rules the built-in prompt carries.
+
 ## MCP servers
 Skills cover "how to do it"; MCP covers "which extra tools exist". MCP servers are configured in `~/.ollama_agent/mcp.json`;
 once configured, their tools are routed by category (`files`, `code`, `web`, `memory`, `mcp`) and the model calls them as

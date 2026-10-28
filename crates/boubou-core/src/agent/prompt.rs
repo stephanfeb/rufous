@@ -142,6 +142,34 @@ pub fn child_system(workdir: Option<&Path>) -> String {
     s
 }
 
+/// Per-workdir instructions: `<workdir>/SYSTEM.md` is appended under the base prompt for
+/// task and chat turns alike; when its first line is [`REPLACE_MARK`] it replaces the base
+/// instead. A folder can therefore carry its own persona and rules.
+pub const PROJECT_SYSTEM_FILE: &str = "SYSTEM.md";
+pub const REPLACE_MARK: &str = "<!-- boubou: replace -->";
+
+/// `(text, replace)` from `<workdir>/SYSTEM.md`; `None` when absent or blank.
+pub fn project_system(workdir: Option<&Path>) -> Option<(String, bool)> {
+    let text = read_text(&workdir?.join(PROJECT_SYSTEM_FILE)).ok()?;
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    match t.strip_prefix(REPLACE_MARK) {
+        Some(rest) => Some((rest.trim().to_string(), true)),
+        None => Some((t.to_string(), false)),
+    }
+}
+
+fn push_project(base: &mut String, project: Option<&(String, bool)>) {
+    if let Some((t, _)) = project {
+        base.push_str(
+            "\n\nPROJECT INSTRUCTIONS (SYSTEM.md in the working directory; follow them):\n",
+        );
+        base.push_str(t);
+    }
+}
+
 /// Options for [`system_prompt`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptOptions<'a> {
@@ -150,14 +178,34 @@ pub struct PromptOptions<'a> {
     /// `AGENT_SYSTEM_FILE`: replaces the static prefill when it exists.
     pub system_file: Option<&'a Path>,
     pub unattended: bool,
+    /// Skills in effect for this task (`name`, body), prefilled after the base prompt.
+    pub skills: Vec<(String, String)>,
 }
 
-/// `system_prompt()`: static prefill + dynamic workdir line + platform block.
+/// `system_prompt()`: static prefill + project instructions + skills in effect + dynamic
+/// workdir line + platform block. Base precedence: the explicit override file, then a
+/// replacing `SYSTEM.md`, then the built-in prompt; an appending `SYSTEM.md` (or a replacing
+/// one that lost to the override) follows the base.
 pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
-    let mut base = match opts.system_file {
-        Some(p) if p.exists() => read_text(p).unwrap_or_else(|_| system_base()),
-        _ => system_base(),
+    let project = project_system(opts.workdir);
+    let override_text = match opts.system_file {
+        Some(p) if p.exists() => read_text(p).ok(),
+        _ => None,
     };
+    let (mut base, project_used) = match (override_text, &project) {
+        (Some(t), _) => (t, false),
+        (None, Some((t, true))) => (t.clone(), true),
+        _ => (system_base(), false),
+    };
+    if !project_used {
+        push_project(&mut base, project.as_ref());
+    }
+    for (name, body) in &opts.skills {
+        base.push_str(&format!(
+            "\n\nSKILL IN EFFECT FOR THIS TASK (follow it):\n### SKILL: {name}\n{}",
+            body.trim_end()
+        ));
+    }
     if let Some(wd) = opts.workdir {
         base.push_str(&workdir_line(wd));
     }
@@ -166,9 +214,18 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
     base
 }
 
-/// The Q&A system prompt for this workdir (`CHAT_SYSTEM` + workdir + one-line platform).
+/// The Q&A system prompt for this workdir (`CHAT_SYSTEM` + project instructions + workdir +
+/// one-line platform).
 pub fn chat_system(workdir: Option<&Path>) -> String {
-    let mut s = CHAT_SYSTEM.to_string();
+    let project = project_system(workdir);
+    let replaced = matches!(&project, Some((_, true)));
+    let mut s = match &project {
+        Some((t, true)) => t.clone(),
+        _ => CHAT_SYSTEM.to_string(),
+    };
+    if !replaced {
+        push_project(&mut s, project.as_ref());
+    }
     if let Some(wd) = workdir {
         s.push_str(&format!("\nCurrent working directory: {}", wd.display()));
     }

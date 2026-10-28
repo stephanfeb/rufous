@@ -6,7 +6,9 @@ A local-model autonomous agent, written in Rust. Boubou is the successor to
 - **Tiny prefill.** System prompt plus nine core tool schemas, about 1250 tokens, so a 1B–4B
   model running under Ollama can drive it.
 - **Progressive disclosure.** Advanced tools are enabled on demand with `enable_tools`;
-  skills are listed by name and loaded only when used.
+  skills are listed by name and loaded only when used; a skill with `triggers:` or `autoload:` in its
+  frontmatter is prefilled for matching tasks, and a `SYSTEM.md` in the working directory adds
+  per-folder instructions (see `skills/README.md`).
 
 The name: the Southern Boubou, *Laniarius ferrugineus*, is a rust-coloured African bush-shrike
 that sings in duet. *Ferrugineus* means "rusty".
