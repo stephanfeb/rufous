@@ -217,3 +217,14 @@ Step 1 as shipped:
 Shadow mode is the labelled-set collector section 5 asks for: every run's transcript records
 the heuristic's verdict, its rule, and the model's verdict side by side. Adoption (`on`) waits on
 that comparison; the acceptance numbers in section 5 stand.
+
+### Measurement, 29 October 2026
+
+`bench/decider_eval.py` over a 306-case labelled set (`bench/decider/intent_set.jsonl`; details
+in `PORTING.md`, bead boubou-acy.2): heuristic 76.5% vs d1:latest 81.4% on question-vs-not,
+shipped `on` policy 78.8%, reversal under rephrasing 35.9% vs 19.0%, p95 608 ms. Acceptance not
+met: the shipped policy loses 2.6 points of 3-class accuracy because the layering premise is
+inverted (the heuristic errs on rule hits, the model errs on the heuristic's defaults). On the
+99 cases from real use the heuristic scores 87.9% and no policy beats it meaningfully; the
+model's gains are on authored blind-spot cases. `off` stays the default; shadow collection
+continues; re-evaluate on shadow-collected cases.

@@ -17,3 +17,7 @@ bench/results/
 .beads/proxieddb/
 *.gate.lock*
 __pycache__/
+
+# decider labelled set: built from the local session store by bench/decider/build_intent_set.py
+bench/decider/candidates.json
+bench/decider/intent_set.jsonl

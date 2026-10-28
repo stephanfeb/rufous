@@ -98,6 +98,19 @@ enum Cmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Classify user messages as question / task / follow-up with the heuristic and, with
+    /// `--model`, the decision model too; one JSON object per line (`bench/decider_eval.py`).
+    Decide {
+        /// JSONL file of `{"text": …, "has_progress": bool}` (default: stdin).
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Decision model tag (Ollama `decision` capability), e.g. `d1:latest`.
+        #[arg(long)]
+        model: Option<String>,
+        /// Per-call timeout in milliseconds.
+        #[arg(long, default_value_t = 5000)]
+        timeout_ms: u64,
+    },
     /// Run one tool call directly (debugging): `boubou tool web_search '{"query":"rust"}'`.
     Tool {
         name: String,
@@ -150,6 +163,11 @@ fn main() -> Result<()> {
                 serde_json::to_string_pretty(&tools::tool_schemas(&enable))?
             );
         }
+        Cmd::Decide {
+            file,
+            model,
+            timeout_ms,
+        } => decide(&cfg, file.as_deref(), model.as_deref(), timeout_ms)?,
         Cmd::Doctor => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(doctor(&cfg))?;
@@ -469,6 +487,74 @@ fn print_event(ev: AgentEvent) {
         | AgentEvent::Finished { .. }
         | AgentEvent::MaxIterations => {}
     }
+}
+
+/// `boubou decide`: heuristic and model verdicts per input line, for the offline comparison
+/// in `docs/system-one-decider.md` section 5.
+fn decide(
+    cfg: &Config,
+    file: Option<&std::path::Path>,
+    model: Option<&str>,
+    timeout_ms: u64,
+) -> Result<()> {
+    use boubou_core::decider::{intent_question, intent_state, OllamaSystemOne};
+    use boubou_core::guards::qa::intent_heuristic;
+    use boubou_core::ollama::{Message, SystemOneAnswer};
+    use std::io::{BufRead, Write};
+
+    let input: Box<dyn BufRead> = match file {
+        Some(p) => Box::new(std::io::BufReader::new(
+            std::fs::File::open(p).with_context(|| format!("opening {}", p.display()))?,
+        )),
+        None => Box::new(std::io::stdin().lock()),
+    };
+    let backend = model.map(|m| {
+        OllamaSystemOne::new(
+            cfg.ollama_host(),
+            m,
+            std::time::Duration::from_millis(timeout_ms.max(1)),
+        )
+    });
+    let mut out = std::io::stdout().lock();
+    for line in input.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let case: serde_json::Value = serde_json::from_str(&line).context("case JSON")?;
+        let text = case["text"].as_str().unwrap_or("").to_string();
+        let has_progress = case["has_progress"].as_bool().unwrap_or(false);
+        let h = intent_heuristic(&[Message::user(&text)], has_progress);
+        let mut row = serde_json::json!({
+            "text": text,
+            "has_progress": has_progress,
+            "heuristic": {"intent": h.intent.as_str(), "confidence": h.confidence, "rule": h.rule},
+        });
+        if let Some(b) = &backend {
+            let mut qs = std::collections::BTreeMap::new();
+            qs.insert("intent".to_string(), intent_question());
+            let t = std::time::Instant::now();
+            row["model"] = match b.ask(&intent_state(&h), qs) {
+                Ok(a) => match a.get("intent") {
+                    Some(SystemOneAnswer::Choice {
+                        choice,
+                        probabilities,
+                        confidence,
+                    }) => serde_json::json!({
+                        "intent": choice,
+                        "p": probabilities.get(choice).copied().unwrap_or(0.0),
+                        "probabilities": probabilities,
+                        "confidence": confidence,
+                        "ms": t.elapsed().as_millis(),
+                    }),
+                    other => serde_json::json!({"error": format!("unexpected answer {other:?}")}),
+                },
+                Err(e) => serde_json::json!({"error": e, "ms": t.elapsed().as_millis()}),
+            };
+        }
+        writeln!(out, "{row}")?;
+    }
+    Ok(())
 }
 
 async fn doctor(cfg: &Config) -> Result<()> {

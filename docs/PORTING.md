@@ -450,6 +450,55 @@ with a scratch agent home in shadow mode: d1:latest answers the 2026-10-28 chat 
 question at p=0.89 in about 0.3 s warm. Nothing is adopted yet; shadow transcripts are the
 labelled set the design's section 5 asks for before `on` is the default anywhere.
 
+### Measurement (2026-10-29, bead boubou-acy.2)
+
+Tooling: `boubou decide [--file cases.jsonl] [--model d1:latest]` prints the heuristic verdict
+(intent, confidence, rule) and the model's (intent, p, confidence, ms) per line;
+`bench/decider/build_intent_set.py` builds `bench/decider/intent_set.jsonl`;
+`bench/decider_eval.py` scores both plus a grid of layering policies, with a reversal rate
+under eight deterministic rephrasings (please-prefix, lowercase, final stop toggled, can/could
+swap, hey-prefix, thanks-suffix) and latency. Labels follow the loop, not the surface: a
+*question* is satisfiable on the Q&A path (text answer; `read_file`, `list_dir`, `web_search`,
+`web_fetch`), a *task* needs the task loop (run_bash, writes, deliverables, a plan), a
+*follow_up* steers work under way. 306 cases: 99 collected (26 from the user's sessions, 36
+LRAB prompts, 14 probe prompts, 23 test fixtures) and 207 authored to over-sample the
+heuristic's 0.5 defaults and its known blind spot (questions that contain a task verb); 15
+marked uncertain. Results in `bench/results/decider/run2` (run1 identical: the model is
+deterministic).
+
+| metric | heuristic | d1:latest | shipped `on` (threshold 0.9) |
+|---|---|---|---|
+| accuracy, 3 classes | 71.6% | 72.9% | 69.0% |
+| accuracy, question vs not | 76.5% | 81.4% | 78.8% |
+| on the heuristic's defaults (n=118) | 69.5% | 62.7% | 62.7% |
+| on the heuristic's rule hits (n=188) | 72.9% | 79.3% | 72.9% |
+| reversal under rephrasing | 35.9% | 19.0% | 36.3% |
+| latency p50 / p95 | | 144 / 608 ms | |
+
+Acceptance (section 5: +10 points, reversal no worse, p95 < 1.5 s): **fail, keep off**. The
+layering premise was wrong: the heuristic is weakest where a rule fires (54 questions classed as
+tasks because they contain a verb: "Is it safe to delete the target directory?") and the model
+is weakest where the heuristic defaults (short messages during work, which it calls follow-ups
+when they are status questions), so "ask the model only where the heuristic is unsure" asks it
+where it helps least. Policy grid from the same rows, question-vs-not accuracy:
+
+| policy | all | collected (n=99) | authored (n=207) | reversal |
+|---|---|---|---|---|
+| heuristic | 76.5% | 87.9% | 71.0% | 35.9% |
+| model alone | 81.4% | 83.8% | 80.2% | 19.0% |
+| `on` (shipped) | 78.8% | 89.9% | 73.4% | 36.3% |
+| model only overturns a task-verb hit into a question | 81.4% | 87.9% | 78.3% | 38.6% |
+| model decides question-vs-not, heuristic the rest | 81.4% | 83.8% | 80.2% | 25.5% |
+
+The split is the honest part: on the 99 cases that came from real use and real benchmarks the
+heuristic already scores 87.9% and no model policy beats the shipped `on` (89.9%, within one
+case of the heuristic); every gain for the model is on the authored cases, which were written
+around the heuristic's blind spots. So the authored half measures the blind spot, not the base
+rate. Decision: `off` stays the default and `shadow` stays on for this user so the real
+disagreement rate accumulates; the next evaluation reruns `decider_eval.py` on the
+shadow-collected cases only. The one robust finding is the reversal rate: the model changes its
+mind on a rephrasing half as often as the keyword lists do.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08
