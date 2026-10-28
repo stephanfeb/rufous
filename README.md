@@ -22,8 +22,10 @@ long-term memory, parallel `batch_tools` and MCP (stdio and streamable HTTP via 
 flattened into the categories as `server.tool`) are in. `boubou doctor` probes every MCP server;
 `boubou tool <name> '<json>'` runs any single tool, built-in or `server.tool`, for debugging.
 Web search defaults to Brave, then DuckDuckGo, then Bing, then Baidu (`AGENT_SEARCH_BACKENDS` overrides); a query that names a site is fetched directly first, and results sharing no word with the query are dropped.
-`boubou serve` runs the local web UI (Mingbird's page and `/api/*` contract, agent in-process,
-approval dialogs, stop); `cargo run -p boubou-app` opens the same UI in a native window.
+`boubou serve` runs the local web UI: a session rail, the conversation with per-turn run blocks
+(every tool call with its step time), inline permission cards, a pinned composer with the model and
+Online/Offline controls, and an inspector with the live plan, activity and files; dark by default,
+light available; the agent runs in-process. `cargo run -p boubou-app` opens the same UI in a native window.
 Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, "child_model":
 "<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
 sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside

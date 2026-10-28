@@ -334,7 +334,75 @@ fn plan_reads_workdir_todo() {
         r#"[{"item": "a", "done": true}, {"item": "b", "done": false}]"#,
     )
     .expect("w");
+    // The file belongs to the last run; it is nobody's plan until a session is current.
+    assert_eq!(s.get("/api/plan")["plan"], json!([]));
+    s.post("/api/session", json!({"name": "mysess"}));
     assert_eq!(s.get("/api/plan")["plan"][1]["item"], json!("b"));
+    s.post("/api/newchat", json!({}));
+    assert_eq!(s.get("/api/plan")["plan"], json!([]));
+}
+
+#[test]
+fn new_chat_never_resumes_the_previous_conversation() {
+    // 2026-10-28: New chat, then a message with the default `resume: true`, continued the
+    // previous chat because the fresh session name had no file and the runner fell back to
+    // the workdir checkpoint. A minted session now runs with resume off.
+    let (sc, sp) = scripted(false, false);
+    let s = serve(sp);
+    std::fs::write(
+        s.home.path().join("work").join(".agent_state.json"),
+        json!([{"role": "user", "content": "old chat"}]).to_string(),
+    )
+    .expect("w");
+    s.post("/api/newchat", json!({}));
+    assert_eq!(
+        s.post(
+            "/api/chat",
+            json!({"prompt": "hi", "model": "gemma4:e2b", "resume": true})
+        )
+        .0,
+        200
+    );
+    assert!(wait_until(
+        || s.get("/api/status")["busy"] == json!(false),
+        Duration::from_secs(5)
+    ));
+    // The same session, now current, is continued by the next message.
+    assert_eq!(
+        s.post(
+            "/api/chat",
+            json!({"prompt": "more", "model": "gemma4:e2b"})
+        )
+        .0,
+        200
+    );
+    assert!(wait_until(
+        || s.get("/api/status")["busy"] == json!(false),
+        Duration::from_secs(5)
+    ));
+    // A session picked in the rail resumes from its own file.
+    s.post("/api/session", json!({"name": "old"}));
+    assert_eq!(
+        s.post(
+            "/api/chat",
+            json!({"prompt": "again", "model": "gemma4:e2b"})
+        )
+        .0,
+        200
+    );
+    assert!(wait_until(
+        || s.get("/api/status")["busy"] == json!(false),
+        Duration::from_secs(5)
+    ));
+    let seen = sc.seen.lock().expect("lock").clone();
+    assert_eq!(seen.len(), 3, "{seen:?}");
+    assert!(
+        seen[0].starts_with("run:gemma4:e2b:false:chat_"),
+        "{seen:?}"
+    );
+    let minted = seen[0].rsplit(':').next().expect("session");
+    assert_eq!(seen[1], format!("run:gemma4:e2b:true:{minted}"));
+    assert_eq!(seen[2], "run:gemma4:e2b:true:old");
 }
 
 #[test]
@@ -618,4 +686,44 @@ fn prefs_accept_stt_lang() {
     assert_eq!(code, 200);
     assert_eq!(d["prefs"]["stt_lang"], "en");
     assert_eq!(srv.get("/api/status")["voice"]["lang"], "en");
+}
+
+#[test]
+fn tool_results_and_compaction_reach_the_page() {
+    use boubou_core::agent::AgentEvent;
+    use boubou_web::runner::publish;
+    let bus = Bus::new();
+    let mut rx = bus.subscribe();
+    publish(
+        &bus,
+        AgentEvent::ToolResult {
+            name: "read_file".into(),
+            args: json!({"path": "notes.md"}),
+            output: "x".repeat(500),
+            blocked: false,
+        },
+    );
+    publish(
+        &bus,
+        AgentEvent::Compacted {
+            level: 2,
+            before: 40,
+            after: 12,
+        },
+    );
+    let mut got = Vec::new();
+    while let Ok(v) = rx.try_recv() {
+        got.push(v);
+    }
+    let types: Vec<&str> = got.iter().filter_map(|e| e["type"].as_str()).collect();
+    assert_eq!(types, ["tool_done", "note"], "{got:?}");
+    assert_eq!(got[0]["data"]["name"], json!("read_file"));
+    assert_eq!(got[0]["data"]["args"]["path"], json!("notes.md"));
+    assert_eq!(got[0]["data"]["blocked"], json!(false));
+    assert!(got[0]["data"]["output"]
+        .as_str()
+        .is_some_and(|o| o.len() < 500));
+    assert!(got[1]["data"]
+        .as_str()
+        .is_some_and(|n| n.contains("compacted") && n.contains("40 → 12")));
 }

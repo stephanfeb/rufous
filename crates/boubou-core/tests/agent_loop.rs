@@ -742,6 +742,75 @@ fn trailing_question_mark_is_qa_in_the_loop() {
     assert!(out.len() < 8);
 }
 
+#[test]
+fn qa_turn_can_run_the_web_tools_it_is_offered() {
+    // Web UI session of 2026-10-28: a question turn listed web_search/web_fetch in the tool
+    // definitions, the model called them, and the gate answered "not available" because the
+    // Q&A tool set was never activated. The model then told the user it cannot browse.
+    struct ToolsSeen<F: FnMut(usize) -> ChatResponse> {
+        n: usize,
+        f: F,
+        offered: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+    impl<F: FnMut(usize) -> ChatResponse> ChatBackend for ToolsSeen<F> {
+        fn chat(
+            &mut self,
+            _m: &str,
+            _msgs: &[Message],
+            t: &[Value],
+            _on: &mut dyn FnMut(StreamPiece<'_>),
+        ) -> Result<ChatResponse, ChatError> {
+            self.n += 1;
+            let names = t
+                .iter()
+                .filter_map(|d| d["function"]["name"].as_str().map(String::from))
+                .collect();
+            self.offered.lock().expect("lock").push(names);
+            Ok((self.f)(self.n))
+        }
+    }
+    let d = tempfile::tempdir().expect("tmp");
+    let offered = Arc::new(Mutex::new(Vec::new()));
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        ToolsSeen {
+            n: 0,
+            offered: offered.clone(),
+            f: |n| match n {
+                1 => ChatResponse::call(
+                    "",
+                    "web_search",
+                    json!({"query": "Flint model Recursive AI"}),
+                ),
+                2 => ChatResponse::call("", "web_fetch", json!({"url": "https://recursive.com"})),
+                _ => ChatResponse::text("Flint is fast because it samples in parallel."),
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(
+            start("Can you explain how the Flint model from Recursive AI achieves its speed?"),
+            None,
+            None,
+        )
+        .expect("loop");
+    // It was a Q&A turn (chat prompt) and web_search was in the definitions sent.
+    assert!(out[0].role == Role::System && out[0].content.contains("chatting with the user"));
+    let first = offered.lock().expect("lock")[0].clone();
+    assert!(first.iter().any(|n| n == "web_search"), "{first:?}");
+    // Both calls ran (OkTools answers "[ok]"); nothing was refused as unavailable.
+    let tool_msgs: Vec<&Message> = out.iter().filter(|m| m.role == Role::Tool).collect();
+    assert!(
+        tool_msgs
+            .iter()
+            .all(|m| !m.content.contains("is not available")),
+        "{tool_msgs:?}"
+    );
+    assert_eq!(tool_msgs.iter().filter(|m| m.content == "[ok]").count(), 2);
+    assert!(a.face.is_active("web_search") && a.face.is_active("web_fetch"));
+}
+
 // ---- every injected user message starts with a harness prefix ----
 
 #[test]

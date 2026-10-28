@@ -114,6 +114,34 @@ fn tool_calls_decode_into_typed_variants() {
 }
 
 #[test]
+fn web_search_accepts_a_list_of_queries() {
+    // gemma4 sent `{"query": ["a", "b"]}` three times in one session and lost each turn to
+    // "invalid type: sequence"; a list now runs as a multi-search.
+    let inv = ToolInvocation::parse(
+        "web_search",
+        &json!({"query": ["Flint model", "Recursive AI Flint"]}),
+    )
+    .expect("list");
+    assert_eq!(
+        inv,
+        ToolInvocation::WebSearchMulti {
+            queries: vec!["Flint model".into(), "Recursive AI Flint".into()],
+            max_results: None
+        }
+    );
+    let inv =
+        ToolInvocation::parse("web_search", &json!({"query": "Flint model"})).expect("string");
+    assert_eq!(
+        inv,
+        ToolInvocation::WebSearch {
+            query: "Flint model".into()
+        }
+    );
+    let err = ToolInvocation::parse("web_search", &json!({"query": 7})).expect_err("number");
+    assert!(err.to_string().contains("argument `query`"), "{err}");
+}
+
+#[test]
 fn tool_call_errors_are_actionable() {
     let err = ToolInvocation::parse("edit_file", &json!({"path": "a"})).expect_err("missing");
     assert_eq!(

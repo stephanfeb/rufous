@@ -292,10 +292,19 @@ impl ToolFace {
             .collect()
     }
 
-    /// `_chat_tool_defs`: read-only tools for Q&A turns.
-    pub fn chat_tool_defs(&self) -> Vec<Value> {
+    /// `_chat_tool_defs`: read-only tools for Q&A turns. Whatever is offered here is also
+    /// activated: the call-time gate refuses any tool missing from `active`, and a question
+    /// turn that listed web_search but refused the call was how the model came to tell the
+    /// user it "cannot browse" (web UI session of 2026-10-28).
+    pub fn chat_tool_defs(&mut self) -> Vec<Value> {
+        for n in CHAT_TOOLS {
+            if !self.disabled.contains(n) && !self.is_active(n) {
+                self.active.push(n.to_string());
+            }
+        }
         let defs = CHAT_TOOLS
             .iter()
+            .filter(|n| !self.disabled.contains(**n))
             .filter_map(|n| schema_of(n).cloned())
             .collect();
         self.filter_offline(defs)

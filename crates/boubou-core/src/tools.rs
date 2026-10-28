@@ -403,8 +403,16 @@ impl ToolInvocation {
                 path: arg!(String, "path"),
                 pattern: arg!(String, "pattern"),
             },
-            "web_search" => Self::WebSearch {
-                query: arg!(String, "query"),
+            // Small models often hand web_search a list of queries: run them as a
+            // multi-search instead of failing the turn on a type error.
+            "web_search" => match args.get("query") {
+                Some(Value::Array(_)) => Self::WebSearchMulti {
+                    queries: arg!(Vec<String>, "query"),
+                    max_results: arg!(Option<u64>, "max_results"),
+                },
+                _ => Self::WebSearch {
+                    query: arg!(String, "query"),
+                },
             },
             "web_fetch" => Self::WebFetch {
                 url: arg!(String, "url"),

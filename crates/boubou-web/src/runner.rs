@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use boubou_core::agent::session::{load_checkpoint, load_session, sessions_dir};
+use boubou_core::agent::session::{load_session, sessions_dir};
 use boubou_core::agent::{Agent, AgentEvent, RunParams};
 use boubou_core::config::Config;
 use boubou_core::guards::budget::resolve_time_budget;
@@ -68,10 +68,12 @@ pub fn publish(bus: &Bus, ev: AgentEvent) {
         AgentEvent::ToolCall(tc) => {
             // Rendered as a chip "⚙ <kind> <name>"; Mingbird used this for sub-agent dispatch,
             // Boubou shows every tool call that way.
+            // `name` is the 80-char head Mingbird's page showed; `args` is the full value so
+            // the run block can summarise the call (path, command, query) properly.
             let args = tc.function.arguments.to_string();
             bus.push(
                 "dispatch",
-                json!({"kind": tc.function.name, "name": head(&args, 80)}),
+                json!({"kind": tc.function.name, "name": head(&args, 80), "args": tc.function.arguments}),
                 Map::new(),
             );
         }
@@ -109,7 +111,27 @@ pub fn publish(bus: &Bus, ev: AgentEvent) {
             bus.note("===== TASK COMPLETE =====");
         }
         AgentEvent::MaxIterations => bus.note("===== MAX ITERATIONS ====="),
-        AgentEvent::ToolResult { .. } | AgentEvent::Compacted { .. } => {}
+        AgentEvent::ToolResult {
+            name,
+            args,
+            output,
+            blocked,
+        } => {
+            // The page times each row itself (dispatch → tool_done) and shows the first line
+            // of the output in the run block; the full output lives in the session file.
+            bus.push(
+                "tool_done",
+                json!({"name": name, "args": args, "blocked": blocked, "output": head(&output, 160)}),
+                Map::new(),
+            );
+        }
+        AgentEvent::Compacted {
+            level,
+            before,
+            after,
+        } => bus.note(format!(
+            "[context compacted: level {level}, {before} → {after}]"
+        )),
     }
 }
 
@@ -199,10 +221,11 @@ impl Spawner for AgentSpawner {
             .with_sink(move |ev| publish(&sink_bus, ev))
             .with_stop(stop.clone());
         let sdir = sessions_dir(&req.home);
+        // Only the session's own file is continued. The workdir checkpoint is flushed from
+        // the same messages every iteration, and falling back to it is the one path that can
+        // splice another session's conversation into this one.
         let msgs: Vec<Message> = if req.resume {
-            let prior = load_session(&sdir, &req.session)
-                .or_else(|| load_checkpoint(&req.workdir))
-                .unwrap_or_default();
+            let prior = load_session(&sdir, &req.session).unwrap_or_default();
             if prior.is_empty() {
                 agent.task_messages(&req.prompt)
             } else {

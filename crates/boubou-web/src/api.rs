@@ -23,6 +23,8 @@ use crate::state::AppState;
 
 /// The single-page frontend (Mingbird's page, rebranded).
 pub const INDEX_HTML: &str = include_str!("../static/index.html");
+/// The brand mark (128 px, from `docs/boubou_logo.png`), served at `/logo.png`.
+pub const LOGO_PNG: &[u8] = include_bytes!("../static/logo.png");
 
 type St = State<Arc<AppState>>;
 
@@ -30,6 +32,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
+        .route("/logo.png", get(logo))
         .route("/api/status", get(status))
         .route("/api/sessions", get(sessions))
         .route("/api/session", get(session_get).post(session_post))
@@ -64,7 +67,26 @@ fn err(code: StatusCode, msg: &str) -> Response {
 }
 
 async fn index() -> Response {
-    no_store(Html(INDEX_HTML).into_response())
+    // Dev loop: `BOUBOU_WEB_INDEX=path` serves the page from disk so edits show on reload
+    // without a rebuild. Unset (the normal case) the compiled-in page is served.
+    let page = std::env::var_os("BOUBOU_WEB_INDEX")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| INDEX_HTML.to_string());
+    no_store(Html(page).into_response())
+}
+
+async fn logo() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("image/png")),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            ),
+        ],
+        LOGO_PNG,
+    )
+        .into_response()
 }
 
 async fn not_found() -> Response {
@@ -349,6 +371,11 @@ async fn session_post(State(st): St, body: Option<Json<Value>>) -> Response {
 }
 
 async fn plan(State(st): St) -> Response {
+    // No current session (right after New chat): the todo.json in the workdir belongs to
+    // whatever ran last, not to this chat.
+    if st.session().is_none() {
+        return ok(json!({"plan": []}));
+    }
     let p = todo_file(&st.workdir());
     let plan = std::fs::read_to_string(p)
         .ok()

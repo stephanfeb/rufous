@@ -223,9 +223,17 @@ impl AppState {
             return false;
         }
         self.ask.clear();
-        let session = self
-            .session()
-            .unwrap_or_else(|| chrono::Local::now().format("chat_%m%d_%H%M%S").to_string());
+        // A session minted for this request has nothing to continue: with `resume` left on
+        // the runner used to fall back to the workdir checkpoint, i.e. the previous chat's
+        // messages, so "New chat" silently carried on the old conversation (2026-10-28).
+        let (session, existed) = match self.session() {
+            Some(s) => (s, true),
+            None => (
+                chrono::Local::now().format("chat_%m%d_%H%M%S").to_string(),
+                false,
+            ),
+        };
+        let resume = resume && existed;
         self.set_session(Some(session.clone()));
         let cfg = self.load_config();
         let model = cfg.models.get(&model_key).cloned().unwrap_or(model_key);
