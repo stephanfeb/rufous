@@ -21,7 +21,7 @@ sessions it writes load in Mingbird and vice versa. Web search/fetch (shared res
 long-term memory, parallel `batch_tools` and MCP (stdio and streamable HTTP via `rmcp`, tools
 flattened into the categories as `server.tool`) are in. `boubou doctor` probes every MCP server;
 `boubou tool <name> '<json>'` runs any single tool, built-in or `server.tool`, for debugging.
-Web search defaults to Bing, then DuckDuckGo, then Baidu (`AGENT_SEARCH_BACKENDS` overrides).
+Web search defaults to Brave, then DuckDuckGo, then Bing, then Baidu (`AGENT_SEARCH_BACKENDS` overrides); a query that names a site is fetched directly first, and results sharing no word with the query are dropped.
 `boubou serve` runs the local web UI (Mingbird's page and `/api/*` contract, agent in-process,
 approval dialogs, stop); `cargo run -p boubou-app` opens the same UI in a native window.
 Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, "child_model":

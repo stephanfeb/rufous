@@ -11,8 +11,8 @@ use boubou_core::exec::Executor;
 use boubou_core::memory::{load_memory, memory_recall, memory_store};
 use boubou_core::safety::SafetyPolicy;
 use boubou_core::web::{
-    cache_get, cache_key, cache_set, extract_text, parse_search_results, Engine, Web, CACHE_TTL,
-    DEFAULT_BACKENDS,
+    cache_get, cache_key, cache_set, direct_url, extract_text, is_relevant, parse_search_results,
+    query_tokens, Engine, Web, CACHE_TTL, DEFAULT_BACKENDS,
 };
 use serde_json::json;
 
@@ -119,16 +119,120 @@ fn duckduckgo_results_unwrap_redirects() {
     assert!(parse_search_results(DDG, Engine::Bing, 5).is_empty());
 }
 
+/// Trimmed from a live `search.brave.com/search?q=jevai.net` page (2026-10-28): one hit with
+/// a nested site-link cluster, one plain hit, one non-web block.
+const BRAVE: &str = r#"<html><body><div id="results">
+<div class="snippet svelte-jmfu5f" data-pos="0" data-type="web" data-keynav="true"><div class="result-body"><div class="result-content">
+<a href="https://jevai.net/" target="_self" class="svelte-14r20fy l1"><div class="site-name-wrapper"><div class="site-name-content"><div class="desktop-small-semibold">Jev AI</div> <cite class="snippet-url">jevai.net</cite></div></div>
+<div class="title search-snippet-title line-clamp-1" title="Jev AI — Decisions at machine speed">Jev AI — Decisions at machine speed</div></a>
+<div class="generic-snippet"><div class="content desktop-default-regular"><!--[-1--><!--]--> <!---->Email us hello@<strong>jevai.net</strong> · Live chat Open in the bottom-right · Free 14-day trial.<!----></div></div>
+</div></div>
+<div class="result-cluster"><div class="snippet"><a href="https://jevai.net/features/" class="title">Features</a> <div class="description">Define outputs, provide context.</div></div></div>
+</div>
+<div class="snippet" data-pos="1" data-type="web"><a href="https://en.wikipedia.org/wiki/Jev_(AI_model)" class="l1"><div class="title search-snippet-title">Jev (AI model) - Wikipedia</div></a>
+<div class="generic-snippet"><div class="content">3 days ago - Jev is a proprietary artificial intelligence model developed by TypeSafe AI.</div></div></div>
+<div class="snippet" data-type="cluster"><a href="https://example.org/x" class="l1"><div class="title">Not a web hit</div></a></div>
+</div></body></html>"#;
+
 #[test]
-fn default_backends_lean_western_and_map_to_engines() {
-    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[0]), Engine::Bing);
+fn brave_results_parse_titles_urls_and_snippets() {
+    let out = parse_search_results(BRAVE, Engine::Brave, 5);
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(
+        out[0],
+        "• Jev AI — Decisions at machine speed\n  https://jevai.net/\n  Email us hello@jevai.net · Live chat Open in the bottom-right · Free 14-day trial."
+    );
+    assert_eq!(
+        out[1],
+        "• Jev (AI model) - Wikipedia\n  https://en.wikipedia.org/wiki/Jev_(AI_model)\n  3 days ago - Jev is a proprietary artificial intelligence model developed by TypeSafe AI."
+    );
+    assert_eq!(parse_search_results(BRAVE, Engine::Brave, 1).len(), 1);
+    assert!(parse_search_results(BRAVE, Engine::Bing, 5).is_empty());
+}
+
+#[test]
+fn default_backends_brave_first_and_map_to_engines() {
+    assert_eq!(DEFAULT_BACKENDS.len(), 4);
+    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[0]), Engine::Brave);
     assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[1]), Engine::DuckDuckGo);
-    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[2]), Engine::Baidu);
-    assert!(DEFAULT_BACKENDS[0].contains("www.bing.com"));
+    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[2]), Engine::Bing);
+    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[3]), Engine::Baidu);
+    assert!(DEFAULT_BACKENDS[0].contains("search.brave.com"));
     assert_eq!(
         Engine::for_backend("https://example.org/s?q={query}"),
         Engine::Bing
     );
+}
+
+#[test]
+fn relevance_floor_tokens_and_matching() {
+    assert_eq!(query_tokens("jevai.net"), vec!["jevai"]);
+    assert_eq!(
+        query_tokens("What is the capital of France?"),
+        vec!["capital", "france"]
+    );
+    assert!(query_tokens("the of").is_empty());
+    let t = query_tokens("jevai.net");
+    assert!(is_relevant(
+        &t,
+        "• Jev AI\n  https://jevai.net/\n  Email us hello@jevai.net"
+    ));
+    assert!(!is_relevant(
+        &t,
+        "• Gmail\n  https://mail.google.com/\n  Gmail is email on the internet"
+    ));
+    // Five-letter prefixes cover plurals and verb forms, both ways round.
+    assert!(is_relevant(
+        &query_tokens("decision models"),
+        "• Decisions at machine speed\n  u\n  "
+    ));
+    assert!(is_relevant(
+        &query_tokens("decisions"),
+        "• a decision model\n  u\n  "
+    ));
+    // Short tokens match whole words only.
+    let t = query_tokens("ai");
+    assert!(is_relevant(&t, "• Jev AI\n  u\n  "));
+    assert!(!is_relevant(&t, "• Aim high\n  u\n  "));
+    // No word boundaries in Chinese: substring match.
+    assert!(is_relevant(
+        &query_tokens("鸣鸟"),
+        "• 鸣鸟本地助手\n  u\n  "
+    ));
+    // No tokens, no floor.
+    assert!(is_relevant(&[], "anything"));
+}
+
+#[test]
+fn direct_url_recognises_site_shaped_queries() {
+    assert_eq!(
+        direct_url("jevai.net").as_deref(),
+        Some("https://jevai.net")
+    );
+    assert_eq!(
+        direct_url(" typesafe.ai/blog ").as_deref(),
+        Some("https://typesafe.ai/blog")
+    );
+    assert_eq!(
+        direct_url("https://example.org/x?y=1").as_deref(),
+        Some("https://example.org/x?y=1")
+    );
+    assert_eq!(
+        direct_url("127.0.0.1:8080").as_deref(),
+        Some("http://127.0.0.1:8080")
+    );
+    assert_eq!(direct_url("localhost:8080"), None);
+    for q in [
+        "open weights system-one models",
+        "python 3.12",
+        "e.g.",
+        "",
+        "jevai",
+        "a.b.c.d.e.",
+        "what is jevai.net",
+    ] {
+        assert_eq!(direct_url(q), None, "{q:?}");
+    }
 }
 
 #[test]
@@ -143,6 +247,12 @@ fn extract_text_drops_chrome_and_scripts() {
 // ---- web_fetch against a loopback server ----
 
 fn serve_once(body: &'static str) -> String {
+    serve_once_at(body, "page")
+}
+
+/// One-shot loopback server; `path` lets a backend URL carry an engine name for
+/// `Engine::for_backend` (`…/duckduckgo`).
+fn serve_once_at(body: &'static str, path: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     std::thread::spawn(move || {
@@ -157,7 +267,134 @@ fn serve_once(body: &'static str) -> String {
             let _ = sock.write_all(resp.as_bytes());
         }
     });
-    format!("http://{addr}/page")
+    format!("http://{addr}/{path}")
+}
+
+/// What Bing returned for `jevai.net` on 2026-10-28: well-formed organic results about
+/// something else entirely, with no "no results" notice in the markup.
+const BING_FILLER: &str = r#"<html><body><ol id="b_results">
+<li class="b_algo"><h2><a href="https://techcommunity.microsoft.com/forms-quiz">"Locking" Forms Quiz to prevent cheating | Microsoft Community Hub</a></h2>
+  <div class="b_caption"><p>How to lock a Microsoft Forms quiz.</p></div></li>
+<li class="b_algo"><h2><a href="https://mail.google.com/">Gmail</a></h2>
+  <div class="b_caption"><p>Gmail is email that is intuitive, efficient, and useful.</p></div></li>
+</ol></body></html>"#;
+
+/// The DuckDuckGo HTML endpoint's bot check (HTTP 202 in the wild, 2026-10-28).
+const DDG_CHALLENGE: &str = r#"<html><body><div class="anomaly-modal__mask"><div class="anomaly-modal__modal">
+<div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>
+<div class="anomaly-modal__description">Please complete the following challenge to confirm this search was made by a human.</div>
+</div></div></body></html>"#;
+
+#[test]
+fn irrelevant_results_fall_through_to_the_next_backend() {
+    let d = home();
+    let bing = serve_once_at(BING_FILLER, "bing");
+    let ddg = serve_once_at(DDG, "duckduckgo");
+    let web = Web::with_backends(d.path(), vec![bing.clone(), ddg.clone()]);
+    let out = web.search("southern boubou", 5);
+    // The Wikipedia hit passes the floor; eBird (bare title, unrelated URL) does not.
+    assert_eq!(
+        out,
+        "• Southern boubou - Wikipedia\n  https://en.wikipedia.org/wiki/Southern_Boubou\n  The southern boubou is a bushshrike."
+    );
+    let key_of = |b: &str| {
+        cache_key(&[
+            "search",
+            b.split("//").last().expect("host"),
+            "southern boubou",
+            "5",
+        ])
+    };
+    // The filler set was not cached; the accepted set was.
+    assert!(cache_get(&web.cache_dir, &key_of(&bing), CACHE_TTL).is_none());
+    assert!(cache_get(&web.cache_dir, &key_of(&ddg), CACHE_TTL).is_some());
+}
+
+#[test]
+fn all_irrelevant_results_give_a_no_results_note_and_are_not_cached() {
+    let d = home();
+    let bing = serve_once_at(BING_FILLER, "bing");
+    let web = Web::with_backends(d.path(), vec![bing.clone()]);
+    let out = web.search("boubouzzz", 5);
+    assert!(
+        out.starts_with("[web_search: no relevant results for \"boubouzzz\" ("),
+        "{out}"
+    );
+    assert!(
+        out.contains("2 results, none mentioning the query"),
+        "{out}"
+    );
+    assert!(out.contains("web_fetch the site directly"));
+    let host = bing.split("//").last().expect("host");
+    let key = cache_key(&["search", host, "boubouzzz", "5"]);
+    assert!(cache_get(&web.cache_dir, &key, CACHE_TTL).is_none());
+}
+
+#[test]
+fn duckduckgo_challenge_is_reported_not_counted_as_empty() {
+    let d = home();
+    let ddg = serve_once_at(DDG_CHALLENGE, "duckduckgo");
+    let web = Web::with_backends(d.path(), vec![ddg]);
+    let out = web.search("boubou", 5);
+    assert!(out.starts_with("[web_search: no relevant results"), "{out}");
+    assert!(
+        out.contains("served a bot challenge instead of results"),
+        "{out}"
+    );
+}
+
+/// An engine's results about a site talk about the site, not about its domain label.
+const BING_ABOUT_SITE: &str = r#"<html><body><ol id="b_results">
+<li class="b_algo"><h2><a href="https://example.org/review">Boubou review: a local agent for small models</a></h2>
+  <div class="b_caption"><p>Hands-on with the desktop assistant.</p></div></li>
+<li class="b_algo"><h2><a href="https://mail.google.com/">Gmail</a></h2>
+  <div class="b_caption"><p>Gmail is email that is intuitive, efficient, and useful.</p></div></li>
+</ol></body></html>"#;
+
+#[test]
+fn fetched_site_title_widens_the_relevance_floor() {
+    let d = home();
+    let url = serve_once_at(
+        "<html><body><h1>Boubou home</h1><p>A local agent.</p></body></html>",
+        "",
+    );
+    let hostport = url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let bing = serve_once_at(BING_ABOUT_SITE, "bing");
+    let web = Web::with_backends(d.path(), vec![bing]);
+    let out = web.search(&hostport, 5);
+    // "Boubou review…" shares no word with "127.0.0.1:PORT" but does with the page title;
+    // Gmail shares neither and is dropped.
+    assert!(out.starts_with("• http://"), "{out}");
+    assert!(
+        out.contains("\n• Boubou review: a local agent for small models\n"),
+        "{out}"
+    );
+    assert!(!out.contains("Gmail"), "{out}");
+}
+
+#[test]
+fn site_shaped_query_is_fetched_directly_before_the_engines() {
+    let d = home();
+    let url = serve_once_at(
+        "<html><body><h1>Boubou home</h1><p>A local agent.</p></body></html>",
+        "",
+    );
+    let hostport = url.trim_start_matches("http://").trim_end_matches('/');
+    let web = Web::with_backends(d.path(), vec![]);
+    let out = web.search(hostport, 5);
+    assert!(
+        out.starts_with(&format!(
+            "• http://{hostport} (fetched directly)\n  http://{hostport}\n  Boubou home A local agent."
+        )),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("[web_search: no engine results (no search backends configured)]"),
+        "{out}"
+    );
 }
 
 #[test]

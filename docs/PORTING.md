@@ -273,7 +273,26 @@ source, prompts, tool and harness messages, web page, skills, docs or tests. Dec
   `beautifulsoup4` for the mingbird arm: `uv run --with requests --with beautifulsoup4 python
   bench/lrab_h2h.py --model gemma4:e2b`. WF-01 smoke on gemma4:e2b: Boubou 1.0 in 131 s.
 
-Search backends: Boubou defaults to Bing → DuckDuckGo HTML → Baidu (western-first; the user is
-in Southeast Asia). Mingbird's `cn.bing.com` host is therefore not shared in the search cache;
-`web_fetch` entries still are. `AGENT_SEARCH_BACKENDS` overrides the list.
+Search backends: Boubou defaults to Brave → DuckDuckGo HTML → Bing → Baidu. Changed on
+2026-10-28 from Bing-first after Bing answered the query `jevai.net` with ten well-formed but
+unrelated results (Microsoft Forms, Gmail) and the model reported that as fact; DuckDuckGo, the
+fallback, was silently answering with a bot-challenge page (HTTP 202) that parsed as "no
+results". Four guards now sit on the scraping, all in `web.rs` and covered by loopback tests in
+`tests/web_memory.rs`:
+
+- Relevance floor: a result whose title, URL and snippet share no word with the query (stop
+  words and `www/com/net` removed; five-letter prefixes count; Chinese tokens match as substrings)
+  is dropped. A backend whose results all fail the floor is skipped and not cached, and the
+  loop moves to the next backend.
+- Bot challenge: DuckDuckGo's `anomaly-modal` page is reported in the tool output ("served a
+  bot challenge instead of results") and in the log instead of counting as empty.
+- Site-shaped query (`jevai.net`, `typesafe.ai/blog`): the site itself is fetched first and
+  leads the output as "(fetched directly)", whatever the engines return.
+- When every backend fails the floor the tool returns `[web_search: no relevant results for
+  "…" (per-backend reasons). Rephrase the query …]`; transport failures keep the
+  `[web_search error: …]` form.
+
+Mingbird's `cn.bing.com` host is therefore not shared in the search cache; `web_fetch` entries
+still are. `AGENT_SEARCH_BACKENDS` overrides the list. Backlog (beads): a SearXNG backend
+(`format=json`, no HTML scraping, self-hosted) and a Tavily backend (hosted API, key in config).
 

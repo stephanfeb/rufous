@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "boubou",
+  "project_id": "040b2559-169c-44a2-99ea-10463df4f8f8"
+}

@@ -1,12 +1,17 @@
 //! `web_search`, `web_search_multi`, `web_fetch` and the on-disk result cache.
 //!
-//! Search scrapes the HTML of the configured backends (Bing, DuckDuckGo's HTML endpoint and
-//! Baidu by default, overridable with `AGENT_SEARCH_BACKENDS`); Bing/Baidu use Mingbird's
-//! selectors, DuckDuckGo is Boubou's addition. Fetch stores the whole page
-//! text under `<workdir>/sources/` and returns an 800-char summary plus the path, so the
-//! model can `read_file` any part later without the full text living in the context.
-//! Both are cached for an hour under `<agent home>/cache/`, keyed like Mingbird
-//! (sha1 of the joined parts, first 24 hex chars) so the two stacks share a cache.
+//! Search scrapes the HTML of the configured backends (Brave, DuckDuckGo's HTML endpoint,
+//! Bing and Baidu by default, overridable with `AGENT_SEARCH_BACKENDS`); Bing/Baidu use
+//! Mingbird's selectors, Brave and DuckDuckGo are Boubou's additions. Three guards sit on top
+//! of the scraping (2026-10-28, after Bing answered "jevai.net" with ten Microsoft Forms
+//! pages): a result must mention at least one word of the query or it is dropped, a backend
+//! whose results all fail that floor is skipped and never cached, a bot-challenge page is
+//! reported instead of counting as "no results", and a query that names a site
+//! (`jevai.net`) is fetched directly before any engine is asked.
+//! Fetch stores the whole page text under `<workdir>/sources/` and returns an 800-char
+//! summary plus the path, so the model can `read_file` any part later without the full text
+//! living in the context. Both are cached for an hour under `<agent home>/cache/`, keyed like
+//! Mingbird (sha1 of the joined parts, first 24 hex chars) so the two stacks share a cache.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,11 +22,15 @@ use sha1::{Digest, Sha1};
 
 use crate::text::{clen, head};
 
-/// Western-first (Boubou is used from Southeast Asia); Baidu stays as the last resort for
-/// Chinese queries. Override with `AGENT_SEARCH_BACKENDS` (comma-separated URLs).
-pub const DEFAULT_BACKENDS: [&str; 3] = [
-    "https://www.bing.com/search",
+/// Brave first: it serves full HTML to Boubou's user agent and indexes new sites quickly.
+/// DuckDuckGo's HTML endpoint second (it currently answers bots with a challenge page, which
+/// `search` reports rather than treating as "no results"). Bing third: its filler results
+/// for unindexed terms are caught by the relevance floor. Baidu last, for Chinese queries.
+/// Override with `AGENT_SEARCH_BACKENDS` (comma-separated URLs).
+pub const DEFAULT_BACKENDS: [&str; 4] = [
+    "https://search.brave.com/search?source=web",
     "https://html.duckduckgo.com/html/",
+    "https://www.bing.com/search",
     "https://www.baidu.com/s",
 ];
 pub const CACHE_TTL: Duration = Duration::from_secs(3600);
@@ -30,6 +39,10 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(25);
 /// Chars of page text returned inline by `web_fetch`.
 pub const FETCH_SUMMARY_CHARS: usize = 800;
+/// Chars of a directly fetched site shown as the lead result of `web_search`.
+const DIRECT_FETCH_CHARS: usize = 400;
+/// Leading words of a directly fetched page (its title) that widen the relevance floor.
+const DIRECT_TITLE_WORDS: usize = 6;
 
 // ---------------------------------------------------------------- cache
 
@@ -94,12 +107,23 @@ fn text_spaced(el: ElementRef<'_>) -> String {
         .join(" ")
 }
 
+/// Text nodes concatenated as written, whitespace collapsed: keeps `hello@<strong>x</strong>`
+/// as `hello@x` where `text_spaced` would insert a space and `text_joined` would eat one.
+fn text_flat(el: ElementRef<'_>) -> String {
+    el.text()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Which result-page layout a backend serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Engine {
     Bing,
     Baidu,
     DuckDuckGo,
+    Brave,
 }
 
 impl Engine {
@@ -109,19 +133,26 @@ impl Engine {
             Self::Baidu
         } else if url.contains("duckduckgo") {
             Self::DuckDuckGo
+        } else if url.contains("brave") {
+            Self::Brave
         } else {
             Self::Bing
         }
     }
 }
 
-/// Result blocks (`• title\n  url\n  snippet`) from a Bing, Baidu or DuckDuckGo results page.
+/// Result blocks (`• title\n  url\n  snippet`) from a Brave, Bing, Baidu or DuckDuckGo
+/// results page.
 pub fn parse_search_results(html: &str, engine: Engine, max_results: usize) -> Vec<String> {
     let doc = Html::parse_document(html);
+    if engine == Engine::Brave {
+        return parse_brave(&doc, max_results);
+    }
     let items = match engine {
         Engine::Bing => sel("li.b_algo"),
         Engine::Baidu => sel("div.result.c-container"),
         Engine::DuckDuckGo => sel("div.result"),
+        Engine::Brave => unreachable!("handled above"),
     };
     let (h2a, h3a, ddg_a) = (sel("h2 a"), sel("h3 a"), sel("a.result__a"));
     let (cap_bing, cap_p, cap_baidu, cap_ddg) = (
@@ -159,6 +190,147 @@ pub fn parse_search_results(html: &str, engine: Engine, max_results: usize) -> V
         }
     }
     out
+}
+
+/// Brave (`search.brave.com/search?q=…`, markup of 2026-10-28): each organic hit is a
+/// `div.snippet[data-type="web"]`; its first anchor carries the target URL and holds the
+/// `div.title`; the description is `div.generic-snippet div.content`. Site-link clusters
+/// nested inside a hit (`div.result-cluster`) repeat the same site and are not emitted.
+fn parse_brave(doc: &Html, max_results: usize) -> Vec<String> {
+    let items = sel(r#"div.snippet[data-type="web"]"#);
+    let (anchor, title, content) = (
+        sel("a[href]"),
+        sel("div.title"),
+        sel("div.generic-snippet div.content"),
+    );
+    let mut out = Vec::new();
+    for hit in doc.select(&items).take(max_results) {
+        let Some(a) = hit.select(&anchor).next() else {
+            continue;
+        };
+        let href = a.value().attr("href").unwrap_or("");
+        let title = a
+            .select(&title)
+            .next()
+            .map(text_flat)
+            .filter(|t| !t.is_empty())
+            .or_else(|| a.value().attr("title").map(str::to_string))
+            .unwrap_or_default();
+        let snippet = hit
+            .select(&content)
+            .next()
+            .map(|c| head(&text_flat(c), 200).to_string())
+            .unwrap_or_default();
+        if !title.is_empty() && !href.is_empty() {
+            out.push(format!("• {title}\n  {href}\n  {snippet}"));
+        }
+    }
+    out
+}
+
+/// A backend answered with a bot check instead of results. Only DuckDuckGo's page is
+/// recognised today (`anomaly-modal`, "bots use DuckDuckGo too"); a generic "captcha"
+/// substring would misfire on Brave, whose pages carry that word in a string table.
+pub fn challenge_notice(engine: Engine, body: &str) -> Option<&'static str> {
+    match engine {
+        Engine::DuckDuckGo
+            if body.contains("anomaly-modal") || body.contains("bots use DuckDuckGo too") =>
+        {
+            Some("served a bot challenge instead of results")
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------- relevance
+
+/// Words carrying no information about what the user wants, plus URL scaffolding, so a
+/// query like `jevai.net` is judged on `jevai` alone and `what is the capital of France` on
+/// `capital` and `france`.
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with", "is", "are", "was", "be",
+    "what", "which", "who", "how", "why", "when", "where", "do", "does", "did", "can", "i", "me",
+    "my", "you", "it", "this", "that", "about", "from", "by", "at", "as", "vs", "com", "net",
+    "org", "www", "http", "https",
+];
+
+/// Words of `query` that a relevant result should echo: lowercased alphanumeric runs of two
+/// characters or more, minus [`STOP_WORDS`], deduplicated.
+pub fn query_tokens(query: &str) -> Vec<String> {
+    let mut toks: Vec<String> = query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 2 && !STOP_WORDS.contains(w))
+        .map(String::from)
+        .collect();
+    toks.sort();
+    toks.dedup();
+    toks
+}
+
+/// The relevance floor: `block` (title, URL and snippet) must contain at least one token as
+/// a whole word, or share a five-letter prefix with one (plurals and verb forms). Non-ASCII
+/// tokens (Chinese has no word boundaries) match as substrings. No tokens means no floor.
+pub fn is_relevant(tokens: &[String], block: &str) -> bool {
+    if tokens.is_empty() {
+        return true;
+    }
+    let lower = block.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    tokens.iter().any(|t| {
+        if !t.is_ascii() {
+            return lower.contains(t.as_str());
+        }
+        words.iter().any(|w| {
+            *w == t.as_str()
+                || (t.len() >= 5 && w.starts_with(t.as_str()))
+                || (w.len() >= 5 && t.starts_with(w))
+        })
+    })
+}
+
+/// A query that names one site (`jevai.net`, `typesafe.ai/blog`, `https://example.org`):
+/// the site's own page is a better first result than whatever an engine has indexed about
+/// it. Returns the URL to fetch, `https` unless the host is an IPv4 address or has a port.
+pub fn direct_url(query: &str) -> Option<String> {
+    let q = query.trim();
+    if q.is_empty() || q.contains(char::is_whitespace) {
+        return None;
+    }
+    let rest = q
+        .strip_prefix("https://")
+        .or_else(|| q.strip_prefix("http://"))
+        .unwrap_or(q);
+    let hostport = rest.split('/').next()?;
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => (h, Some(p)),
+        _ => (hostport, None),
+    };
+    let labels: Vec<&str> = host.split('.').collect();
+    let label_ok =
+        |l: &&str| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if labels.len() < 2 || !labels.iter().all(label_ok) {
+        return None;
+    }
+    let ipv4 = labels.len() == 4 && labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit()));
+    let tld_ok = labels
+        .last()
+        .is_some_and(|t| t.len() >= 2 && t.bytes().all(|b| b.is_ascii_alphabetic()));
+    if !ipv4 && !tld_ok {
+        return None;
+    }
+    if q.starts_with("http://") || q.starts_with("https://") {
+        return Some(q.to_string());
+    }
+    let scheme = if ipv4 || port.is_some() {
+        "http"
+    } else {
+        "https"
+    };
+    Some(format!("{scheme}://{rest}"))
 }
 
 /// DuckDuckGo wraps result links as `//duckduckgo.com/l/?uddg=<encoded url>&rut=…`;
@@ -261,15 +433,51 @@ impl Web {
             .map_err(|e| e.to_string())
     }
 
-    /// `web_search(query, max_results=5)`.
+    /// `web_search(query, max_results=5)`. Backends are tried in order; the first whose
+    /// results pass the relevance floor wins and is cached. A query that names a site is
+    /// fetched directly first and that page leads the output whatever the engines say.
     pub fn search(&self, query: &str, max_results: usize) -> String {
-        let mut last_err = String::new();
         let n = max_results.to_string();
+        let mut tokens = query_tokens(query);
+        let direct = direct_url(query).and_then(|url| {
+            let text = self.fetch(&url, None);
+            (!text.starts_with("[web_fetch error")).then_some((url, text))
+        });
+        if let Some((_, text)) = &direct {
+            // The site's own title says what it is about, and engine results about a site
+            // echo those words rather than its domain label ("Jev" for jevai.net).
+            let title = text
+                .split_whitespace()
+                .take(DIRECT_TITLE_WORDS)
+                .collect::<Vec<_>>()
+                .join(" ");
+            tokens.extend(
+                query_tokens(&title)
+                    .into_iter()
+                    .filter(|t| t.chars().count() >= 3),
+            );
+            tokens.sort();
+            tokens.dedup();
+        }
+        let direct = direct.map(|(url, text)| {
+            format!(
+                "• {url} (fetched directly)\n  {url}\n  {}",
+                head(&text, DIRECT_FETCH_CHARS)
+            )
+        });
+        let lead = |body: String| match &direct {
+            Some(d) => format!("{d}\n{body}"),
+            None => body,
+        };
+        // Why each backend gave nothing, for the final message and the log.
+        let mut notes: Vec<String> = Vec::new();
+        let mut any_body = false;
         for backend in &self.backends {
             let host = backend.split("//").last().unwrap_or(backend);
+            let site = host.split('/').next().unwrap_or(host);
             let key = cache_key(&["search", host, query, &n]);
             if let Some(Value::String(s)) = cache_get(&self.cache_dir, &key, CACHE_TTL) {
-                return s;
+                return lead(s);
             }
             let url = if backend.contains("{query}") {
                 backend.replace("{query}", &urlencode(query))
@@ -277,20 +485,55 @@ impl Web {
                 let sep = if backend.contains('?') { '&' } else { '?' };
                 format!("{backend}{sep}q={}", urlencode(query))
             };
-            match self.get(&url, SEARCH_TIMEOUT) {
-                Ok(body) => {
-                    let out =
-                        parse_search_results(&body, Engine::for_backend(backend), max_results);
-                    if !out.is_empty() {
-                        let result = out.join("\n");
-                        cache_set(&self.cache_dir, &key, &Value::String(result.clone()));
-                        return result;
-                    }
+            let body = match self.get(&url, SEARCH_TIMEOUT) {
+                Ok(b) => b,
+                Err(e) => {
+                    notes.push(format!("{site}: {}", head(&e, 80)));
+                    continue;
                 }
-                Err(e) => last_err = head(&e, 80).to_string(),
+            };
+            any_body = true;
+            let engine = Engine::for_backend(backend);
+            if let Some(why) = challenge_notice(engine, &body) {
+                tracing::warn!("web_search: {site} {why}");
+                notes.push(format!("{site} {why}"));
+                continue;
             }
+            let parsed = parse_search_results(&body, engine, max_results);
+            if parsed.is_empty() {
+                notes.push(format!("{site}: no results"));
+                continue;
+            }
+            let total = parsed.len();
+            let kept: Vec<String> = parsed
+                .into_iter()
+                .filter(|b| is_relevant(&tokens, b))
+                .collect();
+            if kept.is_empty() {
+                tracing::warn!(
+                    "web_search: {site} returned {total} results for {query:?}, none mentioning it"
+                );
+                notes.push(format!(
+                    "{site}: {total} results, none mentioning the query"
+                ));
+                continue;
+            }
+            let result = kept.join("\n");
+            cache_set(&self.cache_dir, &key, &Value::String(result.clone()));
+            return lead(result);
         }
-        format!("[web_search error: {last_err}]")
+        let why = if notes.is_empty() {
+            "no search backends configured".to_string()
+        } else {
+            notes.join("; ")
+        };
+        match (direct, any_body) {
+            (Some(d), _) => format!("{d}\n[web_search: no engine results ({why})]"),
+            (None, true) => format!(
+                "[web_search: no relevant results for {query:?} ({why}). Rephrase the query with distinctive words, or web_fetch the site directly.]"
+            ),
+            (None, false) => format!("[web_search error: {why}]"),
+        }
     }
 
     /// `web_search_multi(queries, max_results=3)`: one thread per query, blocks labelled.
