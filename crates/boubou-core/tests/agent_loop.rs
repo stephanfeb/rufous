@@ -2,7 +2,7 @@
 //! `tests/test_output_cap.py`: the loop driven by a scripted backend and a scripted tool
 //! runner, no network, no model.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use boubou_core::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
@@ -1346,4 +1346,271 @@ fn truncated_response_with_complete_call_runs_normally() {
     assert!(msgs
         .iter()
         .any(|m| m.content.starts_with("[created app.py")));
+}
+
+// ---- isolated corrector (Boubou, bead boubou-65d.7; bench/probes.py loop probe) ----
+
+const FETCH_TASK: &str = "1. Run `python fetch.py` to download dataset.csv from the data mirror.\n2. Write summary.md with one line: the number of rows in dataset.csv.";
+const FETCH_FAIL: &str = "[exit 1]\nSTDOUT:\nconnecting to mirror.example.net ...\nSTDERR:\nConnectionError: dataset mirror unreachable (HTTP 503 Service Unavailable)";
+
+/// A backend that records how many messages each call saw, and answers from a closure.
+struct Lens<F: FnMut(usize) -> ChatResponse> {
+    n: usize,
+    f: F,
+    seen: Arc<Mutex<Vec<(usize, String)>>>,
+}
+
+impl<F: FnMut(usize) -> ChatResponse> ChatBackend for Lens<F> {
+    fn chat(
+        &mut self,
+        _m: &str,
+        msgs: &[Message],
+        _t: &[Value],
+        _on: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        self.n += 1;
+        let joined: String = msgs
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.seen.lock().expect("lock").push((msgs.len(), joined));
+        Ok((self.f)(self.n))
+    }
+}
+
+/// fetch.py always fails; `python3 fetch.py --mirror b` works; create_file lands on disk.
+struct FetchTools {
+    workdir: PathBuf,
+}
+
+impl ToolRunner for FetchTools {
+    fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        let a = |k: &str| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        match name {
+            "run_bash" if a("command").contains("--mirror") => {
+                let _ = std::fs::write(self.workdir.join("dataset.csv"), "a,b\n1,2\n");
+                "[exit 0]\nSTDOUT:\nsaved dataset.csv (2 rows)".to_string()
+            }
+            "run_bash" if a("command").contains("fetch.py") => FETCH_FAIL.to_string(),
+            "run_bash" => "[exit 0]\nSTDOUT:\n".to_string(),
+            "list_dir" => "fetch.py".to_string(),
+            "create_file" => {
+                let _ = std::fs::write(self.workdir.join(a("path")), a("content"));
+                format!("[created {}]", a("path"))
+            }
+            "finish" => "[TASK_COMPLETE] done".to_string(),
+            _ => "[ok]".to_string(),
+        }
+    }
+}
+
+fn fetch_call() -> ChatResponse {
+    ChatResponse::call("", "run_bash", json!({"command": "python fetch.py"}))
+}
+
+fn run_fetch<F: FnMut(usize) -> ChatResponse>(
+    d: &Path,
+    ablation: &[&str],
+    f: F,
+) -> (Vec<Message>, Vec<(usize, String)>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    // The task names fetch.py: it must exist or gate 3b asks for it.
+    std::fs::write(d.join("fetch.py"), "import sys; sys.exit(1)\n").expect("fixture");
+    let mut params = RunParams::plain("gemma4:12b", d);
+    params
+        .ablation
+        .extend(ablation.iter().map(|s| s.to_string()));
+    let mut a = Agent::new(
+        params,
+        Lens {
+            n: 0,
+            f,
+            seen: seen.clone(),
+        },
+        FetchTools {
+            workdir: d.to_path_buf(),
+        },
+    );
+    a.sessions_dir = d.join("sessions");
+    let msgs = a.run(start(FETCH_TASK), None, None).expect("loop");
+    let seen = seen.lock().expect("lock").clone();
+    (msgs, seen)
+}
+
+#[test]
+fn second_identical_failure_consults_the_corrector_in_isolation_and_a_give_up_blocks_the_call() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, seen) = run_fetch(d.path(), &[], |n| match n {
+        1 => fetch_call(),
+        2 => ChatResponse::call("", "list_dir", json!({"path": "."})),
+        3 => fetch_call(), // second identical failure → corrector is call 4
+        4 => ChatResponse::text(
+            "GIVE UP: the mirror answers HTTP 503; no change to the command fixes a remote outage.",
+        ),
+        5 => fetch_call(), // the model tries once more: blocked, not run
+        6 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "summary.md", "content": "dataset.csv: download failed (HTTP 503); row count unknown."}),
+        ),
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "dataset.csv could not be downloaded (HTTP 503 from the mirror); summary.md records the failure."}),
+        ),
+    });
+    // The corrector saw two messages and none of the conversation.
+    let (len, text) = &seen[3];
+    assert_eq!(*len, 2, "fresh context: system + facts");
+    assert!(
+        text.contains("python fetch.py")
+            && text.contains("503")
+            && text.contains(FETCH_TASK.lines().next().expect("task line"))
+    );
+    assert!(
+        !text.contains("list_dir"),
+        "no history leaks into the corrector"
+    );
+    // The give-up note spells out the honest exit, naming the missing file.
+    let notes = user_msgs(&msgs, "Corrector verdict");
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0]
+        .content
+        .contains("dataset.csv: could not be produced"));
+    assert!(notes[0].content.contains("do NOT create the missing input"));
+    // The third identical call never ran.
+    let blocked: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content.starts_with("[blocked: the corrector"))
+        .collect();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(
+        msgs.iter()
+            .filter(|m| m.role == Role::Tool && m.content.starts_with("[exit 1]"))
+            .count(),
+        2,
+        "fetch.py ran exactly twice"
+    );
+    // One consultation only (the extra model call is gate 6's pre-delivery re-read), and
+    // the honest finish went through.
+    assert_eq!(
+        seen.iter()
+            .filter(|(_, t)| t.contains("You are the corrector"))
+            .count(),
+        1
+    );
+    assert!(user_msgs(&msgs, "claims a verified result").is_empty());
+    assert!(
+        user_msgs(&msgs, "finish was rejected").is_empty(),
+        "honest summary excuses dataset.csv"
+    );
+}
+
+#[test]
+fn corrector_retry_runs_now_and_is_recorded_as_a_call() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, seen) = run_fetch(d.path(), &[], |n| match n {
+        1 => fetch_call(),
+        2 => ChatResponse::call("", "list_dir", json!({"path": "."})),
+        3 => fetch_call(),
+        4 => ChatResponse::call(
+            "",
+            "run_bash",
+            json!({"command": "python3 fetch.py --mirror b"}),
+        ),
+        5 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "summary.md", "content": "2 rows"}),
+        ),
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "dataset.csv has 2 rows; summary.md written."}),
+        ),
+    });
+    assert_eq!(seen[3].0, 2, "the retry came from the isolated call");
+    let i = msgs
+        .iter()
+        .position(|m| {
+            m.role == Role::Assistant
+                && m.tool_calls
+                    .iter()
+                    .any(|t| t.function.arguments["command"] == "python3 fetch.py --mirror b")
+        })
+        .expect("corrected call in history");
+    assert!(msgs[i + 1].role == Role::Tool && msgs[i + 1].content.starts_with("[exit 0]"));
+    let note = user_msgs(&msgs, "an isolated retry ran");
+    assert_eq!(note.len(), 1);
+    assert!(note[0].content.contains("Continue from that result"));
+    assert!(d.path().join("dataset.csv").exists());
+    assert!(
+        user_msgs(&msgs, "Corrector verdict").is_empty(),
+        "no give-up note on a fix"
+    );
+}
+
+#[test]
+fn corrector_is_consulted_once_per_signature_and_not_when_ablated() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, seen) = run_fetch(d.path(), &["corrector"], |n| match n {
+        1 => fetch_call(),
+        2 => ChatResponse::call("", "list_dir", json!({"path": "."})),
+        3 => fetch_call(),
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "fetch.py failed (503); giving up."}),
+        ),
+    });
+    assert!(
+        seen.iter()
+            .all(|(_, t)| !t.contains("You are the corrector")),
+        "no isolated call"
+    );
+    assert!(user_msgs(&msgs, "Corrector").is_empty());
+    assert!(msgs
+        .iter()
+        .all(|m| !m.content.starts_with("[blocked: the corrector")));
+}
+
+#[test]
+fn honest_failure_summary_is_not_bounced_into_ticking_the_plan() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(
+        d.path().join("todo.json"),
+        r#"[{"item":"run fetch.py","done":false},{"item":"write summary.md","done":false}]"#,
+    )
+    .expect("w");
+    let (msgs, _seen) = run_fetch(d.path(), &[], |n| match n {
+        1 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "summary.md", "content": "dataset.csv: download failed (HTTP 503)."}),
+        ),
+        _ => ChatResponse::call(
+            "",
+            "finish",
+            json!({"summary": "The dataset download failed with HTTP 503; summary.md records it and dataset.csv was not produced."}),
+        ),
+    });
+    assert!(
+        user_msgs(&msgs, "not marked done").is_empty(),
+        "no plan-sync refusal"
+    );
+    let todo = std::fs::read_to_string(d.path().join("todo.json")).expect("todo");
+    assert!(
+        todo.contains("false"),
+        "failed steps are not ticked for the model"
+    );
+    assert!(
+        user_msgs(&msgs, "finish was rejected").is_empty(),
+        "stem mention excuses dataset.csv"
+    );
 }

@@ -8,7 +8,7 @@
 //! the guard stack, or handle a text-only turn (empty-turn ladder, repeat detection,
 //! Q&A wrap-up). `finish` runs the gate sequence and returns.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 
 use super::chat::DynBackend;
 use super::chat::{ChatBackend, StreamPiece};
+use super::corrector::{self, Verdict};
 use super::face::{self, ToolFace, MUTATE, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
     attach_pending_images, compact_history, dedupe_trailing_assistant, estimate_messages_tokens,
@@ -475,6 +476,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // artefact gate) and the deliverable refusal (1).
         let mut cmd_records: Vec<integrity::CommandRecord> = Vec::new();
         let mut claim_gate_warns = 0;
+        // Isolated corrector (corrector.rs): failures per exact signature, signatures already
+        // taken to the corrector, signatures it judged blocked (with the reason), and the
+        // per-run consultation count.
+        let mut sig_fails: HashMap<(String, String), u32> = HashMap::new();
+        let mut corrector_seen: HashSet<(String, String)> = HashSet::new();
+        let mut corrector_blocked: HashMap<(String, String), String> = HashMap::new();
+        let mut corrector_calls: u32 = 0;
         let mut named_gate_warns = 0;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
@@ -1005,6 +1013,21 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         )));
                     }
                     continue;
+                } else if let Some(reason) =
+                    corrector_blocked.get(&(name.clone(), sig_json.clone()))
+                {
+                    // The corrector judged this exact call unfixable from here: it does not
+                    // run again this turn.
+                    let res = format!("[blocked: the corrector judged this exact {name} call cannot succeed here ({reason}). Do not retry it. Report the failure in the deliverable and finish honestly.]");
+                    log!("[{i}] ⚠️ blocked by corrector verdict: {name}");
+                    sink(AgentEvent::ToolResult {
+                        name: name.clone(),
+                        args: args_v.clone(),
+                        output: res.clone(),
+                        blocked: true,
+                    });
+                    messages.push(Message::tool_output(res));
+                    continue;
                 } else if n != "finish"
                     && last_sig.as_ref() == Some(&(name.clone(), sig_json.clone()))
                     && dup_warns < 3
@@ -1267,6 +1290,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             if let Err(e) = crate::todo::save_todo(workdir, &t) {
                                 log!("[{i}] todo sync failed: {e}");
                             }
+                        } else if t_all > 0
+                            && t_done < t_all
+                            && integrity::admits_failure_about(&summary, "")
+                        {
+                            // An honest failure report must not be bounced into ticking steps
+                            // that did not happen (loop probe t02/t03: four refusals, then
+                            // the dead-loop guard). The plan stays as it is.
+                            log!("[{i}] plan out of sync ({t_done}/{t_all}) but the summary reports a failure; finish allowed, plan left as is");
+                            todo_gate_warns = 2;
                         } else if t_all > 0 && t_done < t_all {
                             todo_gate_warns += 1;
                             log!("[{i}] ⚠️ plan out of sync ({t_done}/{t_all}), finish rejected");
@@ -1342,6 +1374,155 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     });
                     save!();
                     return Ok(messages);
+                }
+
+                // Isolated corrector: the second identical failure of one signature goes to
+                // the same model with a fresh context (task, call, error only). A corrected
+                // call runs now; a give-up blocks the signature and spells out the honest
+                // exit. Missing-argument errors have their own ladder below.
+                let failed_call = n != "finish"
+                    && (is_tool_error(&res)
+                        || (n == "run_bash"
+                            && integrity::exit_code_of(&res).is_some_and(|c| c != 0)));
+                let sig_key = (name.clone(), sig_json.clone());
+                if failed_call {
+                    let k = sig_fails.entry(sig_key.clone()).or_insert(0);
+                    *k += 1;
+                    let k = *k;
+                    if k >= corrector::CONSULT_AT
+                        && !qa
+                        && !params.ablated("corrector")
+                        && missing_arg_key(&res).is_none()
+                        && corrector_calls < corrector::MAX_PER_RUN
+                        && !corrector_seen.contains(&sig_key)
+                    {
+                        corrector_seen.insert(sig_key.clone());
+                        corrector_calls += 1;
+                        let task_text = qa::task_original_text(&messages, 100_000);
+                        let verdict = corrector::consult(
+                            &mut *backend,
+                            model,
+                            &task_text,
+                            corrector::FailedCall {
+                                name: n,
+                                args: &args_v,
+                                result: &res,
+                                fails: k,
+                            },
+                            &ct,
+                        );
+                        match verdict {
+                            Verdict::Retry {
+                                name: cname,
+                                args: cargs,
+                                reason: _,
+                            } if corrector_blocked
+                                .contains_key(&(cname.clone(), cargs.to_string())) =>
+                            {
+                                // probes_corrector2 t02: the only alternative offered was a
+                                // call an earlier give-up had already blocked; that is no fix.
+                                let reason = format!("the only alternative proposed was `{cname}`, which an earlier verdict already blocked");
+                                log!(
+                                    "[{i}] ⚠️ corrector consulted: {name} failed {k}× with identical arguments; verdict: give up: {reason}"
+                                );
+                                corrector_blocked.insert(sig_key.clone(), reason.clone());
+                                let missing =
+                                    integrity::task_named_missing(&task_text, "", workdir);
+                                messages.push(Message::user(corrector::give_up_note(
+                                    n, &args_v, k, &reason, &missing,
+                                )));
+                            }
+                            Verdict::Retry {
+                                name: cname,
+                                args: cargs,
+                                reason,
+                            } => {
+                                let cmsg = Message::assistant_call(cname.clone(), cargs.clone());
+                                if let Some(tc) = cmsg.tool_calls.first() {
+                                    sink(AgentEvent::ToolCall(tc.clone()));
+                                }
+                                let cres = tools.run_tool(&cname, &cargs);
+                                let cfailed = is_tool_error(&cres)
+                                    || (cname == "run_bash"
+                                        && integrity::exit_code_of(&cres).is_some_and(|c| c != 0));
+                                sink(AgentEvent::ToolResult {
+                                    name: cname.clone(),
+                                    args: cargs.clone(),
+                                    output: cres.clone(),
+                                    blocked: false,
+                                });
+                                if cname == "run_bash" {
+                                    let command =
+                                        cargs.get("command").and_then(Value::as_str).unwrap_or("");
+                                    cmd_records.push(integrity::CommandRecord::from_result(
+                                        command, &cres,
+                                    ));
+                                } else if matches!(
+                                    cname.as_str(),
+                                    "create_file" | "edit_file" | "append_file" | "delete_file"
+                                ) {
+                                    let path =
+                                        cargs.get("path").and_then(Value::as_str).unwrap_or("");
+                                    cmd_records.push(integrity::CommandRecord::file_write(
+                                        &cname, path, &cres,
+                                    ));
+                                }
+                                last_sig = Some((cname.clone(), cargs.to_string()));
+                                let outcome = if cfailed {
+                                    "fix failed too"
+                                } else {
+                                    "fix ran ok"
+                                };
+                                log!(
+                                    "[{i}] ⚠️ corrector consulted: {name} failed {k}× with identical arguments; verdict: retry {cname} {} → {outcome}",
+                                    text::head(&cargs.to_string(), 60)
+                                );
+                                log!(
+                                    "[{i}|+{}s] ⚙ {cname} {} -> {}",
+                                    t0.elapsed().as_secs(),
+                                    text::head(&cargs.to_string(), 60),
+                                    text::head(&cres, 90)
+                                );
+                                messages.push(cmsg);
+                                messages.push(Message::tool_output(cres));
+                                let why = if reason.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({})", text::head(&reason, 120))
+                                };
+                                if cfailed {
+                                    corrector_blocked.insert(sig_key.clone(), "two identical failures and a corrected attempt also failed".to_string());
+                                    messages.push(Message::user(format!(
+                                        "⚠️ Corrector: your `{name}` call had failed {k} times with the same arguments, so an isolated retry tried `{cname}` instead{why}; it failed as well (result above). Treat this step as blocked: do not repeat either call, do not invent the missing input. State the failure in the deliverable and in the finish summary, then finish."
+                                    )));
+                                } else {
+                                    messages.push(Message::user(format!(
+                                        "⚠️ Corrector: your `{name}` call had failed {k} times with the same arguments, so an isolated retry ran `{cname}` instead{why}; its result is above. Continue from that result and do not repeat the failed call."
+                                    )));
+                                }
+                            }
+                            Verdict::GiveUp { reason } => {
+                                log!(
+                                    "[{i}] ⚠️ corrector consulted: {name} failed {k}× with identical arguments; verdict: give up: {}",
+                                    text::head(&reason, 100)
+                                );
+                                corrector_blocked
+                                    .insert(sig_key.clone(), text::head(&reason, 160).to_string());
+                                let missing =
+                                    integrity::task_named_missing(&task_text, "", workdir);
+                                messages.push(Message::user(corrector::give_up_note(
+                                    n, &args_v, k, &reason, &missing,
+                                )));
+                            }
+                            Verdict::Unclear => {
+                                log!(
+                                    "[{i}] ⚠️ corrector consulted: {name} failed {k}× with identical arguments; verdict: unclear"
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    sig_fails.remove(&sig_key);
                 }
 
                 // Failure ladder: same tool failing repeatedly → change strategy / disable.

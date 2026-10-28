@@ -16,6 +16,7 @@
 //! drive it with a scripted backend.
 
 pub mod chat;
+pub mod corrector;
 pub mod face;
 pub mod history;
 pub mod openai;

@@ -311,7 +311,7 @@ def bootstrap_ci(task_means, n=2000, seed=0):
 
 PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("fail", "failed_calls"),
                 ("loop", "loop_interceptions"), ("refuse", "finish_refusals"),
-                ("empty", "empty_resets"), ("integrity", "integrity")]
+                ("empty", "empty_resets"), ("integrity", "integrity"), ("corr", "corrector_calls")]
 
 
 def summary(results):
@@ -363,7 +363,7 @@ def summary(results):
                 if not ds:
                     parts.append("—")
                     continue
-                pm = [sum(d["process"][k] for d in ds) / len(ds) for _l, k in PROCESS_COLS if k != "empty_resets"]
+                pm = [sum(d["process"].get(k, 0) for d in ds) / len(ds) for _l, k in PROCESS_COLS if k != "empty_resets"]
                 parts.append("/".join(f"{x:.0f}" for x in pm))
             lines.append(f"| {tid} | " + " | ".join(parts) + " |")
         missing = [(d["agent"], d["task_id"], d["process"]["named_files_missing"]) for d in have

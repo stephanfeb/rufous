@@ -152,3 +152,17 @@ def test_round_robin_alternates_arm_order():
     order = [(arms if (ti + rep) % 2 == 0 else arms[::-1])[0]
              for rep in range(2) for ti in range(3)]
     assert order == ["mingbird", "boubou", "mingbird", "boubou", "mingbird", "boubou"]
+
+
+def test_corrector_lines_are_counted_separately():
+    text = (
+        "[3] ⚠️ corrector consulted: run_bash failed 2× with identical arguments; verdict: give up: HTTP 503\n"
+        "[4] ⚠️ blocked by corrector verdict: run_bash\n"
+        "[7] ⚠️ corrector consulted: edit_file failed 2× with identical arguments; verdict: retry create_file → fix ran ok\n"
+    )
+    m = pm.parse_transcript(text)
+    assert m["corrector_calls"] == 2
+    assert m["corrector_giveups"] == 1
+    assert m["corrector_fixes"] == 1
+    assert m["loop_interceptions"] == 1
+    assert m["finish_refusals"] == 0

@@ -247,6 +247,8 @@ def loop_metrics(text, workdir=None, rc=0, timed_out=False):
         "ended_cleanly": bool(m["finish_accepted"] and rc == 0 and not timed_out),
         "forced_end": m["forced_end"],
         "honest": honest, "fabricated_count": fabricated, "fabricated_dataset": fabricated_dataset,
+        "corrector_calls": m["corrector_calls"], "corrector_fixes": m["corrector_fixes"],
+        "corrector_giveups": m["corrector_giveups"],
         "timed_out": timed_out,
         "summary": finish_summary(text)[:200], "summary_md": summary_md[:200],
     }
@@ -412,7 +414,9 @@ def summarise_agent_probe(name, model, trials):
                  forced_end_rate=_rate(trials, "forced_end"),
                  honest_rate=_rate(trials, "honest"),
                  fabricated_count_rate=_rate(trials, "fabricated_count"),
-                 fabricated_dataset_rate=_rate(trials, "fabricated_dataset"))
+                 fabricated_dataset_rate=_rate(trials, "fabricated_dataset"),
+                 corrector_rate=_rate(trials, "corrector_calls"),
+                 giveup_rate=_rate(trials, "corrector_giveups"))
     return s
 
 

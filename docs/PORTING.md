@@ -231,6 +231,50 @@ finish. The stale-evidence refusal fired in t04 (twice, the model then re-ran th
 exit-code refusal in t08 (twice, then a passing check, plan synced, gate 6 skipped). n=10 per
 cell: the ordering is suggestive, the per-transcript mechanisms are the evidence.
 
+## Isolated corrector (2026-10-28, bead boubou-65d.7, from the loop probe)
+
+`agent/corrector.rs`, after "Three Roles, One Model": a small model that keeps re-issuing a
+failing call is copying its own history. The loop probe (gemma4:e2b, n=10, `bench/probes.py
+--probes loop`) showed every trial re-running `python fetch.py` into a 503 (6.9 attempts a run),
+4/10 then inventing dataset.csv, and 5/10 ending by the dead-loop guard rather than finish. The
+duplicate-call block only sees adjacent repeats; the model interleaves `list_dir` between them.
+
+- **Trigger**: the second failure of one exact signature (tool + canonical arguments) in a run.
+  Failure = a `FAIL_MARKERS` hit or a non-zero `[exit N]`. Missing-argument errors keep their own
+  ladder. Not for Q&A turns; off with `--ablate corrector`. One consultation per signature,
+  three per run.
+- **The call**: the same model, a fresh two-message context (role text + task head, the failing
+  call, its last result, the attempt count), the turn's tool schemas. It is asked either to make
+  a *different* call or to answer `GIVE UP: <reason>`. Native call, leaked-text call or give-up
+  text are all read; a transport error is an "unclear" verdict and the ladder carries on.
+- **Retry**: the corrected call runs at once through the normal executor (safety gate included),
+  is appended to the history as a real call/result pair, recorded for the integrity gate, and a
+  note tells the model to continue from that result. If it fails too, the original signature is
+  blocked.
+- **Give-up**: the signature is blocked for the rest of the run (`[blocked: the corrector judged
+  this exact call cannot succeed here (…)]`, no execution) and the note spells out the honest
+  exit: state the failure in the deliverable and in the summary, name the task's missing files,
+  never invent the missing input. Failed steps stay unticked.
+- **Honest exit through the gates**: a finish whose summary admits failure is no longer bounced
+  by gate 5 for an unticked plan (the plan is left as is, not auto-ticked), and the honest-failure
+  excuse on gates 3/3b/4 now counts a file's stem as a mention ("the dataset download failed" for
+  dataset.csv). Loop probe t02/t03: honest summaries were refused four times, then the dead-loop
+  guard ended the run.
+- **A look is not a fix**: a proposal of a looking-only tool (`list_dir`, `read_file`, web
+  tools, `todo` …) for a failing producing call is read as "no fix found" and handled as a
+  give-up. probes_corrector t05: the corrector answered `list_dir` for a 503 from fetch.py, the
+  "fix" ran fine, and the model ran fetch.py five more times.
+- **Metrics**: `corrector_calls` / `corrector_fixes` / `corrector_giveups` in process_metrics
+  (`corr` column in the h2h tables); corrector blocks count as loop interceptions.
+
+Runs (gemma4:e2b, loop probe, n=10): `bench/results/probes` and `probes_integrity` (before the
+corrector), `probes_corrector` (first version), `probes_corrector2` (looking-tool rule). Two
+wording changes tried after probes_corrector2 (a sharper first-repeat note, an honest-option
+sentence in gate 3) and a gemma-specific `finish{summary: …}` leak parser were reverted: tuned
+on single transcripts of one model, they are profile material (bead 65d.5), not shared code.
+The generalisation check for the corrector is the held-out LRAB head-to-head, not more probe
+reps.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08

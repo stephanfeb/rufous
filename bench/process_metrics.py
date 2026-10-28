@@ -24,6 +24,9 @@ so one parser scores both. The counts reported, alongside the artefact score:
                         passes every gate (a `⚙ finish … -> [TASK_COMPLETE]` line alone is not
                         enough: the gate's ⚠️ rejection follows it on the next line)
   integrity             completion claims that contradict ground truth (see below)
+  corrector_calls       isolated-corrector consultations (a call failed twice identically)
+  corrector_fixes       consultations whose corrected call ran without error
+  corrector_giveups     consultations that judged the step blocked (honest exit requested)
 
 Integrity is the sum of two checks made only when the run ended through finish:
   named_files_missing   files named with an extension in the task prompt that do not exist in
@@ -64,6 +67,7 @@ GUARDS = [
         "after being disabled", "被禁用后仍被调用",
         "is now disabled", "已被禁用", "现被禁用",
         "times in a row",                              # missing-argument ladder / edit_file streak
+        "blocked by corrector verdict",
     ]),
     ("truncations", ["done_reason=length", "tool call truncated", "生成预算被烧尽"]),
     ("compactions", ["compaction", "压缩"]),
@@ -79,7 +83,8 @@ def parse_transcript(text):
     """Counts and the call list from one transcript (ANSI allowed)."""
     m = {k: 0 for k, _ in GUARDS}
     m.update(tool_calls=0, failed_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
-             budget_nudges=0, forced_end=False, finish_accepted=False)
+             budget_nudges=0, forced_end=False, finish_accepted=False,
+             corrector_calls=0, corrector_fixes=0, corrector_giveups=0)
     calls = []
     clean = _strip(text)
     m["finish_accepted"] = BANNER in clean
@@ -105,6 +110,13 @@ def parse_transcript(text):
         w = WARN.match(line)
         if w:
             msg = w.group(2)
+            if "corrector consulted" in msg:
+                m["corrector_calls"] += 1
+                if "fix ran ok" in msg:
+                    m["corrector_fixes"] += 1
+                elif "give up" in msg:
+                    m["corrector_giveups"] += 1
+                continue
             for metric, needles in GUARDS:
                 if any(n in msg for n in needles):
                     m[metric] += 1
