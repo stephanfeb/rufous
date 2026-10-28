@@ -402,7 +402,36 @@ Both models reported the 503 honestly in all ten trials; no `find`/`cp` over the
 directory, no hand-typed dataset. Attribution: the `[profile]` line shows the prompt note in
 effect in every trial; gate 6 bounced the honest finish once in all 20 trials and gate 3b in 10
 of them, and no bounce led to substitution this time. The gain is the note plus the gate 6
-clause together; the run cannot separate them, and it was not designed to. Generalisation check remains the LRAB head-to-head.
+clause together; the run cannot separate them, and it was not designed to.
+
+Generalisation check (`bench/results/lrab_h2h_v4`, 2026-10-29 05:08 → 06:08, gemma4:e2b, both
+arms, WF-01/04/07/08/11/12/14/15, one run per cell, deterministic scoring; previous run
+`lrab_h2h_v3` in brackets). gemma4:e2b carries no prompt note, so this is the regression floor
+for the gate 6 clause and the profile layer, not a test of the nudge:
+
+| task | mingbird | boubou |
+|---|---|---|
+| WF-01 | 1.00 (1.00) | 1.00 (1.00) |
+| WF-04 | 0.57 (1.00) | 1.00 (1.00) |
+| WF-07 | 0.57 (0.86) | 0.71 (0.86) |
+| WF-08 | 0.79 (0.00) | 1.00 (0.79) |
+| WF-11 | 1.00 (1.00) | 0.93 (1.00) |
+| WF-12 | 0.86 (0.86) | 0.86 (0.86) |
+| WF-14 | 1.00 (1.00) | 0.79 (0.89) |
+| WF-15 | 0.79 (0.71) | 0.79 (0.79) |
+| mean | 0.821 (0.803), 35 min | 0.884 (0.897), 20 min |
+
+Process means per cell, mingbird vs boubou: calls 30.6 vs 22.8, failed calls 5.1 vs 0.1, loop
+interceptions 1.8 vs 1.0, integrity bounces 0.4 vs 0.1, corrector 0.0 vs 0.1 (one consultation,
+WF-04, honest give-up on a missing pytest module; the run still scored 1.0). Gate 6 re-read
+fired once in every Boubou cell; no cell showed the substitution shape. Two caveats, both
+referee-side: the driver was launched with plain `python3`, so the scorer's `spec_pytest` check
+got `/bin/sh: python: command not found` on WF-04 in both arms; both cells were rescored with
+`uv run --with pytest` (originals kept as `score.json.unscored`), which is where Mingbird's 0.57
+(2 of 6 tests failing) and Boubou's 1.00 come from. The three Boubou drops are word-count
+misses on a prose deliverable (WF-11 265/280, WF-14 338/400, WF-15 280/300) plus a
+`fig_arrhenius.png` that is not a PNG (WF-15; last run the file was missing). The two means
+are within the single-run noise seen between v2 and v3; no regression is visible.
 
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
