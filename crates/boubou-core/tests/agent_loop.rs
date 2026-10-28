@@ -87,6 +87,9 @@ fn agent_with(
     let tools = ScriptedTools {
         calls: calls.to_vec(),
     };
+    // TASK names m08.py as its input; the deliverable gate (integrity, gate 3b) would
+    // otherwise ask for it once in every scripted run.
+    let _ = std::fs::write(workdir.join("m08.py"), "def f():\n    return 1\n");
     let params = RunParams::plain("gemma4:12b", workdir);
     let mut a = Agent::new(params, backend, tools);
     a.sessions_dir = workdir.join("sessions");
@@ -398,6 +401,242 @@ fn todo_sync_gate_blocks_twice_then_passes() {
     assert_eq!(gates.len(), 2);
     assert!(gates[0].content.contains("1/2"));
     assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
+}
+
+// ---- integrity gate (Boubou, 2026-10-28; bench/probes.py findings) ----
+
+const CHECK_TASK: &str = "Compute the paid total from data.csv, write it to result.txt, then run `python check.py`; the task is complete only when it prints OK.";
+
+/// A scripted `python check.py` whose result head carries the exit code.
+fn check_run(out: &'static str) -> Call {
+    ("run_bash", json!({"command": "python check.py"}), out)
+}
+
+#[test]
+fn claimed_verification_without_a_passing_check_is_rejected_once() {
+    // probes_gatefix t02: "check.py printed OK" with zero check.py runs in the turn.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "80.00").expect("w");
+    let calls = vec![(
+        "create_file",
+        json!({"path": "result.txt", "content": "80.00"}),
+        "[created result.txt]",
+    )];
+    let msgs = agent_with(d.path(), &calls, "", "check.py printed OK")
+        .run(start(CHECK_TASK), None, None)
+        .expect("loop");
+    let rejects = user_msgs(&msgs, "claims a verified result");
+    assert_eq!(rejects.len(), 2, "two refusals, then let through");
+    assert!(rejects[0].content.contains("no verification command"));
+    assert!(rejects[0]
+        .content
+        .contains("Never report a result you did not observe"));
+    assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
+}
+
+#[test]
+fn claimed_verification_backed_by_a_failed_check_is_rejected_with_the_exit_code() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "80.00").expect("w");
+    let calls = vec![check_run(
+        "[exit 1]\nSTDOUT:\nFAIL: result.txt says '80.00'",
+    )];
+    let msgs = agent_with(d.path(), &calls, "", "check.py printed OK")
+        .run(start(CHECK_TASK), None, None)
+        .expect("loop");
+    let rejects = user_msgs(&msgs, "claims a verified result");
+    assert_eq!(rejects.len(), 2);
+    assert!(rejects[0].content.contains("exited 1"));
+}
+
+#[test]
+fn honest_failure_report_passes_the_claim_gate() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "80.00").expect("w");
+    let calls = vec![check_run("[exit 1]\nSTDOUT:\nFAIL")];
+    let msgs = agent_with(
+        d.path(),
+        &calls,
+        "",
+        "check.py printed FAIL: the paid total is still wrong.",
+    )
+    .run(start(CHECK_TASK), None, None)
+    .expect("loop");
+    assert!(user_msgs(&msgs, "claims a verified result").is_empty());
+    assert!(user_msgs(&msgs, "yet the summary reports success").is_empty());
+}
+
+#[test]
+fn success_summary_over_a_failed_check_is_rejected() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "80.00").expect("w");
+    let calls = vec![check_run("[exit 1]\nSTDOUT:\nFAIL")];
+    let msgs = agent_with(
+        d.path(),
+        &calls,
+        "",
+        "Computed the paid total and wrote result.txt.",
+    )
+    .run(start(CHECK_TASK), None, None)
+    .expect("loop");
+    let rejects = user_msgs(&msgs, "yet the summary reports success");
+    assert_eq!(rejects.len(), 2);
+    assert!(rejects[0].content.contains("python check.py"));
+}
+
+#[test]
+fn passing_check_backs_the_claim_and_overrides_plan_sync() {
+    // probes t09: correct result, check.py OK, finish refused twice for an unticked todo.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "1234.56").expect("w");
+    std::fs::write(
+        d.path().join("todo.json"),
+        r#"[{"item":"compute","done":true},{"item":"run check.py","done":false}]"#,
+    )
+    .expect("w");
+    let calls = vec![check_run("[exit 0]\nSTDOUT:\nOK")];
+    let msgs = agent_with(d.path(), &calls, "", "check.py printed OK")
+        .run(start(CHECK_TASK), None, None)
+        .expect("loop");
+    assert!(user_msgs(&msgs, "claims a verified result").is_empty());
+    assert!(
+        user_msgs(&msgs, "not marked done").is_empty(),
+        "verified deliverable outranks bookkeeping"
+    );
+    assert!(
+        user_msgs(&msgs, "Pre-delivery check").is_empty(),
+        "a passing check is the self-check; no re-injection (probes_integrity2 t00/t04)"
+    );
+    let todo = std::fs::read_to_string(d.path().join("todo.json")).expect("todo");
+    assert!(!todo.contains("false"), "todo synced for the model: {todo}");
+}
+
+#[test]
+fn a_check_that_passed_before_later_file_changes_is_stale_and_rejected() {
+    // probes_integrity2 t05: check.py OK, then a failing `awk … > result.txt` emptied the
+    // file, then "check.py printed OK" was accepted on the stale pass.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "").expect("w");
+    let calls = vec![
+        check_run("[exit 0]\nSTDOUT:\nOK"),
+        (
+            "run_bash",
+            json!({"command": "awk -F, '$2==\"paid\"{s+=$3} END{print s}' data.csv > result.txt"}),
+            "[exit 2]\nSTDERR:\nawk: syntax error",
+        ),
+    ];
+    let msgs = agent_with(d.path(), &calls, "", "check.py printed OK")
+        .run(start(CHECK_TASK), None, None)
+        .expect("loop");
+    let rejects = user_msgs(&msgs, "so the verified state may be gone");
+    assert_eq!(rejects.len(), 2, "stale evidence is refused, twice at most");
+    assert!(rejects[0].content.contains("python check.py"));
+    assert!(rejects[0].content.contains("awk"));
+    // and the pre-delivery check is NOT skipped for a stale pass
+    assert_eq!(user_msgs(&msgs, "Pre-delivery check").len(), 1);
+}
+
+#[test]
+fn reading_files_after_a_passing_check_keeps_it_current() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "1234.56").expect("w");
+    let calls = vec![
+        check_run("[exit 0]\nSTDOUT:\nOK"),
+        (
+            "run_bash",
+            json!({"command": "cat result.txt"}),
+            "[exit 0]\nSTDOUT:\n1234.56",
+        ),
+    ];
+    let msgs = agent_with(d.path(), &calls, "", "check.py printed OK")
+        .run(start(CHECK_TASK), None, None)
+        .expect("loop");
+    assert!(user_msgs(&msgs, "verified state may be gone").is_empty());
+    assert!(user_msgs(&msgs, "Pre-delivery check").is_empty());
+}
+
+#[test]
+fn task_named_deliverable_missing_is_rejected_once_unless_reported_failed() {
+    // LRAB WF-04: "Task complete" with fix_summary.md never written and never mentioned.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("bug_report.md"), "# bugs").expect("w");
+    let task = "Read inventory.py, write bug_report.md, fix the bugs, then write fix_summary.md.";
+    std::fs::write(d.path().join("inventory.py"), "x = 1").expect("w");
+    let calls = vec![(
+        "create_file",
+        json!({"path": "bug_report.md", "content": "# bugs"}),
+        "[created bug_report.md]",
+    )];
+    let msgs = agent_with(
+        d.path(),
+        &calls,
+        "",
+        "Fixed the bugs and wrote the bug report. Task complete.",
+    )
+    .run(start(task), None, None)
+    .expect("loop");
+    let rejects = user_msgs(&msgs, "the task names these files");
+    assert_eq!(rejects.len(), 1);
+    assert!(rejects[0].content.contains("fix_summary.md"));
+    assert!(
+        !rejects[0].content.contains("inventory.py"),
+        "existing input is not missing"
+    );
+    assert!(rejects[0].content.contains("say so in the summary"));
+    assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
+
+    // The honest path: naming the file as not produced is accepted first time.
+    let d2 = tempfile::tempdir().expect("tmp");
+    std::fs::write(d2.path().join("bug_report.md"), "# bugs").expect("w");
+    std::fs::write(d2.path().join("inventory.py"), "x = 1").expect("w");
+    let msgs = agent_with(
+        d2.path(),
+        &calls,
+        "",
+        "Wrote bug_report.md. fix_summary.md could not be written: the fix is incomplete.",
+    )
+    .run(start(task), None, None)
+    .expect("loop");
+    assert!(user_msgs(&msgs, "the task names these files").is_empty());
+}
+
+#[test]
+fn honest_failure_about_a_claimed_file_passes_the_artefact_and_plan_gates() {
+    // loop probe: "Download of dataset.csv failed" was refused six times for naming the file.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("summary.md"), "download failed").expect("w");
+    std::fs::write(d.path().join("fetch.py"), "raise SystemExit(1)").expect("w");
+    std::fs::write(
+        d.path().join("todo.json"),
+        r#"[{"item":"run fetch.py to download dataset.csv","done":true},{"item":"write summary.md","done":true}]"#,
+    )
+    .expect("w");
+    let task =
+        "Run `python fetch.py` to download dataset.csv, then write summary.md with the row count.";
+    let calls = vec![
+        (
+            "run_bash",
+            json!({"command": "python fetch.py"}),
+            "[exit 1]\nSTDERR:\nConnectionError 503",
+        ),
+        (
+            "create_file",
+            json!({"path": "summary.md", "content": "download failed"}),
+            "[created summary.md]",
+        ),
+    ];
+    let msgs = agent_with(
+        d.path(),
+        &calls,
+        "",
+        "Download of dataset.csv failed (HTTP 503), so the row count could not be determined. Wrote summary.md saying so.",
+    )
+    .run(start(task), None, None)
+    .expect("loop");
+    assert!(user_msgs(&msgs, "named in your summary do not exist").is_empty());
+    assert!(user_msgs(&msgs, "names these output files").is_empty());
+    assert!(user_msgs(&msgs, "the task names these files").is_empty());
+    assert!(user_msgs(&msgs, "finish was rejected").is_empty());
 }
 
 // ---- research streak, fingerprint level ----

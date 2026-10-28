@@ -31,7 +31,7 @@ use super::{AgentEvent, RunParams};
 use crate::exec::Executor;
 use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
-use crate::guards::{self, artifacts, leak, qa};
+use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
@@ -471,6 +471,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut productive_used = false;
         let mut fake_finish_warns = 0;
         let mut finish_claim_warns = 0;
+        // Integrity gate (Boubou, 2026-10-28): what ran this turn; claim refusals (2, like the
+        // artefact gate) and the deliverable refusal (1).
+        let mut cmd_records: Vec<integrity::CommandRecord> = Vec::new();
+        let mut claim_gate_warns = 0;
+        let mut named_gate_warns = 0;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
         let mut bash_teach_warns = 0;
@@ -1072,6 +1077,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 } else if n == "todo" {
                     todo_stale = 0;
                 }
+                if n == "run_bash" {
+                    let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+                    cmd_records.push(integrity::CommandRecord::from_result(command, &res));
+                } else if matches!(
+                    n,
+                    "create_file" | "edit_file" | "append_file" | "delete_file"
+                ) {
+                    let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+                    cmd_records.push(integrity::CommandRecord::file_write(n, path, &res));
+                }
                 log!(
                     "[{i}|+{}s] ⚙ {name} {} -> {}",
                     t0.elapsed().as_secs(),
@@ -1150,9 +1165,29 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             TestVerdict::Pass => {}
                         }
                     }
-                    // Gate 3: files the summary claims must exist.
+                    // Gate 2b (integrity): the summary must not claim a verified outcome the
+                    // turn's commands do not back, nor report success over a failed check.
+                    if !qa && !fg_off && claim_gate_warns < 2 {
+                        if let Some((log_line, msg)) =
+                            integrity::claim_contradiction(&summary, &cmd_records)
+                        {
+                            claim_gate_warns += 1;
+                            log!("[{i}] ⚠️ {log_line}");
+                            messages.push(Message::user(msg));
+                            messages.push(Message::tool_output(
+                                "[finish rejected: the summary contradicts this turn's command results. Verify for real or report the failure, then finish.]",
+                            ));
+                            continue;
+                        }
+                    }
+                    // Gate 3: files the summary claims must exist. A file the summary reports
+                    // as failed ("dataset.csv could not be downloaded") is not a claim.
                     if !qa && !fg_off && finish_claim_warns < 2 {
-                        let missing = artifacts::claimed_missing_files(&summary, workdir);
+                        let missing: Vec<String> =
+                            artifacts::claimed_missing_files(&summary, workdir)
+                                .into_iter()
+                                .filter(|f| !integrity::admits_failure_about(&summary, f))
+                                .collect();
                         if !missing.is_empty() {
                             finish_claim_warns += 1;
                             log!("[{i}] ⚠️ artefact check: summary claims {missing:?} but they are missing, finish rejected");
@@ -1167,12 +1202,36 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             continue;
                         }
                     }
+                    // Gate 3b (integrity): files the TASK names must exist, unless the summary
+                    // reports them as failed. LRAB WF-04: "Task complete" with fix_summary.md
+                    // never written; the summary did not name it, so gate 3 never saw it.
+                    if !qa && !child && !fg_off && named_gate_warns < 1 {
+                        let task_text = qa::task_original_text(&messages, 100_000);
+                        let t_missing =
+                            integrity::task_named_missing(&task_text, &summary, workdir);
+                        if !t_missing.is_empty() {
+                            named_gate_warns += 1;
+                            log!("[{i}] ⚠️ deliverable check: the task names {t_missing:?} but they do not exist, finish rejected");
+                            messages.push(Message::user(format!(
+                                "⚠️ Your finish was rejected: the task names these files, but they do not exist in the working directory:\n{}\nTwo options: (1) produce each one now with create_file (or the command that writes it) and finish again; (2) if one cannot be produced, say so in the summary — name the file and why — and finish again.{}",
+                                bullet(&t_missing),
+                                ws_note(workdir)
+                            )));
+                            messages.push(Message::tool_output(
+                                "[finish rejected: deliverables named in the task are missing. Produce them or report why not, then finish.]",
+                            ));
+                            continue;
+                        }
+                    }
                     // Gate 4: files the plan names must exist (existence, not checkmarks).
                     // Children are exempt from gates 4–6: one mechanical task, no plan to
                     // maintain; their exit contract (artefacts + finish) is checked by the
                     // dispatcher, and a blocked child only burns its budget into a timeout.
                     if !qa && !child && !fg_off && plan_gate_warns < 2 {
-                        let p_missing = artifacts::plan_named_missing(workdir);
+                        let p_missing: Vec<String> = artifacts::plan_named_missing(workdir)
+                            .into_iter()
+                            .filter(|f| !integrity::admits_failure_about(&summary, f))
+                            .collect();
                         if !p_missing.is_empty() {
                             plan_gate_warns += 1;
                             log!("[{i}] ⚠️ plan check: plan names {p_missing:?} but they are missing, finish rejected");
@@ -1187,14 +1246,28 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             continue;
                         }
                     }
-                    // Gate 5: the plan must be synced before the end (2 refusals max).
+                    // Gate 5: the plan must be synced before the end (2 refusals max). Not
+                    // when the turn's last command was a passing check: probes showed the
+                    // model giving up on finish after two "plan out of sync" refusals with the
+                    // correct, verified result already on disk. Bookkeeping never outranks a
+                    // verified deliverable; the todo is synced for it instead.
                     if !qa
                         && !child
                         && !params.ablated("finish_gate_text_only")
                         && todo_gate_warns < 2
                     {
                         let (t_done, t_all) = todo_progress(&load_todo(workdir));
-                        if t_all > 0 && t_done < t_all {
+                        if t_all > 0 && t_done < t_all && integrity::verified_at_end(&cmd_records) {
+                            log!("[{i}] plan out of sync ({t_done}/{t_all}) but the last command was a passing check; plan synced, finish allowed");
+                            todo_gate_warns = 2;
+                            let mut t = load_todo(workdir);
+                            for item in &mut t {
+                                item.done = true;
+                            }
+                            if let Err(e) = crate::todo::save_todo(workdir, &t) {
+                                log!("[{i}] todo sync failed: {e}");
+                            }
+                        } else if t_all > 0 && t_done < t_all {
                             todo_gate_warns += 1;
                             log!("[{i}] ⚠️ plan out of sync ({t_done}/{t_all}), finish rejected");
                             messages.push(Message::user(format!(
@@ -1208,10 +1281,19 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             continue;
                         }
                     }
-                    // Gate 6: once, re-inject the original task for a self-check.
+                    // Gate 6: once, re-inject the original task for a self-check. Not when a
+                    // verification command passed with nothing changed since: the check is
+                    // the self-check, and probes_integrity2 t00/t04 showed the model answering
+                    // the re-injected task in prose instead of calling finish again, so the
+                    // dead-loop guard ended a run whose verified result was already on disk.
                     if !qa && !child && !finish_reread_used {
                         finish_reread_used = true;
-                        let orig = qa::task_original_text(&messages, 2000);
+                        let orig = if integrity::verified_at_end(&cmd_records) {
+                            log!("[{i}] pre-delivery check skipped: the last command was a passing check");
+                            String::new()
+                        } else {
+                            qa::task_original_text(&messages, 2000)
+                        };
                         if !orig.is_empty() {
                             log!(
                                 "[{i}] ⚠️ pre-delivery check: re-injected the original task ({} chars), asked for a self-check before finishing again",

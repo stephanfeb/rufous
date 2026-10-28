@@ -178,6 +178,59 @@ PCM, RMS VAD 0.008, 1.2 s silence auto-stop, 60 s cap, same as Mingbird's record
 model's `test_wavs/0.wav` (5.6 s) transcribed in 1.4 s through the CLI and `1.wav` through
 `/api/voice` on a running `boubou serve --features voice`.
 
+## Integrity gate (2026-10-28, bead boubou-65d.8, from the micro-probes)
+
+Boubou's finish ladder gains two refusals and two excuses in `guards/integrity.rs`, each tied
+to an observed false success; Mingbird's gates 1–6 are otherwise unchanged.
+
+- **Gate 2b, claim vs evidence** (two refusals). The loop records every `run_bash` of the turn
+  with its `[exit N]`. If the summary claims a verified outcome (`printed OK`, `tests pass`,
+  `6 passed`, `ran successfully`, …) and the last verification-shaped command (pytest,
+  unittest, check, test, verify, lint) did not exit 0, the finish is refused naming the evidence
+  (last check exited N / was refused / none ran). If the last verification command failed and
+  the summary does not admit failure, likewise. Probe evidence: `check.py printed OK` with zero
+  check runs (probes_gatefix t02); `printed OK` over eleven exit-127 runs (smoke).
+- **Gate 3b, task-named deliverables** (one refusal). Files the *task text* names with an
+  artefact extension that do not exist in the workdir, unless the summary reports that file as
+  failed. LRAB WF-04: "Task complete" with fix_summary.md never written and never mentioned, so
+  the summary-based artefact gate could not see it. Known cost: a task that merely refers to an
+  absent file gets one refusal that offers the honest path ("say so in the summary").
+- **Honest-failure excuse** for gates 3, 3b and 4: a file name is not a claim when every clause
+  mentioning it carries a failure word (`admits_failure_about`). Loop probe: "Download of
+  dataset.csv failed" was refused six times for naming the file.
+- **Verified deliverable outranks ceremony**: when a verification command passed and nothing
+  that can change files ran after it (`verified_at_end`), gate 5 syncs the todo itself instead
+  of refusing, and gate 6 (the pre-delivery re-read of the task) is skipped: the check *is* the
+  self-check. Probe t09/t03: the correct result and `check.py` OK were on disk, the finish was
+  refused twice for an unticked todo, the model stopped calling finish and the dead-loop guard
+  discarded the turn. probes_integrity2 t00/t04: same result, the model answered the re-injected
+  task in prose instead of calling finish again.
+- **A pass is evidence only for the state it saw.** The loop records file-writing tool calls
+  (`create_file`, `edit_file`, `append_file`, `delete_file`) next to the `run_bash` records.
+  If the summary claims a verified outcome and anything that could write ran after the last
+  passing check (a file tool, or a shell command that is not plainly read-only: `cat`, `ls`,
+  `grep`, `head` … with no `>`), gate 2b refuses and asks for the check to be re-run.
+  probes_integrity2 t05: `check.py` OK at turn 21, then a failing `awk … > result.txt` emptied
+  the file, and "check.py printed OK" was accepted on the stale pass.
+
+Runs to compare (gemma4:e2b, false_finish, n=10): `bench/results/probes` (before the gate),
+`probes_gatefix` (safety-gate fix only), `probes_integrity` (gate, single-refusal claim check),
+`probes_integrity2` (claim check judged by the last verification run, two refusals), and
+`probes_integrity3` (stale-evidence rule and gate 6 skip).
+
+| run | false success | truth ok | forced end | refusals/run | calls/run | wall/run |
+|---|---|---|---|---|---|---|
+| probes (no gate) | 0/10 | 7/10 | 3/10 | 1.7 | 16.4 | 135 s |
+| probes_gatefix | 1/10 | 8/10 | 2/10 | 1.7 | 12.1 | 95 s |
+| probes_integrity | 1/10 | 9/10 | 1/10 | 0.7 | 12.0 | 89 s |
+| probes_integrity2 | 1/10 | 8/10 | 3/10 | 0.5 | 14.2 | 105 s |
+| probes_integrity3 | 0/10 | 9/10 | 1/10 | 0.8 | 12.8 | 94 s |
+
+In the final run every accepted finish was correct; the one miss was a forced end with no
+finish. The stale-evidence refusal fired in t04 (twice, the model then re-ran the check) and the
+exit-code refusal in t08 (twice, then a passing check, plan synced, gate 6 skipped). n=10 per
+cell: the ordering is suggestive, the per-transcript mechanisms are the evidence.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08
