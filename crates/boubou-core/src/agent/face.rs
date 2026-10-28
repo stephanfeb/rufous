@@ -23,7 +23,11 @@ pub const BASE_TOOLS: [&str; 6] = [
     "finish",
 ];
 
-/// Category → tools loaded only for tasks routed to it (`run_python` dropped in Boubou).
+/// Category → tools. The `files` and `code` entries are always offered (see
+/// `tools_for_categories`): nothing else can unlock `run_bash` or `create_file` later, and
+/// whether a task needs to compute or write something is not a property of its domain. The
+/// `web`, `memory` and `mcp` entries, and MCP servers tagged with any category, follow the
+/// routing. (`run_python` dropped in Boubou.)
 pub const CATEGORY_TOOLS: [(&str, &[&str]); 5] = [
     (
         CAT_FILES,
@@ -45,32 +49,40 @@ pub const CATEGORY_TOOLS: [(&str, &[&str]); 5] = [
 ];
 
 /// Keyword routing. Matched case-insensitively as substrings of the task text, so a
-/// keyword also matches its inflections (`test` hits `testing`, `tests`).
+/// keyword also matches its inflections (`debug` hits `debugging`). The code list is
+/// programming vocabulary only: everyday words that used to be on it (`fix`, `test`, `error`,
+/// `calculate`, `run `, `function`) labelled ordinary tasks as coding work, and the harness
+/// should not lean towards any one domain. `program ` keeps the UK `programme` out.
 const CAT_KEYWORDS: [(&str, &[&str]); 5] = [
     (
         CAT_CODE,
         &[
             "code",
-            "program",
+            "coding",
+            "program ",
+            "programs",
+            "programming",
             "script",
-            "run ",
             "bash",
+            "shell",
+            "terminal",
+            "command line",
             "python",
+            "rust",
+            "javascript",
+            "typescript",
+            "java",
+            "sql",
             "compile",
-            "function",
-            "module",
-            "fix",
             "refactor",
             "debug",
-            "implement",
-            "test",
-            "execute",
-            "algorithm",
-            "compute",
-            "calculate",
-            "error",
+            "pytest",
+            "unit test",
             "traceback",
             "exception",
+            "stack trace",
+            "repository",
+            "git ",
         ],
     ),
     (
@@ -315,7 +327,7 @@ impl ToolFace {
     pub fn tools_for_categories(&mut self, cats: &BTreeSet<String>) -> Vec<Value> {
         let mut names: BTreeSet<String> = BASE_TOOLS.iter().map(|s| s.to_string()).collect();
         for (cat, tools) in CATEGORY_TOOLS {
-            if cats.contains(cat) {
+            if cats.contains(cat) || cat == CAT_FILES || cat == CAT_CODE {
                 names.extend(tools.iter().map(|s| s.to_string()));
             }
         }

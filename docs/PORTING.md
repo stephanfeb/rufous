@@ -236,6 +236,11 @@ source, prompts, tool and harness messages, web page, skills, docs or tests. Dec
   accepts the English names case-insensitively and Mingbird's four Chinese tags (kept as
   `\u{..}` escapes in the source, never as characters), so an existing `mcp.json` and a
   manifest cache written by Mingbird still route.
+- Routing (`face::route_categories`) is domain-neutral since v0.2.0+: the code keyword list is
+  programming vocabulary only (no `fix`/`test`/`error`/`calculate`/`run`), and the built-in
+  `files` and `code` tools are offered on every task; routing only adds `web`/`memory`/`mcp`
+  built-ins and decides which MCP servers' tools are exposed. The hollow-finish gate asks for
+  "a deliverable" (file or answer text), not for a file.
 - Routing keywords (`face::CAT_KEYWORDS`), Q&A hints (`guards/qa.rs`), parallel veto/simple
   patterns (`parallel/config.rs`) and complexity words are English-only lists matched on the
   lower-cased text. A bare `?` is not a Q&A cue (Mingbird's `?` entry never matched either:

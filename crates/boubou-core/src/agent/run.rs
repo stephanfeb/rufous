@@ -204,7 +204,7 @@ impl ToolRunner for Executor {
 pub fn ws_note(workdir: &Path) -> String {
     let abs = std::path::absolute(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     format!(
-        "Your working directory (absolute path) is {}. Every output must be written inside it; prefer relative paths (e.g. create_file(path=\"options.md\")).",
+        "Your working directory (absolute path) is {}. Any file you write goes inside it; prefer relative paths (e.g. create_file(path=\"options.md\")).",
         abs.display()
     )
 }
@@ -1067,9 +1067,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         && fake_finish_warns < 2
                     {
                         fake_finish_warns += 1;
-                        log!("[{i}] ⚠️ rejected a hollow finish: no producing tool used (create_file/edit_file/run_bash)");
+                        log!("[{i}] ⚠️ rejected a hollow finish: nothing delivered (no file, no command, no answer text)");
                         messages.push(Message::user(format!(
-                            "⚠️ Your finish was rejected: you have not done any real work yet (no file created or changed, no command run). Pick one of three next steps:\n1. If the final answer or deliverable is settled: write it to a file with create_file first (when the task asks for answer.txt that is: create_file(path=\"answer.txt\", content=\"<your final answer>\")), then finish again.\n2. If the work is not done: keep going with tools (read/write files, run commands, search) and call finish when it is complete.\n3. If this is an analysis or explanation task that should not produce files: give the conclusion to the user as body text (not inside summary), then finish again.{}",
+                            "⚠️ Your finish was rejected: nothing has been delivered yet (no file created or changed, no command run, no answer in the text). Pick one of three next steps:\n1. If the deliverable is a file: write it with create_file first (when the task asks for answer.txt that is: create_file(path=\"answer.txt\", content=\"<your final answer>\")), then finish again.\n2. If the work is not done: keep going with tools (read, search, compute, write) and call finish when it is complete.\n3. If this is an answer, analysis or explanation task that should not produce files: give the conclusion to the user as body text (not inside summary), then finish again.{}",
                             ws_note(workdir)
                         )));
                         messages.push(Message::tool_output(
