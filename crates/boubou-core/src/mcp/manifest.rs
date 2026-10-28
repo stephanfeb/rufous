@@ -165,7 +165,14 @@ impl McpRegistry {
 
     fn load_disk(&self) -> Option<(f64, Manifest)> {
         let raw = std::fs::read_to_string(&self.cache_file).ok()?;
-        let d: DiskCache = serde_json::from_str(&raw).ok()?;
+        let mut d: DiskCache = serde_json::from_str(&raw).ok()?;
+        // A cache written with Mingbird's Chinese category names still routes.
+        for m in d.data.values_mut() {
+            m.categories = super::normalise_categories(&m.categories);
+            for t in &mut m.tools {
+                t.categories = super::normalise_categories(&t.categories);
+            }
+        }
         Some((d.ts, d.data))
     }
 
@@ -311,7 +318,7 @@ impl McpRegistry {
                     if is_builtin_name(&t.name) {
                         continue;
                     }
-                    if t.categories.iter().any(|c| c == "文件")
+                    if t.categories.iter().any(|c| c == super::CAT_FILES)
                         && FILE_DUP.iter().any(|(mcp, builtin)| {
                             *mcp == t.name.as_str() && is_builtin_name(builtin)
                         })
@@ -324,7 +331,7 @@ impl McpRegistry {
                     desc = format!("{}…", desc.chars().take(60).collect::<String>());
                 }
                 if desc.is_empty() {
-                    desc = format!("{server} 工具");
+                    desc = format!("{server} tool");
                 }
                 defs.push(json!({"type": "function", "function": {
                     "name": full,
@@ -369,14 +376,14 @@ impl McpRegistry {
         };
         let args = resolve_mcp_paths(args, workdir);
         let mut res = call_tool(cfg, tool, args, super::CALL_TIMEOUT);
-        if res.starts_with("[mcp_call error:") && !res.contains("超时") {
+        if res.starts_with("[mcp_call error:") && !res.contains("timed out") {
             if let Some(names) = self.param_names(server, tool) {
                 let names = if names.is_empty() {
-                    "(无参数)".to_string()
+                    "(no parameters)".to_string()
                 } else {
                     names.join(", ")
                 };
-                res = format!("{res} 工具 {tool} 期望参数: {names}");
+                res = format!("{res} The tool {tool} expects the parameters: {names}");
             }
         }
         let low = res.to_lowercase();
@@ -386,16 +393,15 @@ impl McpRegistry {
             "not in allowed",
             "outside the allowed",
             "permission denied",
-            "越权",
-            "不在允许",
         ]
         .iter()
         .any(|k| low.contains(k))
         {
             res.push_str(
-                "\n[提示:这是 MCP 文件服务器自己的沙箱目录。要读写 agent 工作目录的文件,\
-                 请用内置 create_file/read_file/edit_file/list_dir;\
-                 MCP 的文件工具只对它配置的根目录有效。]",
+                "\n[hint: this is the MCP file server's own sandbox directory. To read or write \
+                 files in the agent's working directory use the built-in \
+                 create_file/read_file/edit_file/list_dir; the MCP file tools only work \
+                 inside the root directory they were configured with.]",
             );
         }
         res

@@ -296,7 +296,7 @@ impl Web {
     /// `web_search_multi(queries, max_results=3)`: one thread per query, blocks labelled.
     pub fn search_multi(&self, queries: &[String], max_results: usize) -> String {
         if queries.is_empty() {
-            return "[web_search_multi: 需提供 queries 数组]".to_string();
+            return "[web_search_multi: a queries array is required]".to_string();
         }
         let results: Vec<String> = std::thread::scope(|s| {
             let handles: Vec<_> = queries
@@ -314,7 +314,7 @@ impl Web {
         queries
             .iter()
             .zip(results)
-            .map(|(q, r)| format!("### 查询: {q}\n{r}"))
+            .map(|(q, r)| format!("### Query: {q}\n{r}"))
             .collect::<Vec<_>>()
             .join("\n\n")
     }
@@ -331,7 +331,7 @@ impl Web {
         };
         let full = extract_text(&body);
         if full.is_empty() {
-            return "[web_fetch error: 页面无文本内容]".to_string();
+            return "[web_fetch error: the page has no text content]".to_string();
         }
         let fname = format!("fetch_{key}.txt");
         if let Some(wd) = workdir {
@@ -343,7 +343,7 @@ impl Web {
         let summary = head(&full, FETCH_SUMMARY_CHARS);
         let out = if workdir.is_some() {
             format!(
-                "{summary}\n[全文已存: sources/{fname} ({} 字符)。需要细节时用 read_file 读取对应部分。]",
+                "{summary}\n[full text saved: sources/{fname} ({} chars). Use read_file on the relevant part when you need details.]",
                 clen(&full)
             )
         } else {

@@ -57,7 +57,7 @@ fn main() {
         .setup(move |app| {
             let target = url.parse().map_err(|e| format!("bad url {url}: {e}"))?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(target))
-                .title("Boubou · 布布")
+                .title("Boubou")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 600.0)
                 .build()?;

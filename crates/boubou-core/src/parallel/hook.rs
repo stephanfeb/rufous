@@ -130,7 +130,7 @@ impl DispatchHook {
             }
             Ok(None) => {}
             Err(e) => emit(HookEvent::Log(format!(
-                "[parallel] 派发层异常,已降级为串行: {e}"
+                "[parallel] dispatch layer failed, falling back to serial: {e}"
             ))),
         }
         messages
@@ -150,7 +150,7 @@ impl DispatchHook {
         let plan = should_dispatch(probe.as_ref(), &provider, cfg, &self.env, None);
         if !plan.should {
             emit(HookEvent::Log(format!(
-                "[parallel] 不派发: {}",
+                "[parallel] not dispatching: {}",
                 plan.reasons
                     .iter()
                     .take(3)
@@ -163,7 +163,7 @@ impl DispatchHook {
         let model = cfg.child_model.clone();
         let max_par = plan.capacity.as_ref().map(|c| c.max_parallel).unwrap_or(0);
         emit(HookEvent::Log(format!(
-            "[parallel] 触发: {} 条简单条目 -> 派给 {model} 并行做 (max_parallel={max_par})",
+            "[parallel] triggered: {} simple item(s) -> dispatched to {model} in parallel (max_parallel={max_par})",
             plan.n_items()
         )));
         // Progress events cross worker threads; collect them and replay in order.

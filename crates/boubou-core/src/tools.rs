@@ -226,7 +226,7 @@ pub fn coerce_args(name: &str, args: &mut Map<String, Value>) -> std::result::Re
             }
             None => {
                 return Err(format!(
-                    "[tool error: {name} 参数 {k} 需要 {want} 类型(收到字符串: {}),请修正后重试。]",
+                    "[tool error: {name} argument {k} must be of type {want} (received the string: {}); fix it and retry.]",
                     crate::text::head(s, 40)
                 ));
             }

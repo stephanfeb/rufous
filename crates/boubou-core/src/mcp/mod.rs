@@ -24,7 +24,27 @@ pub use manifest::{
 use crate::{Error, Result};
 
 /// Built-in categories the router understands. MCP tools tagged outside these are never routed.
-pub const CATEGORIES: [&str; 5] = ["文件", "代码", "网络", "记忆", "MCP"];
+pub const CATEGORIES: [&str; 5] = [CAT_FILES, CAT_CODE, CAT_WEB, CAT_MEMORY, CAT_MCP];
+pub const CAT_FILES: &str = "files";
+pub const CAT_CODE: &str = "code";
+pub const CAT_WEB: &str = "web";
+pub const CAT_MEMORY: &str = "memory";
+pub const CAT_MCP: &str = "mcp";
+
+/// Canonical category for a tag written in `mcp.json`: case-insensitive English, plus the
+/// Chinese tag names Mingbird's configs use (the `\u{..}` escapes below), so an existing
+/// `mcp.json` keeps routing. Unknown tags return `None`.
+pub fn normalise_category(tag: &str) -> Option<&'static str> {
+    let t = tag.trim();
+    Some(match t.to_ascii_lowercase().as_str() {
+        "files" | "file" | "\u{6587}\u{4ef6}" => CAT_FILES,
+        "code" | "\u{4ee3}\u{7801}" => CAT_CODE,
+        "web" | "network" | "\u{7f51}\u{7edc}" => CAT_WEB,
+        "memory" | "\u{8bb0}\u{5fc6}" => CAT_MEMORY,
+        "mcp" => CAT_MCP,
+        _ => return None,
+    })
+}
 
 /// Per-tool entry under `tools`: either a bare category list or `{categories, expose}`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,23 +113,19 @@ impl ServerConfig {
         self.command.as_deref().is_some_and(|c| !c.is_empty()) || self.url.is_some()
     }
 
-    /// `mcp_server_categories`: the declared list filtered to known categories, `["MCP"]`
-    /// when nothing is declared.
+    /// `mcp_server_categories`: the declared list normalised and filtered to known
+    /// categories, `["mcp"]` when nothing is declared.
     pub fn server_categories(&self) -> Vec<String> {
         if self.categories.is_empty() {
-            return vec!["MCP".to_string()];
+            return vec![CAT_MCP.to_string()];
         }
-        self.categories
-            .iter()
-            .filter(|c| CATEGORIES.contains(&c.as_str()))
-            .cloned()
-            .collect()
+        normalise_categories(&self.categories)
     }
 
     /// Categories for a tool: per-tool override, else the server default.
     pub fn categories_for(&self, tool: &str) -> Vec<String> {
         if let Some(c) = self.tools.get(tool).and_then(ToolTag::categories) {
-            return c.to_vec();
+            return normalise_categories(c);
         }
         self.server_categories()
     }
@@ -135,13 +151,24 @@ impl ServerConfig {
                     .filter_map(ToolTag::categories)
                     .flatten(),
             )
-            .filter(|c| !CATEGORIES.contains(&c.as_str()))
+            .filter(|c| normalise_category(c).is_none())
             .cloned()
             .collect();
         bad.sort();
         bad.dedup();
         bad
     }
+}
+
+/// Known tags mapped to their canonical names, order kept, duplicates dropped.
+pub fn normalise_categories(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags.iter().filter_map(|t| normalise_category(t)) {
+        if !out.iter().any(|o| o == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
 }
 
 pub type McpConfig = BTreeMap<String, ServerConfig>;

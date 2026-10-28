@@ -1,10 +1,10 @@
 ---
 name: code_review
-description: 审查:正确性/边界/风格/安全
+description: Review: correctness / edge cases / style / security
 ---
-# 代码审查
-1. 正确性:边界情况、空输入、类型错误、off-by-one
-2. 逻辑:未处理异常、竞态、资源泄漏
-3. 风格:命名、重复代码、过长函数
-4. 安全:注入、硬编码密钥、危险权限
-5. 输出:按严重度列问题,每条给位置+修复建议
+# Code review
+1. Correctness: edge cases, empty input, type errors, off-by-one
+2. Logic: unhandled exceptions, races, resource leaks
+3. Style: naming, duplicated code, overlong functions
+4. Security: injection, hard-coded secrets, dangerous permissions
+5. Output: list the issues by severity; for each give the location plus a suggested fix

@@ -1,7 +1,7 @@
-# Boubou · 布布
+# Boubou
 
 A local-model autonomous agent, written in Rust. Boubou is the successor to
-[Mingbird (鸣鸟)](../Mingbird-agent), the Python/Tk original, and keeps its two ideas:
+[Mingbird](../Mingbird-agent), the Python/Tk original, and keeps its two ideas:
 
 - **Tiny prefill.** System prompt plus nine core tool schemas, about 1250 tokens, so a 1B–4B
   model running under Ollama can drive it.
@@ -32,7 +32,7 @@ machine could run. The engine follows `config.json` like Mingbird: Ollama (resta
 automatically after four consecutive 500s), an OpenAI-compatible local server (LM Studio,
 llama-server) or a cloud provider. Voice input is behind the `voice` cargo feature
 (`cargo build --features voice`, sherpa-onnx linked statically): `boubou voice <wav>` and the
-web UI's mic button transcribe with Mingbird's bundled zh/en models from `~/.ollama_agent/stt/`
+web UI's mic button transcribe with the bundled sherpa-onnx models (English by default, Chinese also supported) from `~/.ollama_agent/stt/`
 or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. Next: voice model installer, Tauri
 bundling, the LRAB bench adapter.
 See [docs/PORTING.md](docs/PORTING.md).

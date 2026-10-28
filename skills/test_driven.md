@@ -1,10 +1,10 @@
 ---
 name: test_driven
-description: 先写失败测试再实现,TDD 红-绿-重构流程
+description: Write a failing test before implementing; the TDD red-green-refactor cycle
 ---
-# TDD 流程
-1. 先写一个会失败的测试(红),描述期望行为
-2. 写最小实现让测试通过(绿)
-3. 重构,保持测试全绿
-4. 用 pytest -q 运行;失败时只读第一个失败的测试,修到它通过
-5. 测试文件命名 test_*.py,函数名 test_*;断言要具体
+# TDD cycle
+1. First write a test that fails (red), describing the expected behaviour
+2. Write the minimal implementation that makes it pass (green)
+3. Refactor, keeping all tests green
+4. Run with pytest -q; on failure read only the first failing test and fix until it passes
+5. Test files are named test_*.py, functions test_*; assertions must be specific

@@ -33,7 +33,7 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `_active_tools`, `_disabled_tools`, `route_categories`, `tools_for_categories`, `_chat_tool_defs`, `_filter_offline_tools`, `_is_mcp_producing` | `boubou-core/src/agent/face.rs` | ported (`ToolFace`); MCP flattened tool defs join when the client lands |
 | `compact_history` L1/L2/L3, `_estimate_messages_tokens`, `_workdir_files_text`, `_dedupe_trailing_assistant`, `sanitize_ckpt`, `_similar`, `_attach_pending_images` | `boubou-core/src/agent/history.rs` | ported, tested; `_similar` is a difflib-style matching-blocks ratio without the autojunk heuristic |
 | `.agent_state.json`, `<s>.json`, `<s>.transcript.jsonl`, `<s>.meta.json`, `<s>.todo.json`, `_transcript_flush` cursor rules | `boubou-core/src/agent/session.rs` | ported, tested; verified cross-readable by Mingbird's `sanitize_ckpt`/`load_session` |
-| `SYSTEM`, `CHAT_SYSTEM`, `system_prompt()`, `platform_profile.prompt_block` | `boubou-core/src/agent/prompt.rs` | ported; `CHAT_SYSTEM` introduces itself as 布布 |
+| `SYSTEM`, `CHAT_SYSTEM`, `system_prompt()`, `platform_profile.prompt_block` | `boubou-core/src/agent/prompt.rs` | ported; all prompt text is Boubou's own English (see "Language" below) |
 | `_run_test_guard`, `_pytest_hint`, `_test_env_broken` | `boubou-core/src/agent/testguard.rs` | ported (runs `python -m pytest -q` in the workdir when `test_*.py` exist) |
 | `main()`: `--session/--new/--append/--time-budget`, checkpoint/session resume, `--chat` | `boubou-cli/src/main.rs` | ported; `boubou-cli/tests/cli.rs` runs the binary headlessly (help, tools, skills, plan, tool, run with a missing task file, voice, doctor). `ensure_engine` runs before a task: probe an OpenAI engine (warn) or `OllamaProc::ensure` |
 | `platform_profile.py` | `boubou-core/src/agent/prompt.rs` (`Platform`, `platform_block`) | ported |
@@ -47,7 +47,7 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `voice_input.py` (sherpa-onnx, VAD recorder, `transcribe_ollama`, `pick_stt_model`) | `boubou-voice` crate, `boubou-web` `/api/voice` + mic button, `boubou voice` | ported behind cargo feature `voice` (`sherpa-onnx = "=2.0.1"` static; `sherpa-rs` only wraps offline recognizers). Default builds are native-free and report `built_without_voice_feature`. Same model dirs as Mingbird under `<install>/stt/`, `~/.ollama_agent/stt/` or `BOUBOU_STT_DIR`; no installer/downloader yet |
 | `agent_gui.py`, `ui_v4.py`, `ui_theme.py` (Tk) | dropped | replaced by Tauri shell |
 | `webui/server.py` (`/api/*`, SSE, `@@ASK@@` approval channel, `gui_prefs.json`, session rows, `kill_tree`) | `boubou-web/src/{api,state,runner,events,prefs}.rs` | ported, tested. axum on 127.0.0.1; the agent runs in-process on a thread, `AgentEvent`s map to the same SSE types (`tok`/`think`/`ask`/`dispatch`/`ctx`/`note`/`exit`); `WebConfirmer` replaces the stdin round-trip (only the current `ask_id` is accepted); stop = a shared flag the loop and the Ollama stream both check (no process to kill). Cloud / OpenAI-compatible settings now select the engine through `Agent::standard`; `/api/status` reports `engine` and `voice`; `POST /api/voice` transcribes an uploaded WAV |
-| `webui/static/index.html` | `boubou-web/static/index.html` | Mingbird's page rebranded (布布 · Boubou); `include_str!` into the binary, no static dir |
+| `webui/static/index.html` | `boubou-web/static/index.html` | Mingbird's page rebranded as Boubou and made English-only; `include_str!` into the binary, no static dir |
 | Tk GUI (`agent_gui.py`) | `boubou-app/src/main.rs` | Tauri 2 shell: starts the web server on a free loopback port and opens a window on it. Voice comes from the page's mic button; `Info.plist` carries `NSMicrophoneUsageDescription` but is not wired into the bundle config yet |
 | `mcp_utils_server.py` | — | keep as a Python example, or rewrite as a tiny Rust MCP server |
 | `tests/` (33 files, 556 test functions) | `boubou-core/tests/` | in progress, see below |
@@ -137,7 +137,7 @@ todo finish`, writes only inside the child dir, sensitive paths and severe comma
 `audit.log` JSONL), the confirmation channel is a headless deny, the prompt is `CHILD_SYSTEM`
 with no platform block, gates 4–6 and the wrap-up call are skipped, and a severe refusal ends the
 run with exit 53. The dispatcher judges each child on exit code + `TASK COMPLETE` in `agent.log`
-+ artifacts matching its claims + a clean audit, copies artifacts back without overwriting,
++ artefacts matching its claims + a clean audit, copies artefacts back without overwriting,
 marks todo items done and appends the receipt message. Known gap: a parent run started from the
 web UI dispatches too, but the page only shows the `dispatch` chips; there is no cancel for an
 in-flight batch except the run's stop flag (checked between children).
@@ -159,7 +159,7 @@ At most three restarts per run. The CLI runs `ensure_engine` before a task (prob
 for an OpenAI engine and warn; `OllamaProc::ensure(25 s)` otherwise) and prints `[engine] …`.
 `model_can_think` probes `/api/show` capabilities with a per-process cache and returns `None`
 on an OpenAI engine. `AGENT_SLEEP_SCALE` scales the loop's recovery sleeps (tests use 0).
-`Agent.engine` is a display string (`Ollama · host`, `OpenAI 兼容 · base`, `cloud · model (base)`).
+`Agent.engine` is a display string (`Ollama · host`, `OpenAI-compatible · base`, `cloud · model (base)`).
 Only loopback capture tests exercised the OpenAI path; no LM Studio / llama-server was available.
 
 Voice: crate `boubou-voice`, native engine behind feature `sherpa` (`sherpa-onnx = "=2.0.1"`,
@@ -187,17 +187,72 @@ tests in `tests/agent_loop.rs`:
 - **Missing-argument ladder.** gemma-class models drop a required argument about one call in
   eight and then copy their own failed call from the history. From the second consecutive
   missing-argument error for the same tool, the loop removes the earlier failed pairs (the
-  one-call assistant turn, its `缺少参数` tool error and the loop's own note) so one failed
+  one-call assistant turn, its `is missing argument` tool error and the loop's own note) so one failed
   example is all the model sees, and prescribes a different call shape (short `create_file`
   with the key first, then `append_file`), with the plan's still-missing files as a hint.
   Four notes per run at most; a complete call resets the streak. The generic failure ladder
-  (`先用 list_dir / read_file 确认实际情况`) no longer fires for this class.
+  (the generic "check the real state with list_dir / read_file first" hint) no longer fires for this class.
 - **Truncated tool call.** When `done_reason=length` and a built-in call lacks required
   arguments, Ollama has returned the leading arguments of a call cut off by `num_predict`
   (`content` before `path`). The call is not executed; the tool error names the cap and the
   missing keys and the chunking advice is injected (three times at most) instead of the
   generic "retry with the same content". A truncated response whose call is complete runs
   normally.
+
+### Text-only turns (2026-10-28, from a `boubou chat` transcript with gemma4)
+
+A plain question ("Are you capable of software development ?", 41 characters, no question
+word) was classified as a task, so every text reply drew the generic continue note; the model
+answered with three alternating sentences and the repeat detector, which compared only with
+the previous turn, never fired. Four changes, all tested in `tests/agent_loop.rs` and
+`tests/guards.rs`:
+
+- `qa::ends_with_question`: a trailing `?` (after trailing quotes/brackets) is a Q&A cue when
+  no task verb matched; "are you / can you / do you / will you / would you / is there" joined
+  the question openers. A `?` in the middle still does not count.
+- The repeat detector compares a new text with the last four text outputs (`TEXT_WINDOW`),
+  so A/B/C cycles close the turn as a dead loop.
+- Task-mode text-only turns are capped: the second draws a sharper "tool call or finish, not
+  more text" note (`TALK_SHARP_NOTE`), the fourth ends the turn with the earlier text as
+  the answer (`TALK_FORCE_END`). A tool call resets the streak. Mingbird has no such cap.
+- `RunParams::chat_mode` (set by `boubou chat`): a text reply ends the turn even when the
+  message reads like a task. The web page keeps the detector-only behaviour because it has
+  no separate chat/task entry point. The CLI also prints thinking dimmed (ANSI) so it reads
+  apart from the answer.
+
+## Language (2026-10-28)
+
+Boubou is UK English from top to bottom; nothing of Mingbird's Chinese text survives in the
+source, prompts, tool and harness messages, web page, skills, docs or tests. Decisions:
+
+- Prompts, harness notes, tool errors and log lines are Boubou's own English. The functional
+  markers other code matches on moved with them: `[safety gate`, `[safety net`,
+  `[overwrite guard`, `[child safety gate` (`FAIL_MARKERS`), `is missing argument '<key>'`
+  (`missing_arg_key`), `⚠️ [missing argument]`, `[Earlier context summary]`
+  (`qa::CONTEXT_SUMMARY_MARK`), `[blocked:`, `Hint:`, `Your answer is already sufficient`,
+  `Continue the previous conversation` (`HARNESS_NOTE_PREFIXES`), `outside the working
+  directory` / `out of bounds` (the path-refusal hint), `timed out` (MCP).
+- Tool categories are `files`, `code`, `web`, `memory`, `mcp`. `mcp::normalise_category`
+  accepts the English names case-insensitively and Mingbird's four Chinese tags (kept as
+  `\u{..}` escapes in the source, never as characters), so an existing `mcp.json` and a
+  manifest cache written by Mingbird still route.
+- Routing keywords (`face::CAT_KEYWORDS`), Q&A hints (`guards/qa.rs`), parallel veto/simple
+  patterns (`parallel/config.rs`) and complexity words are English-only lists matched on the
+  lower-cased text. A bare `?` is not a Q&A cue (Mingbird's `?` entry never matched either:
+  it went through the word-boundary regex).
+- The time-budget parser understands digits and English number words with `minute(s)/min(s)`,
+  `hour(s)/hr(s)/h`, `half an hour`, `an hour`, `an hour and a half`, `N and a half hours`;
+  Chinese numerals, measure-word forms and full-width digits are gone.
+- The web page is English-only (`<html lang="en">`, no zh table, no language toggle).
+  `AGENT_LANG` / `lang_en` are gone. The CLI, Tauri shell and `Info.plist` are English only.
+- Speech-to-text defaults to `en` (`stt_lang`, `--lang`, `/api/voice?lang=`); the Chinese
+  zipformer remains a supported model and is tried as a fallback when the English one is
+  not installed. The Ollama transcription prompt is English.
+- Compaction summaries are requested in English (`history.rs`).
+- Spelling: UK in prose, strings, comments and docs (behaviour, artefact, organise,
+  normalise, cancelled); identifiers and external API names are unchanged (`artifacts`
+  module, serde `Serialize`, `Flavor`). Classifier lists carry both spellings where users
+  may type either (`summarise`/`summarize`).
 
 ## Step 8 brief (handoff notes, 2026-10-28)
 

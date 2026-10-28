@@ -3,7 +3,7 @@
 //! Dispatch: spawn N headless `boubou run` children (small model), each in its own
 //! partition directory, depth-locked (`AGENT_CHILD_SANDBOX=1` + `AGENT_PARALLEL=0` +
 //! `MINGBIRD_DEPTH+1`), with a hard timeout, abort support and audit sampling.
-//! Integrate: deterministic checks (exit code / TASK COMPLETE / claimed artifacts / audit
+//! Integrate: deterministic checks (exit code / TASK COMPLETE / claimed artefacts / audit
 //! recheck) → copy back to the parent directory (never overwriting by default) → one retry
 //! → fall back to the parent model.
 //!
@@ -26,7 +26,7 @@ use super::sandbox::{audit_summary, read_audit, AuditSummary, RuleSet, SEVERE_EX
 use super::trigger::{DispatchItem, TodoProvider};
 use crate::text;
 
-/// Harness files in a child partition that are never copied back as artifacts.
+/// Harness files in a child partition that are never copied back as artefacts.
 pub const HARNESS_FILES: [&str; 8] = [
     ".agent_state.json",
     ".agent_state.meta.json",
@@ -83,7 +83,7 @@ pub struct ChildTask {
     pub status: ChildStatus,
     pub exit_code: Option<i32>,
     pub reason: String,
-    /// Artifact files (relative to `child_dir`) found after a successful run.
+    /// Artefact files (relative to `child_dir`) found after a successful run.
     pub files: Vec<String>,
     pub audit: AuditSummary,
     pub elapsed_s: f64,
@@ -598,7 +598,7 @@ impl ParallelDispatcher {
                     proc.kill();
                     return (
                         ChildStatus::Severe,
-                        "severe_violation(审计发现危险行为)".to_string(),
+                        "severe_violation(audit found dangerous behaviour)".to_string(),
                         None,
                     );
                 }
@@ -613,14 +613,14 @@ impl ParallelDispatcher {
     }
 
     /// Deterministic acceptance (first half of integration): exit code, TASK COMPLETE,
-    /// audit recheck, artifacts.
+    /// audit recheck, artefacts.
     fn judge(&self, rc: i32, child_dir: &Path, ct: &mut ChildTask) -> (ChildStatus, String) {
         let audit_path = child_dir.join("audit.log");
         if rc == SEVERE_EXIT_CODE {
             ct.audit = audit_summary(&read_audit(&audit_path));
             return (
                 ChildStatus::Severe,
-                "severe_violation(子 agent 沙箱熔断,exit 53)".to_string(),
+                "severe_violation(sub-agent sandbox circuit broken, exit 53)".to_string(),
             );
         }
         if rc != 0 {
@@ -637,7 +637,7 @@ impl ParallelDispatcher {
         if !log_text.contains("TASK COMPLETE") {
             return (
                 ChildStatus::Failed,
-                "no_task_complete(子 agent 未正常收尾)".to_string(),
+                "no_task_complete(the sub-agent did not finish cleanly)".to_string(),
             );
         }
         let summ = audit_summary(&read_audit(&audit_path));
@@ -645,7 +645,7 @@ impl ParallelDispatcher {
         if summ.severes > 0 {
             return (
                 ChildStatus::Severe,
-                "severe_violation(审计复核发现危险行为)".to_string(),
+                "severe_violation(audit re-check found dangerous behaviour)".to_string(),
             );
         }
         if summ.denies >= self.cfg.max_denies_per_child {
@@ -674,7 +674,7 @@ impl ParallelDispatcher {
         if artifacts.is_empty() {
             return (
                 ChildStatus::Failed,
-                "no_artifacts(分区目录没有任何产物文件)".to_string(),
+                "no_artifacts(the partition directory holds no output files)".to_string(),
             );
         }
         ct.files = artifacts;
@@ -695,7 +695,7 @@ impl ParallelDispatcher {
 }
 
 /// Heuristic for a small model that failed to load / OOM: a loader error in the log, or a
-/// quick exit with no artifacts and a short log.
+/// quick exit with no artefacts and a short log.
 fn looks_like_load_failure(child_dir: &Path) -> bool {
     let log = read_head(&child_dir.join("agent.log"), 200_000).to_lowercase();
     const SIGNALS: [&str; 8] = [
@@ -885,7 +885,7 @@ impl<'a> ResultIntegrator<'a> {
         self.rules.find(&norm_command_pub(cmd)).is_none()
     }
 
-    /// Copy a child's artifacts into the parent directory. `(copied, conflicts)`; existing
+    /// Copy a child's artefacts into the parent directory. `(copied, conflicts)`; existing
     /// files are conflicts unless `allow_overwrite_existing`.
     pub fn collect(
         &self,
@@ -933,15 +933,15 @@ impl<'a> ResultIntegrator<'a> {
             conflicts.extend(conf.iter().cloned());
             if !conf.is_empty() {
                 notes.push(format!(
-                    "[{}] 部分产物冲突未覆盖: {}",
+                    "[{}] some artefacts conflicted and were not overwritten: {}",
                     ct.item.id,
                     conf.join(", ")
                 ));
                 ct.status = ChildStatus::Failed;
-                ct.reason = "overwrite_conflict(父目录已有同名文件,默认不覆盖)".to_string();
+                ct.reason = "overwrite_conflict(the parent directory already has a file of that name; not overwritten by default)".to_string();
             } else {
                 notes.push(format!(
-                    "[{}] 已完成并拷回: {}",
+                    "[{}] completed and copied back: {}",
                     ct.item.id,
                     copied.join(", ")
                 ));
@@ -956,7 +956,7 @@ impl<'a> ResultIntegrator<'a> {
             .filter(|c| c.status != ChildStatus::Ok)
         {
             notes.push(format!(
-                "[{}] 未完成({}: {})由主模型接手",
+                "[{}] not completed ({}: {}); the main model takes over",
                 ct.item.id,
                 ct.status.as_str(),
                 ct.reason
@@ -975,11 +975,11 @@ fn norm_command_pub(cmd: &str) -> String {
 pub fn summary_for_parent(result: &DispatchResult, integrated: &[String]) -> String {
     let mut lines = Vec::new();
     if result.aborted {
-        lines.push("并行派发已被中止。".to_string());
+        lines.push("Parallel dispatch was cancelled.".to_string());
     }
     if !integrated.is_empty() {
         lines.push(
-            "以下条目已由并行子任务完成,产物文件已写入当前工作目录(可直接使用,不必重做):"
+            "The following items were completed by parallel sub-tasks; their output files are in the current working directory (use them as they are, do not redo them):"
                 .to_string(),
         );
         for rel in integrated {
@@ -987,14 +987,14 @@ pub fn summary_for_parent(result: &DispatchResult, integrated: &[String]) -> Str
         }
     }
     if !result.fallback.is_empty() {
-        lines.push("以下条目子任务未完成,需要你按原计划自己完成:".to_string());
+        lines.push("The following items were not completed by their sub-tasks; do them yourself as originally planned:".to_string());
         let mut seen = std::collections::BTreeSet::new();
         for (it, why) in &result.fallback {
             if !seen.insert(it.id.clone()) {
                 continue;
             }
             lines.push(format!(
-                "- ({}) {}  [原因: {why}]",
+                "- ({}) {}  [reason: {why}]",
                 it.id,
                 text::head(&it.text, 120)
             ));
@@ -1003,7 +1003,7 @@ pub fn summary_for_parent(result: &DispatchResult, integrated: &[String]) -> Str
     if lines.is_empty() {
         return String::new();
     }
-    lines.push("请核对上述产物与你的计划一致性后继续推进。".to_string());
+    lines.push("Check the artefacts above against your plan, then carry on.".to_string());
     lines.join("\n")
 }
 

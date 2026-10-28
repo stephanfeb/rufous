@@ -7,16 +7,16 @@
   "filesystem": {
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/work"],
-    "categories": ["文件"]
+    "categories": ["files"]
   },
   "big_server": {
     "command": "python",
     "args": ["C:/path/to/my_big_server.py"],
-    "categories": ["文件"],
+    "categories": ["files"],
     "tools": {
-      "search_web": ["网络"],
-      "exec_sql": ["代码"],
-      "save_note": ["记忆", "文件"]
+      "search_web": ["web"],
+      "exec_sql": ["code"],
+      "save_note": ["memory", "files"]
     }
   }
 }

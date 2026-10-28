@@ -88,8 +88,8 @@ fn rejections(msgs: &[Message]) -> usize {
     msgs.iter()
         .filter(|m| {
             m.role == Role::User
-                && m.content.contains("finish 被拒绝")
-                && m.content.contains("未标记完成")
+                && m.content.contains("finish was rejected")
+                && m.content.contains("not marked done")
         })
         .count()
 }
@@ -122,7 +122,7 @@ fn main_agent_finish_blocked_by_unsynced_plan_but_child_is_not() {
         TodoItem::new("step 2"),
     ];
     save_todo(d.path(), &plan).expect("todo");
-    let task = "修复 m08.py 里的 bug,并运行测试验证。";
+    let task = "Fix the bug in m08.py and run the tests to verify.";
     let msgs = agent(d.path(), &[create_call()], false)
         .run(
             vec![Message::system("sys"), Message::user(task)],
@@ -153,7 +153,7 @@ fn child_qa_like_text_stays_task_mode() {
     let d = tempfile::tempdir().expect("tmp");
     let msgs = agent(d.path(), &[], true)
         .run(
-            vec![Message::system("CHILD-SYS"), Message::user("这是什么?")],
+            vec![Message::system("CHILD-SYS"), Message::user("What is this?")],
             None,
             None,
         )
@@ -163,31 +163,22 @@ fn child_qa_like_text_stays_task_mode() {
         .iter()
         .any(|m| m.role == Role::System && m.content.starts_with(CHAT_SYSTEM)));
     // Control: the parent treats the same text as Q&A.
-    assert!(is_qa(&[Message::user("这是什么?")], false));
+    assert!(is_qa(&[Message::user("What is this?")], false));
 }
 
 #[test]
 fn child_prompt_is_minimal_and_parent_prompt_has_no_dispatch_text() {
     let d = tempfile::tempdir().expect("tmp");
     let a = agent(d.path(), &[], true);
-    let m = a.task_messages("[simple] 把 a.csv 转成 a.md");
+    let m = a.task_messages("[simple] convert a.csv to a.md");
     assert!(m[0].content.starts_with(CHILD_SYSTEM));
     assert!(
-        !m[0].content.contains("平台:"),
+        !m[0].content.contains("Platform:"),
         "no platform block for a child"
     );
-    assert!(CHILD_SYSTEM.len() < system_base(false).len());
-    let blob = format!("{}{}", system_base(false), chat_system(None, false)).to_lowercase();
-    for kw in [
-        "子 agent",
-        "子agent",
-        "sub-agent",
-        "subagent",
-        "parallel",
-        "并行派发",
-        "派发",
-        "dispatch",
-    ] {
+    assert!(CHILD_SYSTEM.len() < system_base().len());
+    let blob = format!("{}{}", system_base(), chat_system(None)).to_lowercase();
+    for kw in ["sub-agent", "subagent", "parallel", "dispatch"] {
         assert!(!blob.contains(kw), "{kw} leaked into the parent prefill");
     }
 }
@@ -197,15 +188,18 @@ fn child_prompt_is_minimal_and_parent_prompt_has_no_dispatch_text() {
 #[test]
 fn routing_and_qa_skip_the_dispatch_note() {
     let note =
-        format!("{DISPATCH_NOTE_MARK} 以下条目已由并行子任务完成,产物文件已写入当前工作目录:");
+        format!("{DISPATCH_NOTE_MARK} The following items were completed by parallel sub-tasks; their output files are in the current working directory:");
     let msgs = vec![
-        Message::user("把 data.csv 转成 markdown 表格"),
+        Message::user("convert data.csv to a markdown table"),
         Message::assistant(""),
         Message::user(note.clone()),
     ];
-    assert_eq!(task_routing_text(&msgs), "把 data.csv 转成 markdown 表格");
+    assert_eq!(
+        task_routing_text(&msgs),
+        "convert data.csv to a markdown table"
+    );
     let msgs = vec![
-        Message::user("这个报错是什么意思?"),
+        Message::user("What does this error mean?"),
         Message::user(note.clone()),
     ];
     assert!(is_qa(&msgs, false));
@@ -290,7 +284,7 @@ fn dispatch_off_by_default_returns_messages_identical() {
     let d = tempfile::tempdir().expect("tmp");
     let msgs = vec![
         Message::system("sys"),
-        Message::user("把 data.csv 转成 markdown 表格"),
+        Message::user("convert data.csv to a markdown table"),
     ];
     let (out, ev) = run_hook(
         &hook(ParallelConfig::default(), &[]),
@@ -304,7 +298,7 @@ fn dispatch_off_by_default_returns_messages_identical() {
 #[test]
 fn env_hard_gate_child_mode_and_receipt_all_block() {
     let d = tempfile::tempdir().expect("tmp");
-    let msgs = vec![Message::system("sys"), Message::user("任务")];
+    let msgs = vec![Message::system("sys"), Message::user("task")];
     let (out, _) = run_hook(
         &hook(enabled_cfg(), &[("AGENT_PARALLEL", "0")]),
         msgs.clone(),
@@ -319,8 +313,10 @@ fn env_hard_gate_child_mode_and_receipt_all_block() {
     assert_eq!(out, msgs);
     let with_note = vec![
         Message::system("sys"),
-        Message::user("任务"),
-        Message::user(format!("{DISPATCH_NOTE_MARK} 以下条目已由并行子任务完成")),
+        Message::user("task"),
+        Message::user(format!(
+            "{DISPATCH_NOTE_MARK} The following items were completed by parallel sub-tasks"
+        )),
     ];
     let (out, ev) = run_hook(&hook(enabled_cfg(), &[]), with_note.clone(), d.path());
     assert_eq!(out, with_note); // idempotent on resume, no second dispatch
@@ -331,14 +327,14 @@ fn env_hard_gate_child_mode_and_receipt_all_block() {
 fn note_marker_prefix_added_by_harness_when_dispatch_happens() {
     let d = tempfile::tempdir().expect("tmp");
     let todo: Vec<Value> = (1..=6)
-        .map(|i| json!({"item": format!("把 data{i}.csv 转成 markdown 表格"), "done": false}))
+        .map(|i| json!({"item": format!("convert data{i}.csv to a markdown table"), "done": false}))
         .collect();
     std::fs::write(
         d.path().join("todo.json"),
         serde_json::to_string(&todo).expect("json"),
     )
     .expect("todo");
-    let msgs = vec![Message::system("sys"), Message::user("任务")];
+    let msgs = vec![Message::system("sys"), Message::user("task")];
     let (out, ev) = run_hook(&hook(enabled_cfg(), &[]), msgs, d.path());
     let last = out.last().expect("note");
     assert_eq!(last.role, Role::User);
@@ -347,10 +343,10 @@ fn note_marker_prefix_added_by_harness_when_dispatch_happens() {
         "{}",
         last.content
     );
-    assert!(last.content.contains("不必重做"));
+    assert!(last.content.contains("do not redo them"));
     assert!(ev
         .iter()
-        .any(|e| matches!(e, HookEvent::Log(l) if l.contains("[parallel] 触发"))));
+        .any(|e| matches!(e, HookEvent::Log(l) if l.contains("[parallel] triggered"))));
     assert!(ev
         .iter()
         .any(|e| matches!(e, HookEvent::Dispatch(v) if v["phase"] == "done")));
@@ -364,11 +360,11 @@ fn note_marker_prefix_added_by_harness_when_dispatch_happens() {
 #[test]
 fn hook_logs_why_not_when_enabled_but_nothing_to_do() {
     let d = tempfile::tempdir().expect("tmp");
-    let msgs = vec![Message::system("sys"), Message::user("任务")];
+    let msgs = vec![Message::system("sys"), Message::user("task")];
     let (out, ev) = run_hook(&hook(enabled_cfg(), &[]), msgs.clone(), d.path());
     assert_eq!(out, msgs);
     assert!(ev.iter().any(
-        |e| matches!(e, HookEvent::Log(l) if l.contains("不派发") && l.contains("too_few_pending"))
+        |e| matches!(e, HookEvent::Log(l) if l.contains("not dispatching") && l.contains("too_few_pending"))
     ));
 }
 
@@ -385,7 +381,7 @@ fn install_narrows_tools_and_gate() {
     );
     // A hallucinated run_bash trips the fuse at once.
     let r = ex.run_tool("run_bash", &json!({"command": "dir"}));
-    assert!(r.contains("子agent安全门拦截"), "{r}");
+    assert!(r.contains("child safety gate"), "{r}");
     assert!(ex.child_terminated().is_some());
 
     let mut ex = Executor::with_policy(d.path(), SafetyPolicy::default());
@@ -398,13 +394,13 @@ fn install_narrows_tools_and_gate() {
     assert!(d.path().join("audit.log").is_file());
     // Allowed tools without a path or command pass (the live run of 2026-10-28 caught this).
     let r = ex.run_tool("todo", &json!({"action": "create", "items": ["a", "b"]}));
-    assert!(!r.contains("拦截"), "{r}");
+    assert!(!r.contains("safety gate"), "{r}");
     let r = ex.run_tool("finish", &json!({"summary": "done"}));
     assert!(r.contains("TASK_COMPLETE"), "{r}");
     assert!(ex.child_terminated().is_none());
     // The confirmation channel is gone: an out-of-bounds read is a plain refusal.
     let r = ex.run_tool("read_file", &json!({"path": "/etc/hosts"}));
-    assert!(r.contains("子agent安全门拦截"), "{r}");
+    assert!(r.contains("child safety gate"), "{r}");
 }
 
 #[test]
@@ -433,12 +429,14 @@ fn loop_ends_with_child_terminated_after_a_severe_refusal() {
     });
     a.face.narrow_to(&allowed);
     a.sessions_dir = d.path().join("sessions");
-    let msgs = a.task_messages("[simple] 把 a.csv 转成 a.md");
+    let msgs = a.task_messages("[simple] convert a.csv to a.md");
     let err = a.run(msgs, Some("child1"), None).expect_err("fuse");
     assert!(matches!(err, Error::ChildTerminated(_)), "{err}");
     let logs = logs.lock().expect("logs");
-    assert!(logs.iter().any(|l| l.contains("[child-mode] 沙箱已装")));
-    assert!(logs.iter().any(|l| l.contains("严重违规熔断(exit 53)")));
+    assert!(logs
+        .iter()
+        .any(|l| l.contains("[child-mode] sandbox installed")));
+    assert!(logs.iter().any(|l| l.contains("circuit broken (exit 53)")));
     assert!(
         d.path().join(".agent_state.json").is_file(),
         "checkpoint saved before exit"

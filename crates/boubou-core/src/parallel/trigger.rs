@@ -27,13 +27,16 @@ const ARTIFACT_EXTS: [&str; 15] = [
 ];
 const SIMPLE_PREFIX: &str = "[simple]";
 const COMPLEX_PREFIX: &str = "[complex]";
-const COMPLEXITY_WORDS: [&str; 11] = [
-    "复杂",
-    "难",
-    "关键",
-    "危险",
-    "跨文件",
-    "核心",
+const COMPLEXITY_WORDS: [&str; 14] = [
+    "complex",
+    "complicated",
+    "hard",
+    "difficult",
+    "critical",
+    "dangerous",
+    "risky",
+    "cross-file",
+    "core",
     "critical",
     "complex",
     "hard",
@@ -219,7 +222,7 @@ fn hint_hit(hint: &str, low: &str) -> bool {
     Regex::new(&format!(r"\b{}\b", regex::escape(h))).is_ok_and(|re| re.is_match(low))
 }
 
-/// File-name tokens with an artifact extension.
+/// File-name tokens with an artefact extension.
 pub fn file_tokens(text: &str) -> Vec<String> {
     FILE_TOKEN
         .find_iter(text)
@@ -258,7 +261,7 @@ pub fn classify_task(text: &str, cfg: &ParallelConfig) -> ClassifyResult {
     }
     let annotated_simple = low.starts_with(SIMPLE_PREFIX);
     if low.starts_with(COMPLEX_PREFIX) {
-        return ClassifyResult::no("annotated_complex(主模型标注为复杂)");
+        return ClassifyResult::no("annotated_complex(the main model marked it complex)");
     }
     for pat in &cfg.veto_patterns {
         if !pat.is_empty() && hint_hit(&pat.to_lowercase(), low) {
@@ -294,12 +297,14 @@ pub fn classify_task(text: &str, cfg: &ParallelConfig) -> ClassifyResult {
     }
     if simple_hit {
         return ClassifyResult::no(format!(
-            "mechanical_but_files={}(非单文件作用域)",
+            "mechanical_but_files={}(not a single-file scope)",
             toks.len()
         ));
     }
     if toks.len() == 1 {
-        return ClassifyResult::no("single_file_but_not_mechanical(无机械变换特征)");
+        return ClassifyResult::no(
+            "single_file_but_not_mechanical(no mechanical-transformation feature)",
+        );
     }
     ClassifyResult::no("not_mechanical_and_not_single_file")
 }
@@ -366,7 +371,7 @@ pub fn should_dispatch(
 ) -> DispatchPlan {
     if !cfg.enabled {
         return DispatchPlan::stop(
-            "disabled(parallel.enabled=false,默认关,冻结期安全)".to_string(),
+            "disabled(parallel.enabled=false; off by default, safe during the freeze)".to_string(),
         );
     }
     if hard_disabled(env) {
@@ -375,7 +380,7 @@ pub fn should_dispatch(
     let depth = current_depth(env);
     if depth >= cfg.max_depth {
         return DispatchPlan::stop(format!(
-            "depth_limit(当前深度 {depth} >= max_depth {},子 agent 禁止再派)",
+            "depth_limit(current depth {depth} >= max_depth {}; a sub-agent may not dispatch again)",
             cfg.max_depth
         ));
     }
@@ -386,7 +391,7 @@ pub fn should_dispatch(
         .unwrap_or_else(|| cfg.child_model.trim().to_string());
     if model.is_empty() {
         return DispatchPlan::stop(
-            "no_child_model(parallel.child_model 未配置;零硬编码,必须显式配置)".to_string(),
+            "no_child_model(parallel.child_model is not configured; nothing is hard-coded, it must be set explicitly)".to_string(),
         );
     }
     let pending = match provider.pending_items() {
@@ -396,7 +401,7 @@ pub fn should_dispatch(
     let n_pending = pending.len();
     if n_pending < cfg.min_pending_items {
         return DispatchPlan::stop(format!(
-            "too_few_pending(未完成 {n_pending} < 阈值 {})",
+            "too_few_pending(pending {n_pending} < threshold {})",
             cfg.min_pending_items
         ));
     }
@@ -415,7 +420,7 @@ pub fn should_dispatch(
     }
     if plan.items.len() < cfg.min_dispatchable {
         plan.reasons.push(format!(
-            "too_few_dispatchable(可派 {} < 阈值 {}; 其余被分类器/安全预检拒绝)",
+            "too_few_dispatchable(dispatchable {} < threshold {}; the rest were rejected by the classifier / safety pre-check)",
             plan.items.len(),
             cfg.min_dispatchable
         ));
@@ -424,7 +429,7 @@ pub fn should_dispatch(
     let cap = probe.plan_capacity(&model, cfg);
     if cap.max_parallel < 1 {
         plan.reasons.push(format!(
-            "no_capacity(放不下一个小模型) | {}",
+            "no_capacity(no room for even one small model) | {}",
             cap.reasons.join("; ")
         ));
         plan.capacity = Some(cap);

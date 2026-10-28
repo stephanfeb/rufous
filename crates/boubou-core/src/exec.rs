@@ -273,7 +273,7 @@ impl Executor {
                     ));
                 }
                 return Err(format!(
-                    "[子agent安全门拦截(default-deny,无升级路径): {}。目标: {}。可用工具只有 {:?};不要尝试绕道,把当前步骤改成本目录内的确定性产出。]",
+                    "[child safety gate (default-deny, no escalation path): {}. Target: {}. The only available tools are {:?}; do not try to work around this, turn the current step into a deterministic output inside this directory.]",
                     chk.reason,
                     text::head(&chk.target, 120),
                     sb.allowed_tools_sorted()
@@ -319,7 +319,7 @@ impl Executor {
 
     fn create_file(&mut self, path: &str, content: &str, replace: bool) -> String {
         if path.starts_with('~') {
-            return "[安全垫:路径以 ~ 开头会按字面创建到家目录外,已拒绝。请在当前工作目录内用相对路径(如 outputs/data.json)。]".to_string();
+            return "[safety net: a path starting with ~ would be created literally, outside the home directory; rejected. Use a relative path inside the current working directory (e.g. outputs/data.json).]".to_string();
         }
         let p = self.workdir.join(path);
         if !replace {
@@ -328,7 +328,7 @@ impl Executor {
                 let new = clen(content) as u64;
                 if old > CLOBBER_MIN_OLD && (new as f64) < CLOBBER_RATIO * old as f64 {
                     return format!(
-                        "[覆盖防护: '{path}' 已有 {old} 字节内容,你的新内容只有 {new} 字节(疑似把大文件覆盖成了小片段)。确要整体替换:加参数 replace=true 重试;要补充内容:用 append_file;要局部修改:用 edit_file。]"
+                        "[overwrite guard: '{path}' already holds {old} bytes and your new content is only {new} bytes (this looks like a large file being overwritten with a small fragment). To replace the whole file, retry with replace=true; to add content, use append_file; for a local change, use edit_file.]"
                     );
                 }
             }
@@ -342,7 +342,7 @@ impl Executor {
             return format!("[tool error: {e}]");
         }
         let tag = if auto_repair(&p) {
-            "已自动修复转义".to_string()
+            "escapes auto-repaired".to_string()
         } else {
             format!("{} bytes", clen(content))
         };
@@ -358,7 +358,8 @@ impl Executor {
         if IMG_EXTS.iter().any(|e| low.ends_with(e)) {
             let (real, inside) = safe_path(&self.workdir, path, &self.gate.policy.allow_dirs);
             if !inside {
-                return "[blocked: 路径越界(工作目录边界守护)]".to_string();
+                return "[blocked: path out of bounds (working-directory boundary guard)]"
+                    .to_string();
             }
             return self.read_image(path, &real);
         }
@@ -387,7 +388,7 @@ impl Executor {
                 String::new()
             };
             let meta = format!(
-                "\n[文件共 {} 行,已读取 {}-{} 行。需要其他部分用 read_file(start_line=.., end_line=..)。]",
+                "\n[file has {} lines; read lines {}-{}. For other parts use read_file(start_line=.., end_line=..).]",
                 lines.len(),
                 from + 1,
                 el
@@ -405,12 +406,12 @@ impl Executor {
             let note = if !entry.throttle_notified {
                 entry.throttle_notified = true;
                 format!(
-                    "[crawl-guard: '{path}' 累计已读取 {} 字节,超出本文件预算 {budget}(按 {}×文件大小)。读取不会被拒绝,但本文件后续每次最多返回 {} 字符。要高效处理此文件,用 run_bash 跑 python 脚本一次完成统计/搜索/聚合,例如:\n  python -c \"import collections; ls=open(r'{path}',encoding='utf-8').readlines(); print(collections.Counter(w for l in ls for w in l.split()).most_common(10))\"\n把结果写进产物文件,需要细节时再精确回看。]",
+                    "[crawl-guard: '{path}' has been read {} bytes in total, over this file's budget of {budget} ({}× the file size). Reads are not refused, but each further read of this file returns at most {} chars. To process this file efficiently, run a python script via run_bash that does the counting/searching/aggregating in one pass, e.g.:\n  python -c \"import collections; ls=open(r'{path}',encoding='utf-8').readlines(); print(collections.Counter(w for l in ls for w in l.split()).most_common(10))\"\nWrite the result to an output file and come back for specific details only when needed.]",
                     entry.served_bytes, cfg.budget_mult, cfg.throttle
                 )
             } else {
                 format!(
-                    "[crawl-guard: '{path}' 读取限速中(每次最多 {} 字符,累计 {}/{budget})。用 run_bash 脚本可一次取全。]",
+                    "[crawl-guard: reads of '{path}' are rate-limited (at most {} chars per read, {}/{budget} so far). A run_bash script can take it all in one go.]",
                     cfg.throttle, entry.served_bytes
                 )
             };
@@ -419,7 +420,7 @@ impl Executor {
         if cfg.nudge_at.contains(&entry.reads) && entry.nudges < 2 {
             entry.nudges += 1;
             return format!(
-                "[提示: 这是第 {} 次读取 '{path}'。若在做统计/搜索/聚合,用 run_bash 跑 python 脚本一次完成更快;单纯回看可忽略本提示。]\n{body}{meta}",
+                "[hint: this is read number {} of '{path}'. If you are counting/searching/aggregating, a python script via run_bash does it in one pass; ignore this hint if you are just re-reading.]\n{body}{meta}",
                 entry.reads
             );
         }
@@ -447,7 +448,7 @@ impl Executor {
             .unwrap_or_default();
         if pending.len() >= IMG_PER_TURN {
             return format!(
-                "[image queued: {display} ({} KB)。待附队列已满({IMG_PER_TURN} 张),请先分析已附载的图片,再读取下一张。]",
+                "[image queued: {display} ({} KB). The attachment queue is full ({IMG_PER_TURN} images); analyse the attached images first, then read the next one.]",
                 size / 1024
             );
         }
@@ -455,7 +456,7 @@ impl Executor {
         if let Ok(s) = serde_json::to_string(&pending) {
             let _ = std::fs::write(self.pending_images_path(), s);
         }
-        format!("[image attached: {display} ({} KB)]——图片已随本轮请求载入,你可以直接描述、读取文字或分析它的内容。", size / 1024)
+        format!("[image attached: {display} ({} KB)] The image is loaded with this turn's request; you can describe it, read its text or analyse its content directly.", size / 1024)
     }
 
     fn edit_file(&mut self, path: &str, old: &str, new: &str) -> String {
@@ -474,18 +475,18 @@ impl Executor {
         if !s.contains(&old) {
             let preview = head(&s, 200).replace('\n', "↵");
             return format!(
-                "[edit failed: old text not found. 文件开头预览: {preview}...] 请 read_file 查看全文,构造精确匹配的 old 文本,或改用 create_file 整体重写。"
+                "[edit failed: old text not found. Preview of the file start: {preview}...] Use read_file to see the whole file and build an exactly matching old text, or rewrite the file with create_file."
             );
         }
         if let Err(e) = std::fs::write(&p, s.replacen(&old, &new, 1)) {
             return format!("[tool error: {e}]");
         }
         let tag = if auto_repair(&p) {
-            "已备份+自动修复转义"
+            "backed up, escapes auto-repaired"
         } else {
-            "已备份"
+            "backed up"
         };
-        format!("[edited {path} ({tag}),.bak 备份可用]")
+        format!("[edited {path} ({tag}); .bak backup available]")
     }
 
     fn append_file(&mut self, path: &str, content: &str) -> String {
@@ -518,7 +519,7 @@ impl Executor {
             .and_then(|_| std::fs::rename(&p, &dst))
             .is_ok()
         {
-            return format!("[deleted {path} → 已移入 {TRASH_DIR}/(可恢复)]");
+            return format!("[deleted {path} → moved to {TRASH_DIR}/ (recoverable)]");
         }
         match std::fs::remove_file(&p) {
             Ok(()) => format!("[deleted {path}]"),
@@ -599,7 +600,7 @@ impl Executor {
         let run = run_command(&cmd, &self.workdir, self.bash_timeout);
         if run.timed_out {
             let secs = self.bash_timeout.as_secs();
-            let note = format!("\n[已超时:{secs} 秒上限,进程树已终止 · timed out after {secs}s]");
+            let note = format!("\n[timed out after {secs}s: the limit was reached and the process tree was terminated]");
             return format_bash_out(
                 if run.code == 0 { 1 } else { run.code },
                 &format!("{}{note}", head(&run.stdout, 4000)),
@@ -610,8 +611,8 @@ impl Executor {
         let mut out = format_bash_out(run.code, &run.stdout, &run.stderr, self.slim_output);
         if !snapped.is_empty() {
             out.push_str(&format!(
-                "\n[已自动备份可回滚: {} → 同名.bak]",
-                snapped.join("、")
+                "\n[auto-backed up, can be rolled back: {} → same name with .bak]",
+                snapped.join(", ")
             ));
         }
         if cfg!(windows) {
@@ -625,10 +626,10 @@ impl Executor {
                     || after.chars().nth(1) == Some(':'))
             });
             if linuxish || cmd.contains("cd /workspace") {
-                out.push_str("\n[提示: 这是 Windows,不要用 /data /tmp /workspace 等 Linux 路径。工作目录已设定,直接用相对路径或本机盘符路径。]");
+                out.push_str("\n[hint: this is Windows; do not use Linux paths like /data /tmp /workspace. The working directory is set: use relative paths or local drive-letter paths.]");
             }
             if cmd.trim_start().starts_with("time ") {
-                out.push_str("\n[提示: Windows 无 bash 的 time 命令。请在脚本内用 python time 模块计时,或用 python -c 执行计时。]");
+                out.push_str("\n[hint: Windows has no bash time command. Time the work inside the script with the python time module, or with python -c.]");
             }
         }
         out
@@ -683,11 +684,14 @@ impl Executor {
         }
         let mut note = String::new();
         if !mcp_added.is_empty() {
-            note.push_str(&format!(" MCP 工具已按需加载: {}", mcp_added.join(", ")));
+            note.push_str(&format!(
+                " MCP tools loaded on demand: {}",
+                mcp_added.join(", ")
+            ));
         }
         if !unknown.is_empty() {
             note.push_str(&format!(
-                " 未知的工具名(不存在,无法启用): {}。可启用的高级工具: {}。",
+                " Unknown tool name(s) (do not exist, cannot be enabled): {}. Advanced tools that can be enabled: {}.",
                 unknown.join(", "),
                 ADVANCED_TOOL_NAMES
                     .iter()
@@ -699,7 +703,7 @@ impl Executor {
             ));
         }
         if added.is_empty() && mcp_added.is_empty() && unknown.is_empty() {
-            note = " 无需再启用:你要的工具都已可用,直接调用它即可。".to_string();
+            note = " Nothing to enable: the tools you asked for are already available, just call them.".to_string();
         }
         let available: Vec<&str> = CORE_TOOL_NAMES
             .iter()
@@ -722,11 +726,12 @@ impl Executor {
     /// `create_file` followed by a `read_file` cannot race. Cap 8, no nesting, 2000 chars each.
     fn batch_tools(&mut self, calls: &[tools::BatchCall]) -> String {
         if calls.is_empty() {
-            return "[batch_tools: 需提供 calls 数组,形如 [{tool, args}, ...]]".to_string();
+            return "[batch_tools: a calls array is required, of the form [{tool, args}, ...]]"
+                .to_string();
         }
         let calls = &calls[..calls.len().min(8)];
         if calls.iter().any(|c| c.tool == "batch_tools") {
-            return "[batch_tools: 禁止嵌套 batch_tools]".to_string();
+            return "[batch_tools: nested batch_tools is not allowed]".to_string();
         }
         const PARALLEL_SAFE: [&str; 4] =
             ["web_search", "web_fetch", "web_search_multi", "mcp_call"];
@@ -803,13 +808,19 @@ fn missing_arg_message(name: &str, key: &str, got: &serde_json::Map<String, Valu
         req.iter().filter(|k| !got.contains_key(*k)).collect()
     };
     let example = match name {
-        "create_file" => " 正确示例: create_file(path=\"app.py\", content=\"...文件内容...\")",
-        "edit_file" => " 正确示例: edit_file(path=\"文件名\", old=\"旧文本\", new=\"新文本\")",
-        "append_file" => " 正确示例: append_file(path=\"文件名\", content=\"追加内容\")",
+        "create_file" => {
+            " Correct example: create_file(path=\"app.py\", content=\"...file content...\")"
+        }
+        "edit_file" => {
+            " Correct example: edit_file(path=\"filename\", old=\"old text\", new=\"new text\")"
+        }
+        "append_file" => {
+            " Correct example: append_file(path=\"filename\", content=\"text to append\")"
+        }
         _ => "",
     };
     format!(
-        "[tool error: {name} 缺少参数 '{key}'。必须提供参数: {missing:?}。你实际传了: {got_keys:?}。{example}请补全参数后原样重试(内容不变,只补上缺失的参数)。]"
+        "[tool error: {name} is missing argument '{key}'. Required arguments: {missing:?}. You passed: {got_keys:?}.{example} Add the missing argument and retry with the same content (change nothing else).]"
     )
 }
 

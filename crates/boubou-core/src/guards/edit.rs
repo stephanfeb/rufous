@@ -75,11 +75,11 @@ impl EditConvergenceGuard {
         let n = self.streak;
         Some(if *count == 1 {
             format!(
-                "⚠️ 你已对 {p} 连续成功编辑 {n} 次,但目标仍未达成。停止继续猜测性微调:先完整阅读 run_bash 的失败输出定位根因(必要时临时加 print 打印中间值);若确认当前思路不通,可用 .bak 备份恢复,或用 create_file 重写该文件的这一部分。"
+                "⚠️ You have edited {p} successfully {n} times in a row and the goal is still not met. Stop speculative tweaking: read the full run_bash failure output to find the root cause (add temporary prints for intermediate values if needed). If the current approach is a dead end, restore the .bak backup or rewrite that part of the file with create_file."
             )
         } else {
             format!(
-                "⚠️ 仍是 {p} 的同点反复修改(第 {n} 次成功编辑)。规则:这次编辑前必须先说出根因假设,并用一次 run_bash 验证假设;禁止在没读新报错前再次 edit_file。若连续两个假设都不成立,恢复 .bak 备份并换实现思路。"
+                "⚠️ Still editing the same spot in {p} (successful edit number {n}). Rule: before this edit, state your root-cause hypothesis and verify it with one run_bash; no further edit_file until you have read a new error. If two hypotheses in a row fail, restore the .bak backup and change approach."
             )
         })
     }

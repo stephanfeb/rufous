@@ -1,11 +1,11 @@
 ---
 name: git_workflow
-description: git 规范:先看状态,小步提交,分支合并
+description: git discipline: check status first, small commits, branch and merge
 ---
-# git 流程
-1. 操作前先 git status / git diff 了解现状
-2. 若未初始化先 git init;提示缺身份则 git config user.name/user.email
-3. 小步提交:一次一个逻辑变更,消息简洁明确
-4. 新功能用分支:git checkout -b feature/xxx,完成后再合并
-5. 合并:git checkout main && git merge feature/xxx
-6. 用 git log --oneline 确认提交历史符合预期
+# git workflow
+1. Before acting, run git status / git diff to understand the current state
+2. If not initialised, git init first; if git complains about a missing identity, set git config user.name/user.email
+3. Small commits: one logical change per commit, with a short, clear message
+4. New features on a branch: git checkout -b feature/xxx, merge once done
+5. Merge: git checkout main && git merge feature/xxx
+6. Use git log --oneline to confirm the commit history looks as expected

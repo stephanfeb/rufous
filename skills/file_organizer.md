@@ -1,12 +1,12 @@
 ---
 name: file_organizer
-description: 整理文件夹:按类型/日期归类、批量重命名、查重
+description: Tidy a folder: group by type / date, batch rename, find duplicates
 ---
-# 文件整理
-1. 先看清现状:list_dir 列出目录;文件多时分批(每批 ≤200)。
-2. 问清规则(用户没说就按默认):按扩展名归类(图片/文档/压缩包/安装包/其他)或按年-月归类。
-3. 归类移动:优先 run_python(用 shutil.move),比逐条命令快且原子;目标子目录不存在就先建。
-4. 批量重命名:统一规则(前缀_序号、日期_原名);改名前先打印"旧名 → 新名"清单给用户确认,再执行 os.rename。
-5. 查重:同名不同目录,或按"大小+内容哈希"(run_python 用 hashlib 读文件)判重;只报告,删除必须用户确认。
-6. 结束:输出统计(共 N 个文件,移动 X,重命名 Y,疑似重复 Z),并列出无法处理的文件及原因。
-红线:绝不移动/删除工作目录之外的路径;绝不删除,只移动;用户没确认前不动"疑似重复"。
+# File organising
+1. See the current state first: list_dir the directory; with many files work in batches (<= 200 per batch).
+2. Clarify the rules (if the user gave none, use the defaults): group by extension (images / documents / archives / installers / other) or by year-month.
+3. Group and move: prefer run_bash with python (using shutil.move), which is faster and more atomic than one command per file; create the target subdirectory first if it does not exist.
+4. Batch rename: one consistent rule (prefix_number, date_originalname); before renaming, print an "old name -> new name" list for the user to confirm, then run os.rename.
+5. Find duplicates: same name in different directories, or match on "size + content hash" (run_bash with python, reading files with hashlib); report only, deletion needs the user's confirmation.
+6. Finish: output the statistics (N files in total, X moved, Y renamed, Z suspected duplicates) and list the files that could not be handled, with reasons.
+Red lines: never move or delete paths outside the working directory; never delete, only move; do not touch "suspected duplicates" until the user confirms.

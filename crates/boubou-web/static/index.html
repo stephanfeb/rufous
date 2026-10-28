@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>布布 · Boubou</title>
+<title>Boubou</title>
 <link rel="icon" href="data:,">
 <style>
 :root{
@@ -221,20 +221,19 @@ textarea.sys{width:100%;min-height:120px;font:12px/1.55 var(--mono);resize:verti
     <div class="brand">
       <div class="logo">🐦</div>
       <div>
-        <div class="brandname" data-i18n="brand">布布</div>
+        <div class="brandname" data-i18n="brand">Boubou</div>
         <div class="brandver" id="ver">BOUBOU</div>
       </div>
     </div>
-    <button id="newchat" class="btn primary wide">＋ <span data-i18n="newchat">新对话</span></button>
+    <button id="newchat" class="btn primary wide">+ <span data-i18n="newchat">New chat</span></button>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="sessearch" data-i18n-ph="search" placeholder="搜索对话">
+      <input id="sessearch" data-i18n-ph="search" placeholder="Search chats">
     </div>
     <div id="sesslist" class="sesslist"></div>
     <div class="sidefoot">
-      <button class="linkbtn" id="settingsbtn" data-i18n="settings">设置</button>
-      <button class="linkbtn" id="aboutbtn" data-i18n="about">关于</button>
-      <button class="linkbtn" id="langbtn">EN/中</button>
+      <button class="linkbtn" id="settingsbtn" data-i18n="settings">Settings</button>
+      <button class="linkbtn" id="aboutbtn" data-i18n="about">About</button>
       <button class="iconbtn" id="themebtn" title="theme">◐</button>
     </div>
   </aside>
@@ -242,14 +241,14 @@ textarea.sys{width:100%;min-height:120px;font:12px/1.55 var(--mono);resize:verti
   <main id="main">
     <header id="topbar">
       <div>
-        <div class="title" id="convtitle" data-i18n="newchat">新对话</div>
-        <div class="sub" id="convsub" data-i18n="tagline">本地优先 · 小模型优先</div>
+        <div class="title" id="convtitle" data-i18n="newchat">New chat</div>
+        <div class="sub" id="convsub" data-i18n="tagline">Local-first · small-model-first</div>
       </div>
       <div class="pills">
         <button class="pill" id="modelpill"><span id="modelname">…</span><span>▾</span></button>
-        <button class="pill" id="thinkpill">思考 · <span id="thinkval">默认</span></button>
-        <button class="pill" id="offlinepill"><span id="offlinetext">● 联网</span></button>
-        <button class="pill planchip hidden" id="planchip">计划 0/0 ▸</button>
+        <button class="pill" id="thinkpill">Thinking · <span id="thinkval">default</span></button>
+        <button class="pill" id="offlinepill"><span id="offlinetext">● Online</span></button>
+        <button class="pill planchip hidden" id="planchip">Plan 0/0 ▸</button>
       </div>
     </header>
 
@@ -257,149 +256,120 @@ textarea.sys{width:100%;min-height:120px;font:12px/1.55 var(--mono);resize:verti
 
     <div id="composer">
       <textarea id="input" rows="3" data-i18n-ph="placeholder"
-                placeholder="输入任务或对话…(Enter 发送 · Shift+Enter 换行)"></textarea>
+                placeholder="Type a task or chat… (Enter to send · Shift+Enter for newline)"></textarea>
       <div class="composerbar">
         <label class="check"><input type="checkbox" id="resume" checked>
-          <span data-i18n="resume">续跑</span></label>
+          <span data-i18n="resume">Resume</span></label>
         <span class="grow"></span>
-        <span class="hint">Enter <span data-i18n="send">发送</span> · Shift+Enter <span data-i18n="newline">换行</span></span>
-        <button id="mic" class="btn hidden" title="voice">🎤 <span data-i18n="voice">语音</span></button>
-        <button id="stop" class="btn danger hidden" data-i18n="stop">停止</button>
+        <span class="hint">Enter <span data-i18n="send">Send</span> · Shift+Enter <span data-i18n="newline">New line</span></span>
+        <button id="mic" class="btn hidden" title="voice">🎤 <span data-i18n="voice">Voice</span></button>
+        <button id="stop" class="btn danger hidden" data-i18n="stop">Stop</button>
         <button id="send" class="sendbtn" title="send">↑</button>
       </div>
     </div>
 
     <footer id="statusbar">
       <div class="ctxbar"><i id="ctxfill"></i></div>
-      <span id="ctxtext">上下文: - / -</span>
+      <span id="ctxtext">Context: - / -</span>
       <span id="ollamadot">Ollama …</span>
-      <span id="modelbl">联网 · 本地推理</span>
+      <span id="modelbl">Online · local inference</span>
     </footer>
   </main>
 
   <aside id="planpanel">
     <div id="planhead">
-      <span class="t" data-i18n="plan">计划</span>
+      <span class="t" data-i18n="plan">Plan</span>
       <span id="plancount">0/0</span>
       <button id="planclose" title="close">×</button>
     </div>
     <div id="planbar"><div id="planfill"></div></div>
     <div id="planlist"></div>
-    <div id="planfoot">todo.json · <span data-i18n="live">实时</span></div>
+    <div id="planfoot">todo.json · <span data-i18n="live">live</span></div>
   </aside>
 </div>
 
 <div id="modelmenu" class="menu hidden"></div>
 
 <dialog id="settingsdlg">
-  <div class="dlghead"><span class="t" data-i18n="settings">设置</span>
+  <div class="dlghead"><span class="t" data-i18n="settings">Settings</span>
     <button class="dlgclose" data-close="settingsdlg">×</button></div>
   <div class="dlgbody">
-    <div class="section" data-i18n="gen">生成参数</div>
+    <div class="section" data-i18n="gen">Generation</div>
     <div class="card">
-      <div class="frow"><label data-i18n="ctx_l">上下文窗口</label>
+      <div class="frow"><label data-i18n="ctx_l">Context window</label>
         <select id="p-ctx">
           <option>16384</option><option>32768</option><option>65536</option>
           <option>131072</option><option>262144</option><option>524288</option>
           <option>1048576</option></select>
-        <span class="note" data-i18n="ctx_note">小模型：越大越占内存</span></div>
-      <div class="frow"><label data-i18n="temp_l">温度</label>
+        <span class="note" data-i18n="ctx_note">small models: bigger = more memory</span></div>
+      <div class="frow"><label data-i18n="temp_l">Temperature</label>
         <input type="number" id="p-temp" step="0.1" min="0" max="2" style="width:90px">
-        <span class="note" data-i18n="temp_note">留空 = 用 Ollama 默认</span></div>
-      <div class="frow"><label data-i18n="np_l">输出上限</label>
+        <span class="note" data-i18n="temp_note">empty = Ollama default</span></div>
+      <div class="frow"><label data-i18n="np_l">Max output</label>
         <select id="p-np">
           <option>512</option><option>1024</option><option>2048</option>
           <option>4096</option><option>8192</option><option>16384</option>
           <option>32768</option></select>
-        <span class="note" data-i18n="np_note">-1 = 不限（桌面端）</span></div>
-      <div class="frow"><label data-i18n="think_l">思考</label>
+        <span class="note" data-i18n="np_note">-1 = unlimited (desktop)</span></div>
+      <div class="frow"><label data-i18n="think_l">Thinking</label>
         <select id="p-think">
-          <option value="" data-i18n="think_def">默认</option>
-          <option value="1" data-i18n="think_on">开</option>
-          <option value="0" data-i18n="think_off">关</option></select>
-        <span class="note" data-i18n="think_note">默认 = 由模型决定</span></div>
+          <option value="" data-i18n="think_def">default</option>
+          <option value="1" data-i18n="think_on">on</option>
+          <option value="0" data-i18n="think_off">off</option></select>
+        <span class="note" data-i18n="think_note">default = model decides</span></div>
     </div>
-    <div class="section" data-i18n="cloud_api">云端 API（可选）</div>
+    <div class="section" data-i18n="cloud_api">Cloud API (optional)</div>
     <div class="card">
       <label class="check"><input type="checkbox" id="p-clouden">
-        <span data-i18n="cloud_enable">启用云端模型（仅联网可用）</span></label>
-      <div class="frow"><label data-i18n="endpoint">端点</label>
+        <span data-i18n="cloud_enable">Enable cloud model (online only)</span></label>
+      <div class="frow"><label data-i18n="endpoint">Endpoint</label>
         <input type="text" id="p-cloudbase" placeholder="https://api.example.com/v1" style="flex:1"></div>
-      <div class="frow"><label data-i18n="model">模型</label>
+      <div class="frow"><label data-i18n="model">Model</label>
         <input type="text" id="p-cloudmodel" placeholder="deepseek-chat" style="flex:1"></div>
       <div class="frow"><label>API Key</label>
-        <input type="text" id="p-cloudkey" placeholder="已保存 · 留空不修改" style="flex:1"></div>
-      <div style="font-size:10.5px;color:var(--faint)" data-i18n="cloud_note">
-        启用后仅联网可用；api_key 只存本机 config.json。</div>
+        <input type="text" id="p-cloudkey" placeholder="saved · leave blank to keep" style="flex:1"></div>
+      <div style="font-size:10.5px;color:var(--faint)" data-i18n="cloud_note">Cloud needs network; api_key stays in the local config.</div>
     </div>
-    <div class="section" data-i18n="sys_l">系统提示</div>
+    <div class="section" data-i18n="sys_l">System prompt</div>
     <div class="card">
       <label class="check"><input type="checkbox" id="p-sysen">
-        <span data-i18n="sys_enable">启用自定义系统提示（替代内置）</span></label>
+        <span data-i18n="sys_enable">Use a custom system prompt (replaces built-in)</span></label>
       <textarea class="sys" id="p-systext" placeholder="override system prompt…"></textarea>
     </div>
   </div>
   <div class="dlgfoot">
-    <span class="note" data-i18n="prefs_note">与桌面版共用设置，下一个任务生效。</span>
-    <button class="btn" data-close="settingsdlg" data-i18n="cancel">取消</button>
-    <button class="btn primary" id="p-save" data-i18n="save">保存</button>
+    <span class="note" data-i18n="prefs_note">Shared with the desktop app; applies to the next task.</span>
+    <button class="btn" data-close="settingsdlg" data-i18n="cancel">Cancel</button>
+    <button class="btn primary" id="p-save" data-i18n="save">Save</button>
   </div>
 </dialog>
 
 <dialog id="aboutdlg">
-  <div class="dlghead"><span class="t">布布 · Boubou</span>
+  <div class="dlghead"><span class="t">Boubou</span>
     <button class="dlgclose" data-close="aboutdlg">×</button></div>
   <div class="dlgbody">
-    <p data-i18n="about_line1">本地优先、小模型优先的 AI agent。数据不出本机。</p>
+    <p data-i18n="about_line1">A local-first, small-model-first AI agent. Data stays on this machine.</p>
     <p style="font-family:var(--mono);font-size:12px" id="aboutver"></p>
   </div>
   <div class="dlgfoot"><span class="note">Apache-2.0</span>
-    <button class="btn primary" data-close="aboutdlg" data-i18n="close">关闭</button></div>
+    <button class="btn primary" data-close="aboutdlg" data-i18n="close">Close</button></div>
 </dialog>
 
 <dialog id="askdlg">
-  <div class="dlghead"><span class="t" id="asktitle">⚠ 越界操作确认</span></div>
+  <div class="dlghead"><span class="t" id="asktitle">⚠ Outside-workspace access</span></div>
   <div class="dlgbody">
     <p id="askbody" style="white-space:pre-wrap;font-size:13px;color:var(--muted)"></p>
   </div>
   <div class="dlgfoot">
     <span class="note"></span>
-    <button class="btn danger" id="ask-deny" data-i18n="deny">拒绝</button>
-    <button class="btn" id="ask-allowall" data-i18n="allow_all">允许全部（本轮）</button>
-    <button class="btn primary" id="ask-allow1" data-i18n="allow_once">允许一次</button>
+    <button class="btn danger" id="ask-deny" data-i18n="deny">Deny</button>
+    <button class="btn" id="ask-allowall" data-i18n="allow_all">Allow all (this run)</button>
+    <button class="btn primary" id="ask-allow1" data-i18n="allow_once">Allow once</button>
   </div>
 </dialog>
 
 <script>
 const I18N = {
-  zh: {brand:"布布", newchat:"新对话", search:"搜索对话", settings:"设置", about:"关于",
-       tagline:"本地优先 · 小模型优先", model:"模型", thinking:"思考",
-       think_def:"默认", think_on:"开", think_off:"关", plan:"计划", live:"实时",
-       resume:"续跑", send:"发送", stop:"停止", placeholder:"输入任务或对话…(Enter 发送 · Shift+Enter 换行)", newline:"换行",
-       you:"你", assistant:"布布", welcome:"有什么可以帮你？",
-       welcome_sub:"本地优先 · 小模型优先 · 数据不出本机",
-       online:"● 联网", offline:"● 断网", online_mode:"联网 · 本地推理",
-       offline_mode:"断网 · 零出站", ctx:"上下文", today:"今天", yesterday:"昨天",
-       earlier:"更早", empty:"还没有对话", nosess:"没有匹配的对话",
-       gen:"生成参数", ctx_l:"上下文窗口", temp_l:"温度", np_l:"输出上限",
-       think_l:"思考", sys_l:"系统提示", sys_enable:"启用自定义系统提示（替代内置）",
-       ctx_note:"小模型：越大越占内存", temp_note:"留空 = 用 Ollama 默认",
-       np_note:"-1 = 不限（桌面端）", think_note:"默认 = 由模型决定",
-       prefs_note:"与桌面版共用设置，下一个任务生效。", save:"保存", cancel:"取消",
-       close:"关闭", about_line1:"本地优先、小模型优先的 AI agent。数据不出本机。",
-       deny:"拒绝", allow_all:"允许全部（本轮）", allow_once:"允许一次",
-       outside:"⚠ 越界操作确认", busy:"⚠ 忙：先停止当前任务",
-       loaded:"已载入会话", no_plan:"(尚无计划 — agent 会先建 todo 再执行)",
-       off_note:"[ 断网模式：联网工具与云端已禁用 — 零出站 ]",
-       cloud_api:"云端 API（可选）", cloud_enable:"启用云端模型（仅联网可用）",
-       endpoint:"端点", cloud_note:"启用后仅联网可用；api_key 只存本机 config.json。",
-       cloud_mode:"联网 · 云端模型",
-       cloud_offline_note:"云端模型需联网：先切回本地模型再开断网",
-       cloud_incomplete:"请先在设置里填写云端端点与模型名",
-       voice:"语音", voice_stop:"■ 停止录音", voice_rec:"[录音中… 说完话自动停止]",
-       voice_busy:"转写中…", voice_none:"未捕捉到声音,请重试", voice_fail:"转写失败: ",
-       voice_timeout:"[录音超时,自动停止]", voice_nomic:"[无法打开麦克风: ",
-       voice_unavail:"[语音不可用: "},
   en: {brand:"Boubou", newchat:"New chat", search:"Search chats", settings:"Settings",
        about:"About", tagline:"Local-first · small-model-first", model:"Model",
        thinking:"Thinking", think_def:"default", think_on:"on", think_off:"off",
@@ -432,7 +402,7 @@ const I18N = {
        voice_timeout:"[Recording timed out]", voice_nomic:"[Cannot open microphone: ",
        voice_unavail:"[Voice unavailable: "}
 };
-let LANG = localStorage.getItem("mb_lang") || (navigator.language.startsWith("zh") ? "zh" : "en");
+const LANG = "en";
 const $ = id => document.getElementById(id);
 function t(k){ return (I18N[LANG] && I18N[LANG][k]) || I18N.en[k] || k; }
 function applyLang(){
@@ -635,7 +605,7 @@ function send(){
 /* ---------------- voice input ----------------
    The desktop recorder's energy VAD, in the page: 16 kHz mono float, auto-stop after
    ~1.2 s of silence once speech was heard, 60 s cap, WAV posted to /api/voice. */
-let voice = {available:false, lang:"zh", hint:""};
+let voice = {available:false, lang:"en", hint:""};
 let rec = null;   // {ctx, stream, node, frames, rate, speech, silenceSince, timer, tick}
 function micLabel(state){
   const b = $("mic");
@@ -697,7 +667,7 @@ function voiceStop(cancel){
   r.frames.forEach(f => { all.set(f, o); o += f.length; });
   if (!r.speech || n === 0){ micLabel("idle"); addNote(t("voice_none")); return; }
   micLabel("busy");
-  const q = "?lang=" + encodeURIComponent(voice.lang || "zh") + "&model=" + encodeURIComponent(modelSel || "");
+  const q = "?lang=" + encodeURIComponent(voice.lang || "en") + "&model=" + encodeURIComponent(modelSel || "");
   fetch("/api/voice" + q, {method: "POST", headers: {"Content-Type": "audio/wav"}, body: encodeWav(all, r.rate)})
     .then(async res => {
       const d = await res.json().catch(() => ({}));
@@ -995,7 +965,7 @@ function loadPrefs(){
     $("p-cloudmodel").value = cloud.model || "";
     $("p-cloudkey").value = "";
     $("p-cloudkey").placeholder = cloud.has_key
-        ? (LANG === "zh" ? "已保存 · 留空不修改" : "saved · leave blank to keep")
+        ? "saved · leave blank to keep"
         : "sk-…";
   });
 }
@@ -1026,11 +996,6 @@ function refreshStatus(){
 }
 
 /* ---------------- boot ---------------- */
-$("langbtn").onclick = () => {
-  LANG = LANG === "en" ? "zh" : "en";
-  localStorage.setItem("mb_lang", LANG);
-  applyLang();
-};
 applyLang();
 welcome();
 loadSessions();

@@ -18,84 +18,79 @@ pub const DISPATCH_NOTE_MARK: &str = "[parallel-dispatch]";
 pub const HARNESS_NOTE_PREFIXES: [&str; 8] = [
     "⚠️",
     "Continue:",
-    "[已拦截",
-    "回答已经足够",
+    "[blocked:",
+    "Your answer is already sufficient",
     "⏱",
-    "提示:",
-    "继续之前的对话",
+    "Hint:",
+    "Continue the previous conversation",
     DISPATCH_NOTE_MARK,
 ];
 
+/// Marker of a compaction summary message (`history.rs`).
+pub const CONTEXT_SUMMARY_MARK: &str = "[Earlier context summary]";
+
 pub fn is_harness_note(text: &str) -> bool {
-    HARNESS_NOTE_PREFIXES.iter().any(|p| text.starts_with(p))
-        || text.contains("[先前上下文摘要]")
-        || text.contains("上下文已压缩")
+    HARNESS_NOTE_PREFIXES.iter().any(|p| text.starts_with(p)) || text.contains(CONTEXT_SUMMARY_MARK)
 }
 
+/// Action verbs and task-shaped phrases. Matched on word boundaries after lower-casing
+/// (`hint_hit`), so `fix` does not hit `prefix`; a trailing space in a hint is trimmed
+/// before matching and only documents that the word is a verb here.
 const TASK_HINTS: &[&str] = &[
-    "写",
-    "建",
-    "改",
-    "创建",
-    "修改",
-    "删",
-    "删除",
-    "运行",
-    "执行",
-    "实现",
-    "编写",
-    "重构",
-    "修复",
-    "生成",
-    "统计",
-    "翻译",
-    "总结",
-    "对比",
-    "测试",
-    "调试",
-    "安装",
-    "下载",
-    "部署",
-    "搭建",
-    "配置",
-    "启动",
-    "停止",
-    "整理",
-    "转换",
-    "爬取",
-    "优化",
-    "检查",
-    "分析",
-    "设计",
-    "代码",
-    "程序",
-    "脚本",
-    "帮我做",
     "write ",
     "create ",
+    "make ",
     "build ",
+    "edit ",
+    "modify",
+    "change ",
+    "delete ",
+    "remove ",
+    "run ",
+    "execute",
     "implement",
     "fix ",
     "debug",
-    "analyze",
-    "analyse",
-    "clean ",
-    "optimize",
-    "optimise",
     "refactor",
     "generate",
+    "count ",
+    "translate",
+    "summarise",
+    "summarize",
+    "compare",
+    "test ",
+    "install",
+    "download",
+    "deploy",
+    "set up",
+    "configure",
+    "start ",
+    "stop ",
+    "tidy",
+    "organise",
+    "organize",
+    "convert",
+    "scrape",
+    "crawl",
+    "optimise",
+    "optimize",
+    "check ",
+    "analyse",
+    "analyze",
     "design ",
     "audit ",
     "review ",
+    "clean ",
     "compute",
-    "convert",
+    "calculate",
     "export",
     "import ",
     "plot ",
     "profile ",
-    "implement ",
     "produce ",
     "research ",
+    "rename",
+    "save ",
     "search for",
     "find all",
     "list all",
@@ -103,64 +98,82 @@ const TASK_HINTS: &[&str] = &[
     "required steps",
     "plan at least",
     "todo(action",
+    "the code",
+    "a program",
+    "a script",
+    "help me do",
 ];
 
+/// Question and small-talk cues, matched on word boundaries. A `?` counts only when it
+/// ends the message (`ends_with_question`): benchmark-style tasks ("How many hours did it
+/// take? Output just the number") end in a full stop and must keep their mutating tools.
 const QA_HINTS: &[&str] = &[
-    "什么",
-    "怎么",
-    "为什么",
-    "如何",
-    "解释",
-    "说明",
-    "介绍",
-    "区别",
-    "原理",
-    "能否",
-    "可以吗",
-    "能不能",
-    "吗",
-    "呢",
-    "?",
-    "？",
-    "你好",
-    "hi",
-    "hello",
-    "在吗",
-    "谢谢",
-    "再见",
-    "早安",
-    "晚安",
-    "你是谁",
+    "are you ",
+    "can you ",
+    "do you ",
+    "will you ",
+    "would you ",
+    "is there ",
     "what is ",
     "what are ",
+    "what's",
+    "what does",
     "how do i",
     "how does ",
+    "how can i",
     "why is ",
     "why does ",
+    "why do ",
+    "explain",
+    "difference between",
     "can you explain",
     "tell me about",
     "who is ",
+    "who are you",
     "when was ",
+    "where is ",
+    "is it possible",
+    "could you",
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank you",
+    "goodbye",
+    "bye",
+    "good morning",
+    "good night",
+    "are you there",
 ];
 
-/// Non-ASCII hints match as substrings; ASCII hints need word boundaries so `hi` does
-/// not hit `this` and `fix` does not hit `prefix`.
+/// Hints match on word boundaries so `hi` does not hit `this` and `fix` does not hit
+/// `prefix`; a hint with no alphanumeric character (none today) would match as a substring.
 fn hint_hit(hint: &str, low: &str) -> bool {
     static CACHE: LazyLock<std::collections::HashMap<&'static str, Regex>> = LazyLock::new(|| {
         TASK_HINTS
             .iter()
             .chain(QA_HINTS.iter())
-            .filter(|h| h.is_ascii())
+            .filter(|h| h.chars().any(char::is_alphanumeric))
             .map(|h| {
                 let re = Regex::new(&format!(r"\b{}\b", regex::escape(h.trim()))).expect("regex");
                 (*h, re)
             })
             .collect()
     });
-    if !hint.is_ascii() {
+    if !hint.chars().any(char::is_alphanumeric) {
         return low.contains(hint);
     }
     CACHE.get(hint).is_some_and(|re| re.is_match(low))
+}
+
+/// A message whose last non-blank character is a question mark (ASCII or full-width),
+/// ignoring trailing quotes and brackets. "Are you capable of software development ?" is a
+/// question even with the space before the mark.
+pub fn ends_with_question(text: &str) -> bool {
+    text.trim_end()
+        .trim_end_matches(['"', '\'', ')', ']', '*', '_'])
+        .trim_end()
+        .ends_with(['?', '\u{ff1f}'])
 }
 
 /// `_has_task_progress`: has this conversation already done real work (a mutating or
@@ -195,7 +208,7 @@ pub fn is_qa(messages: &[Message], has_progress: bool) -> bool {
         if TASK_HINTS.iter().any(|h| hint_hit(h, &low)) {
             return false;
         }
-        if QA_HINTS.iter().any(|h| hint_hit(h, &low)) {
+        if QA_HINTS.iter().any(|h| hint_hit(h, &low)) || ends_with_question(t) {
             return true;
         }
         if text::clen(t) <= 40 {
@@ -223,7 +236,7 @@ pub fn task_original_text(messages: &[Message], max_chars: usize) -> String {
         }
         let half = max_chars / 2;
         return format!(
-            "{}\n...(中略)...\n{}",
+            "{}\n...(omitted)...\n{}",
             text::head(t, half),
             text::tail(t, half)
         );

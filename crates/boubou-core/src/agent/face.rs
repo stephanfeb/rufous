@@ -10,6 +10,7 @@ use std::sync::LazyLock;
 
 use serde_json::Value;
 
+use crate::mcp::{CAT_CODE, CAT_FILES, CAT_MCP, CAT_MEMORY, CAT_WEB};
 use crate::tools::{advanced_tools, core_tools, CORE_TOOL_NAMES};
 
 /// Tools every task gets regardless of category.
@@ -25,7 +26,7 @@ pub const BASE_TOOLS: [&str; 6] = [
 /// Category → tools loaded only for tasks routed to it (`run_python` dropped in Boubou).
 pub const CATEGORY_TOOLS: [(&str, &[&str]); 5] = [
     (
-        "文件",
+        CAT_FILES,
         &[
             "create_file",
             "edit_file",
@@ -34,60 +35,100 @@ pub const CATEGORY_TOOLS: [(&str, &[&str]); 5] = [
             "search_files",
         ],
     ),
-    ("代码", &["run_bash"]),
+    (CAT_CODE, &["run_bash"]),
     (
-        "网络",
+        CAT_WEB,
         &["web_search", "web_fetch", "web_search_multi", "batch_tools"],
     ),
-    ("记忆", &["memory_store", "memory_recall"]),
-    ("MCP", &["mcp_call"]),
+    (CAT_MEMORY, &["memory_store", "memory_recall"]),
+    (CAT_MCP, &["mcp_call"]),
 ];
 
+/// Keyword routing. Matched case-insensitively as substrings of the task text, so a
+/// keyword also matches its inflections (`test` hits `testing`, `tests`).
 const CAT_KEYWORDS: [(&str, &[&str]); 5] = [
     (
-        "代码",
+        CAT_CODE,
         &[
-            "写", "代码", "程序", "脚本", "运行", "bash", "python", "编译", "函数", "模块", "修复",
-            "重构", "调试", "实现", "测试", "执行", "算法", "计算", "报错",
+            "code",
+            "program",
+            "script",
+            "run ",
+            "bash",
+            "python",
+            "compile",
+            "function",
+            "module",
+            "fix",
+            "refactor",
+            "debug",
+            "implement",
+            "test",
+            "execute",
+            "algorithm",
+            "compute",
+            "calculate",
+            "error",
+            "traceback",
+            "exception",
         ],
     ),
     (
-        "文件",
+        CAT_FILES,
         &[
-            "创建",
-            "建立",
-            "生成",
-            "文档",
-            "文件",
-            "目录",
-            "整理",
-            "改名",
-            "删除",
-            "编辑",
-            "新建",
-            "写入",
-            "保存",
-            "重命名",
-            "组织",
+            "create",
+            "make ",
+            "generate",
+            "document",
+            "file",
+            "folder",
+            "directory",
+            "tidy",
+            "organis",
+            "organiz",
+            "rename",
+            "delete",
+            "remove",
+            "edit",
+            "write",
+            "save",
+            "report",
+            "markdown",
+            "csv",
+            "json",
         ],
     ),
     (
-        "网络",
+        CAT_WEB,
         &[
-            "搜索", "查", "调研", "网络", "网页", "资料", "新闻", "天气", "在线", "下载", "研究",
+            "search", "look up", "research", "web", "internet", "online", "website", "page", "url",
+            "http", "news", "weather", "download", "fetch", "latest",
         ],
     ),
-    ("记忆", &["记住", "回忆", "记忆", "存档", "之前"]),
     (
-        "MCP",
+        CAT_MEMORY,
+        &[
+            "remember",
+            "recall",
+            "memory",
+            "memorise",
+            "memorize",
+            "archive",
+            "earlier",
+            "last time",
+            "previously",
+        ],
+    ),
+    (
+        CAT_MCP,
         &[
             "mcp",
-            "外部工具",
-            "工具服务",
-            "插件",
-            "服务器",
+            "external tool",
+            "tool server",
+            "plugin",
+            "server",
             "api",
-            "数据库",
+            "database",
         ],
     ),
 ];
@@ -139,17 +180,18 @@ pub fn is_mcp_producing(name: &str) -> bool {
 /// `route_categories`: task text → categories. Code implies files; nothing matched means
 /// the wide default (files + code + web) — better too many tools than too few.
 pub fn route_categories(text: &str) -> BTreeSet<String> {
+    let low = text.to_lowercase();
     let mut cats = BTreeSet::new();
     for (cat, kws) in CAT_KEYWORDS {
-        if kws.iter().any(|k| text.contains(k)) {
+        if kws.iter().any(|k| low.contains(k)) {
             cats.insert(cat.to_string());
         }
     }
-    if cats.contains("代码") {
-        cats.insert("文件".to_string());
+    if cats.contains(CAT_CODE) {
+        cats.insert(CAT_FILES.to_string());
     }
     if cats.is_empty() {
-        for c in ["文件", "代码", "网络"] {
+        for c in [CAT_FILES, CAT_CODE, CAT_WEB] {
             cats.insert(c.to_string());
         }
     }

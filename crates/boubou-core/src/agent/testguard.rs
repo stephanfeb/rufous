@@ -49,7 +49,7 @@ pub fn pytest_hint(output: &str) -> String {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        hint.push(format!("位于 {}:{}", base, &c[2]));
+        hint.push(format!("at {}:{}", base, &c[2]));
     }
     if let Some(l) = lines.iter().find(|l| l.starts_with("E ")) {
         hint.push(crate::text::head(l[2..].trim(), 160).to_string());
@@ -84,7 +84,8 @@ pub fn run_test_guard(workdir: &Path) -> (TestVerdict, String) {
     if pr.timed_out {
         return (
             TestVerdict::Fail,
-            "pytest 超时(>300s,可能有死循环或等待输入的测试)".to_string(),
+            "pytest timed out (>300s; possibly an infinite loop or a test waiting for input)"
+                .to_string(),
         );
     }
     let out = merged(&pr);
@@ -95,7 +96,7 @@ pub fn run_test_guard(workdir: &Path) -> (TestVerdict, String) {
             timeout,
         );
         if pr.timed_out {
-            return (TestVerdict::Fail, "unittest 超时(>300s)".to_string());
+            return (TestVerdict::Fail, "unittest timed out (>300s)".to_string());
         }
         let out = merged(&pr);
         if env_broken(&pr, &out) {

@@ -1,10 +1,10 @@
 ---
 name: bug_fix
-description: 系统化排错:复现→定位→最小修复→验证
+description: Systematic debugging: reproduce -> locate -> minimal fix -> verify
 ---
-# 排查 bug 流程
-1. 复现:给出最小复现输入,确认错误确实发生
-2. 定位:用日志/二分/隔离找到出错的确切代码行与根因
-3. 修复:做最小改动,不要顺手重构无关代码
-4. 验证:重跑原复现输入 + 相关测试,确认修复且没破坏别的
-5. 若修复无效,回到步骤2换思路,不要重复同一种修法
+# Bug-fixing process
+1. Reproduce: produce a minimal reproducing input and confirm the error really occurs
+2. Locate: use logging / bisection / isolation to find the exact failing line and the root cause
+3. Fix: make the smallest change; do not refactor unrelated code while you are there
+4. Verify: rerun the original reproducing input plus the related tests; confirm the fix and that nothing else broke
+5. If the fix does not work, go back to step 2 and try a different idea; do not repeat the same kind of fix

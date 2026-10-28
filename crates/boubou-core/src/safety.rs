@@ -372,7 +372,7 @@ fn ask(
         return (
             false,
             false,
-            format!("[安全门拦截: 无人值守模式(AGENT_UNATTENDED=1)下无人在环,{action}一律拒绝。目标: {target}]"),
+            format!("[safety gate: unattended mode (AGENT_UNATTENDED=1) has nobody in the loop; {action} is always refused. Target: {target}]"),
         );
     }
     let req = ConfirmRequest {
@@ -388,7 +388,7 @@ fn ask(
             false,
             false,
             format!(
-                "[安全门拦截:路径 {target} 在工作目录之外。工作目录: {}。已拒绝。CLI 模式不允许越界访问。]",
+                "[safety gate: path {target} is outside the working directory. Working directory: {}. Refused. CLI mode does not allow out-of-bounds access.]",
                 resolve_path(workdir).display()
             ),
         ),
@@ -407,7 +407,7 @@ pub fn risk_classify(
             return None;
         }
         if policy.unattended {
-            return Some("[安全垫:检测到卸载/移除软件包,无人值守模式下默认拒绝(防小模型冲动卸载依赖)。确需卸载:设置 AGENT_ALLOW_ENV_MUTATION=1 后重试。]".into());
+            return Some("[safety net: package uninstall/removal detected; refused by default in unattended mode (stops a small model impulsively removing dependencies). If you really must uninstall, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into());
         }
         let (allow, _, msg) = ask(
             policy,
@@ -415,13 +415,13 @@ pub fn risk_classify(
             "run_bash",
             format!("uninstall: {}", head(cmd, 60)),
             workdir,
-            "卸载软件包",
+            "uninstall a package",
         );
         return if allow {
             None
         } else {
             Some(if msg.is_empty() {
-                "[安全垫:卸载操作被拒绝]".into()
+                "[safety net: uninstall refused]".into()
             } else {
                 msg
             })
@@ -432,7 +432,7 @@ pub fn risk_classify(
             return None;
         }
         if policy.unattended {
-            return Some("[安全垫:检测到系统环境变更(setx/计划任务/服务删除/注册表写入),无人值守模式下默认拒绝。确需执行:设置 AGENT_ALLOW_ENV_MUTATION=1 后重试。]".into());
+            return Some("[safety net: system-environment change detected (setx / scheduled task / service removal / registry write); refused by default in unattended mode. If you really must, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into());
         }
         let (allow, _, msg) = ask(
             policy,
@@ -440,13 +440,13 @@ pub fn risk_classify(
             "run_bash",
             format!("env-mutate: {}", head(cmd, 60)),
             workdir,
-            "修改系统环境",
+            "change the system environment",
         );
         return if allow {
             None
         } else {
             Some(if msg.is_empty() {
-                "[安全垫:系统环境变更被拒绝]".into()
+                "[safety net: system-environment change refused]".into()
             } else {
                 msg
             })
@@ -456,14 +456,14 @@ pub fn risk_classify(
         let targets = delete_targets(cmd);
         if targets.is_empty() {
             return Some(
-                "[安全垫:递归删除命令无法解析出明确目标,已拒绝。请给出明确的目标路径。]".into(),
+                "[safety net: could not work out a definite target for this recursive delete; refused. Give an explicit target path.]".into(),
             );
         }
         for t in targets {
             let (_, inside) = safe_path(workdir, &t, &policy.allow_dirs);
             if !inside {
                 return Some(format!(
-                    "[安全垫:递归删除目标 '{}' 在工作目录之外,已拒绝。工作目录内的递归删除不受限;目录外文件请用 delete_file 逐个处理。]",
+                    "[safety net: recursive-delete target '{}' is outside the working directory; refused. Recursive deletes inside the working directory are unrestricted; for files outside it use delete_file one at a time.]",
                     head(&t, 60)
                 ));
             }
@@ -474,7 +474,7 @@ pub fn risk_classify(
         let (_, inside) = safe_path(workdir, target, &policy.allow_dirs);
         if !inside {
             return Some(format!(
-                "[安全垫: find -delete 的目标 '{}' 在工作目录之外,已拒绝。工作目录内的 find -delete 不受限。]",
+                "[safety net: the find -delete target '{}' is outside the working directory; refused. find -delete inside the working directory is unrestricted.]",
                 head(target, 60)
             ));
         }
@@ -529,13 +529,13 @@ impl Gate {
             let low = command.to_lowercase();
             if DANGER_CMD.iter().any(|d| low.contains(d)) {
                 return Some(format!(
-                    "[安全门拦截:命令含危险操作,已拒绝执行。原命令: {}]",
+                    "[safety gate: the command contains a dangerous operation; refused. Original command: {}]",
                     head(command, 80)
                 ));
             }
             if low.contains("powershell") && PS_HIGH_RISK.iter().any(|p| low.contains(p)) {
                 return Some(format!(
-                    "[安全门拦截:powershell 命令含高危操作(下载执行/脚本注入/提权),已拒绝。原命令: {}]",
+                    "[safety gate: the powershell command contains a high-risk operation (download-and-execute / script injection / privilege escalation); refused. Original command: {}]",
                     head(command, 80)
                 ));
             }
@@ -553,7 +553,7 @@ impl Gate {
                     name,
                     format!("bash: {}", head(command, 60)),
                     workdir,
-                    "执行命令",
+                    "run a command",
                 );
                 if allow {
                     if allok {
@@ -563,7 +563,7 @@ impl Gate {
                 }
                 return Some(if msg.is_empty() {
                     format!(
-                        "[安全门拦截:命令疑似访问工作目录之外,已拒绝。原命令: {}]",
+                        "[safety gate: the command appears to access paths outside the working directory; refused. Original command: {}]",
                         head(command, 80)
                     )
                 } else {
@@ -585,7 +585,7 @@ impl Gate {
                         name,
                         real.display().to_string(),
                         workdir,
-                        "访问",
+                        "access",
                     );
                     if allow {
                         if allok {
@@ -601,7 +601,7 @@ impl Gate {
                     }
                     return Some(if msg.is_empty() {
                         format!(
-                            "[安全门拦截:路径 {} 在工作目录之外。工作目录: {}。已拒绝。若确需访问,请在 GUI 弹窗确认。]",
+                            "[safety gate: path {} is outside the working directory. Working directory: {}. Refused. If access is really needed, confirm it in the GUI prompt.]",
                             real.display(),
                             resolve_path(workdir).display()
                         )
@@ -612,7 +612,7 @@ impl Gate {
                 if is_sensitive_path(&real) {
                     if WRITE_TOOLS.contains(&name) {
                         return Some(format!(
-                            "[安全门拦截:路径 {} 命中敏感模式,写操作一律拒绝。]",
+                            "[safety gate: path {} matches a sensitive pattern; writes are always refused.]",
                             real.display()
                         ));
                     }
@@ -622,7 +622,7 @@ impl Gate {
                         name,
                         real.display().to_string(),
                         workdir,
-                        "读取敏感文件",
+                        "read a sensitive file",
                     );
                     if allow {
                         if allok {
@@ -638,7 +638,7 @@ impl Gate {
                     }
                     return Some(if msg.is_empty() {
                         format!(
-                            "[安全门拦截:路径 {} 命中敏感模式,已拒绝读取。]",
+                            "[safety gate: path {} matches a sensitive pattern; read refused.]",
                             real.display()
                         )
                     } else {
@@ -652,7 +652,7 @@ impl Gate {
                 let p = format!("{path}\\").to_lowercase();
                 if SYSTEM_DIRS.iter().any(|d| p.contains(d)) {
                     return Some(format!(
-                        "[安全门拦截:目标路径含系统目录,已拒绝。路径: {}]",
+                        "[safety gate: the target path contains a system directory; refused. Path: {}]",
                         head(path, 80)
                     ));
                 }

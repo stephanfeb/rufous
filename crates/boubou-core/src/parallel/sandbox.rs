@@ -132,75 +132,99 @@ pub fn default_dangerous_commands() -> Vec<CommandRule> {
     use CommandRule as R;
     vec![
         // VMs / subsystems (highest risk)
-        R::severe(r"wsl\s+--unregister", "wsl --unregister 删除整个发行版"),
-        R::severe(r"wsl\s+--import", "wsl --import 覆盖发行版"),
-        R::severe(r"wsl\s+--unmount", "卸载 wsl 虚拟磁盘"),
+        R::severe(
+            r"wsl\s+--unregister",
+            "wsl --unregister deletes a whole distribution",
+        ),
+        R::severe(r"wsl\s+--import", "wsl --import overwrites a distribution"),
+        R::severe(r"wsl\s+--unmount", "unmounts a wsl virtual disk"),
         R::deny(
             r"wsl\s+--manage.*--set-sparse|wsl\s+--export",
-            "wsl 管理/导出",
+            "wsl management/export",
         ),
-        R::deny(r"\bwsl\b", "子 agent 不应触碰 wsl/虚拟机子系统"),
-        R::severe(r"\bdiskpart\b", "磁盘分区工具"),
-        R::severe(r"\bformat(\s|\.com)", "格式化驱动器"),
-        R::severe(r"cipher\s+/w", "cipher /w 抹除空闲空间"),
-        R::severe(r"\bbcdedit\b", "启动配置"),
-        R::severe(r"vssadmin\s+delete", "删除卷影副本"),
-        R::severe(r"\bwmic\s+.*(delete|shadowcopy)", "wmic 删除操作"),
-        R::severe(r"\bdism\b", "系统映像服务"),
-        R::deny(r"\bsfc\b", "系统文件检查"),
+        R::deny(
+            r"\bwsl\b",
+            "a sub-agent should not touch wsl / the VM subsystem",
+        ),
+        R::severe(r"\bdiskpart\b", "disk partitioning tool"),
+        R::severe(r"\bformat(\s|\.com)", "formats a drive"),
+        R::severe(r"cipher\s+/w", "cipher /w wipes free space"),
+        R::severe(r"\bbcdedit\b", "boot configuration"),
+        R::severe(r"vssadmin\s+delete", "deletes shadow copies"),
+        R::severe(r"\bwmic\s+.*(delete|shadowcopy)", "wmic delete operation"),
+        R::severe(r"\bdism\b", "system image servicing"),
+        R::deny(r"\bsfc\b", "system file checker"),
         // recursive / forced deletion
-        R::severe(r"\brd\s+/s", "rd /s 递归删目录"),
-        R::severe(r"\bdel\s+(/f|/s|/q)", "del 强制/递归删除"),
-        R::severe(r"remove-item\b.*(-recurse|-force)", "PowerShell 递归强删"),
+        R::severe(r"\brd\s+/s", "rd /s deletes a directory tree"),
+        R::severe(r"\bdel\s+(/f|/s|/q)", "del forced/recursive delete"),
+        R::severe(
+            r"remove-item\b.*(-recurse|-force)",
+            "PowerShell recursive forced delete",
+        ),
         R::severe(
             r"\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-[a-z]*r|-\-recursive)",
-            "rm 递归删除",
+            "rm recursive delete",
         ),
-        R::severe(r"\brm\s+-[a-z]*f", "rm 强制删除"),
-        R::severe(r"-delete\b", "find -delete 递归删除"),
-        R::severe(r"(^|\s)dd\s+", "dd 裸写设备"),
-        R::severe(r"\bmkfs", "建文件系统"),
-        R::severe(r"robocopy\b.*(/mir|/purge|/mov)", "robocopy 镜像/清除"),
-        R::deny(r"\bxcopy\b.*(/y|/q)", "xcopy 覆盖复制"),
+        R::severe(r"\brm\s+-[a-z]*f", "rm forced delete"),
+        R::severe(r"-delete\b", "find -delete recursive delete"),
+        R::severe(r"(^|\s)dd\s+", "dd raw device write"),
+        R::severe(r"\bmkfs", "creates a file system"),
+        R::severe(r"robocopy\b.*(/mir|/purge|/mov)", "robocopy mirror/purge"),
+        R::deny(r"\bxcopy\b.*(/y|/q)", "xcopy overwriting copy"),
         // registry / services / network
         R::severe(
             r"\breg(\.exe)?\s+(add|delete|import|restore|load|unload|save|export)",
-            "注册表写入/删除",
+            "registry write/delete",
         ),
-        R::deny(r"\breg(\.exe)?\s+query", "注册表读取"),
-        R::severe(r"\bsc(\.exe)?\s+(create|delete|config|stop)", "服务管理"),
-        R::severe(r"\bschtasks\b", "计划任务(持久化)"),
-        R::severe(r"\bnetsh\b", "网络栈配置"),
-        R::severe(r"\bnet\s+(user|localgroup|share)\b", "用户/共享管理"),
-        R::severe(r"\bshutdown\b", "关机"),
-        R::deny(r"\btaskkill\b", "杀进程"),
-        R::severe(r"\bbcdboot\b|\breagentc\b|\bsetx\b", "系统级配置"),
-        R::severe(r"\bmklink\b", "符号链接(可指向系统路径)"),
-        R::deny(r"\b attrib\s*\+s|\b attrib\s*\+h", "隐藏/系统属性"),
+        R::deny(r"\breg(\.exe)?\s+query", "registry read"),
+        R::severe(
+            r"\bsc(\.exe)?\s+(create|delete|config|stop)",
+            "service management",
+        ),
+        R::severe(r"\bschtasks\b", "scheduled task (persistence)"),
+        R::severe(r"\bnetsh\b", "network stack configuration"),
+        R::severe(
+            r"\bnet\s+(user|localgroup|share)\b",
+            "user/share management",
+        ),
+        R::severe(r"\bshutdown\b", "shutdown"),
+        R::deny(r"\btaskkill\b", "kills processes"),
+        R::severe(
+            r"\bbcdboot\b|\breagentc\b|\bsetx\b",
+            "system-level configuration",
+        ),
+        R::severe(r"\bmklink\b", "symbolic link (can point at system paths)"),
+        R::deny(
+            r"\b attrib\s*\+s|\b attrib\s*\+h",
+            "hidden/system attributes",
+        ),
         // remote / download-and-execute
         R::severe(
             r"(curl|wget|invoke-webrequest|invoke-restmethod|iex|invoke-expression|irm)\b.*(\|\s*(bash|sh|powershell|iex))",
-            "下载并执行",
+            "download and execute",
         ),
-        R::deny(r"(curl|wget)\b", "子 agent 无网络需求"),
+        R::deny(r"(curl|wget)\b", "a sub-agent has no need for the network"),
         R::deny(
             r"\bpip\s+install|\bnpm\s+install|\bnpx\b",
-            "安装依赖不在子 agent 职责内",
+            "installing dependencies is not a sub-agent's job",
         ),
         // privilege escalation
         R::severe(
             r"\bsudo\b|\brunas\b|\bstart-process\b.*-verb\s+runas",
-            "提权",
+            "privilege escalation",
         ),
-        R::severe(r"\btakeown\b|\bicacls\b|\bcacls\b", "改所有权/ACL"),
+        R::severe(
+            r"\btakeown\b|\bicacls\b|\bcacls\b",
+            "changes ownership/ACLs",
+        ),
         // POSIX equivalents
         R::severe(
             r"\bchmod\s+(-r|--recursive)\b|\bchown\s+(-r|--recursive)\b",
-            "递归改权限/所有者",
+            "recursive permission/owner change",
         ),
         R::severe(
             r"\blaunchctl\s+(remove|disable|unload)\b|\bsystemctl\s+(stop|disable|mask)\b",
-            "系统服务",
+            "system services",
         ),
     ]
 }
@@ -559,7 +583,7 @@ impl ChildSandbox {
         Some((
             v,
             format!(
-                "tool_not_allowed(子 agent 工具面已收窄,只有 {:?}; {name} 不可用,也不要尝试绕道)",
+                "tool_not_allowed(the sub-agent tool face is narrowed to {:?}; {name} is unavailable, do not try to work around it)",
                 self.allowed_tools_sorted()
             ),
         ))
@@ -585,7 +609,7 @@ impl ChildSandbox {
                 verdict,
                 real,
                 format!(
-                    "{why}outside_workdir(workdir 之外一律拒绝{})",
+                    "{why}outside_workdir(anything outside the workdir is refused{})",
                     action.as_str()
                 ),
             );
@@ -594,7 +618,7 @@ impl ChildSandbox {
             return (
                 ChildVerdict::Severe,
                 real,
-                "workdir_misconfigured_into_system_area(写拒绝)".to_string(),
+                "workdir_misconfigured_into_system_area(write refused)".to_string(),
             );
         }
         if let Some(hit) = match_sensitive(&norm, &self.sensitive) {
@@ -602,7 +626,7 @@ impl ChildSandbox {
                 return (
                     ChildVerdict::Severe,
                     real,
-                    format!("sensitive_path({hit}) 写敏感路径"),
+                    format!("sensitive_path({hit}) write to a sensitive path"),
                 );
             }
             let allowed = self.read_allow.iter().any(|a| {
@@ -615,7 +639,7 @@ impl ChildSandbox {
             return (
                 ChildVerdict::Deny,
                 real,
-                format!("sensitive_path({hit}) 读敏感路径(无白名单)"),
+                format!("sensitive_path({hit}) read of a sensitive path (no allow-list)"),
             );
         }
         (ChildVerdict::Allow, real, String::new())

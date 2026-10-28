@@ -41,7 +41,7 @@ use crate::{text, Error, Result};
 
 /// `_FAIL_MARKERS`: a tool result that means "the action did not happen". Safety-ring
 /// refusals count too, otherwise a model that keeps changing paths never hits the ladder.
-pub const FAIL_MARKERS: [&str; 27] = [
+pub const FAIL_MARKERS: [&str; 24] = [
     "[edit failed",
     "[tool error",
     "[not found",
@@ -59,16 +59,13 @@ pub const FAIL_MARKERS: [&str; 27] = [
     "did not match",
     "fatal:",
     "unknown option",
-    "[安全门拦截",
-    "[安全垫",
-    "[安全门:",
-    "[子agent安全门拦截",
-    "[覆盖防护",
+    "[safety gate",
+    "[safety net",
+    "[child safety gate",
+    "[overwrite guard",
     "[edit failed:",
     "[tool error:",
     "[not found:",
-    "[安全门",
-    "[覆盖防护:",
 ];
 
 /// `_is_tool_error`: marker scan over the first 200 chars, case-insensitive.
@@ -80,16 +77,23 @@ pub fn is_tool_error(res: &str) -> bool {
 const CONTINUE_NOTE: &str =
     "Continue: keep making real progress with tools, or call finish only when fully verified/answered.";
 
-/// Prefix of the loop's own missing-argument notes, so pruning can recognise them.
-const MISSING_ARG_NOTE_MARK: &str = "⚠️ [参数缺失] ";
+/// How many recent text-only outputs the repeat detector compares against.
+const TEXT_WINDOW: usize = 4;
+/// The text-only task turn that draws the sharper "tool call or finish" note (once).
+const TALK_SHARP_NOTE: usize = 2;
+/// Consecutive text-only task turns after which the turn is ended.
+const TALK_FORCE_END: usize = 4;
 
-/// `'key'` named in an executor missing-argument error (`[tool error: X 缺少参数 'key'。…`).
+/// Prefix of the loop's own missing-argument notes, so pruning can recognise them.
+const MISSING_ARG_NOTE_MARK: &str = "⚠️ [missing argument] ";
+
+/// `'key'` named in an executor missing-argument error (`[tool error: X is missing argument 'key'. …`).
 pub fn missing_arg_key(res: &str) -> Option<&str> {
     let head = text::head(res, 200);
     if !head.starts_with("[tool error:") {
         return None;
     }
-    let after = head.split("缺少参数 '").nth(1)?;
+    let after = head.split("is missing argument '").nth(1)?;
     let key = after.split('\'').next()?;
     (!key.is_empty()).then_some(key)
 }
@@ -146,13 +150,12 @@ fn prune_missing_arg_calls(messages: &mut Vec<Message>, tool: &str, key: &str) -
     removed
 }
 
-const CTX_OVERFLOW_KEYS: [&str; 7] = [
+const CTX_OVERFLOW_KEYS: [&str; 6] = [
     "prompt is too long",
     "too long",
     "exceeds context",
     "context length",
     "input is too long",
-    "超过上下文",
     "context window",
 ];
 
@@ -201,7 +204,7 @@ impl ToolRunner for Executor {
 pub fn ws_note(workdir: &Path) -> String {
     let abs = std::path::absolute(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     format!(
-        "你的工作目录(绝对路径)是 {};所有产物必须写在这个目录内,优先用相对路径(如 create_file(path=\"options.md\"))。",
+        "Your working directory (absolute path) is {}. Every output must be written inside it; prefer relative paths (e.g. create_file(path=\"options.md\")).",
         abs.display()
     )
 }
@@ -257,7 +260,7 @@ pub struct Agent<B, T> {
     /// `_maybe_parallel_dispatch`: set by [`Agent::standard`] (or `with_parallel`); `None`
     /// means the hook is absent (tests, embedding).
     pub parallel: Option<DispatchHook>,
-    /// Human-readable engine label (`Ollama · host`, `cloud · model`, `OpenAI 兼容 · url`).
+    /// Human-readable engine label (`Ollama · host`, `cloud · model`, `OpenAI-compatible · url`).
     pub engine: String,
 }
 
@@ -283,7 +286,7 @@ impl Agent<DynBackend, Executor> {
             let label = format!("cloud · {} ({})", cp.model, cp.base_url);
             (Box::new(OpenAiBackend::cloud(&cp, &params)?), label)
         } else if let Some(eng) = cfg.backend_openai() {
-            let label = format!("OpenAI 兼容 · {}", eng.base_url);
+            let label = format!("OpenAI-compatible · {}", eng.base_url);
             (Box::new(OpenAiBackend::local(&eng, &params)?), label)
         } else {
             let b = super::OllamaBackend::new(host.clone(), &params)?
@@ -364,7 +367,6 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             workdir: Some(&self.params.workdir),
             system_file: self.params.system_file.as_deref(),
             unattended: self.params.unattended,
-            lang_en: self.params.lang_en,
         };
         vec![
             Message::system(prompt::system_prompt(&opts)),
@@ -445,8 +447,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut test_guard_warns = 0;
         let mut casual_warns = 0;
         let mut casual_force = false;
-        let mut last_text = String::new();
+        // Recent text-only outputs (newest last, at most TEXT_WINDOW): a repeat is a new
+        // text resembling any of them, so A/B/C cycles count, not only A/A.
+        let mut recent_texts: Vec<String> = Vec::new();
         let mut repeat_count = 0;
+        // Consecutive non-empty text-only turns in task mode (no tool call at all).
+        let mut talk_streak = 0;
         let mut compact_lvl: u8 = 0;
         let mut todo_stale = 0;
         let mut todo_nudge_warns = 0;
@@ -455,7 +461,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
         if child {
             log!(
-                "[child-mode] 沙箱已装:工具={:?} workdir={}",
+                "[child-mode] sandbox installed: tools={:?} workdir={}",
                 face.active,
                 workdir.display()
             );
@@ -465,7 +471,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // Q&A path would swap out the sandbox prompt and drop the producing tools.
         let qa = !child && qa::is_qa(&messages, qa::has_task_progress(&messages));
         let cats: Option<BTreeSet<String>> = if qa {
-            let cs = prompt::chat_system(Some(workdir), params.lang_en);
+            let cs = prompt::chat_system(Some(workdir));
             let mut m = vec![Message::system(cs)];
             m.extend(messages.into_iter().filter(|m| m.role != Role::System));
             messages = m;
@@ -505,7 +511,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         };
         if prev_elapsed > 0.0 {
             log!(
-                "[budget: 续接已用时 {:.0}min / 预算 {:.0}min]",
+                "[budget: resumed with {:.0}min used / {:.0}min budget]",
                 prev_elapsed / 60.0,
                 budget_total / 60.0
             );
@@ -516,13 +522,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         for i in 0..params.max_iterations {
             transcript.flush(sessions_dir, session, &messages);
             if stop.load(Ordering::Relaxed) {
-                log!("[stopped] 用户中止");
+                log!("[stopped] cancelled by user");
                 exhausted = false;
                 break;
             }
             if casual_force {
-                log!("[收尾] 本轮已足够,强制结束(防问答重复/死循环)");
-                messages.push(Message::tool_output("[TASK_COMPLETE] 已回答,结束本轮"));
+                log!("[wrap-up] this turn is sufficient, forcing an end (Q&A repetition / dead-loop guard)");
+                messages.push(Message::tool_output(
+                    "[TASK_COMPLETE] answered, ending this turn",
+                ));
                 exhausted = false;
                 break;
             }
@@ -560,11 +568,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     backend, model, messages, level, todo, files, transcript, sink,
                 );
                 compact_lvl = level;
-                log!("[{i}] 事前估算 {est:.0} token 超限,已压缩(L{level})");
+                log!("[{i}] pre-flight estimate {est:.0} tokens over the limit, compacted (L{level})");
             }
             let n_img = attach_pending_images(&mut messages, workdir);
             if n_img > 0 {
-                log!("[{i}] 🖼 已附载 {n_img} 张图片(多模态输入)");
+                log!("[{i}] 🖼 attached {n_img} image(s) (multimodal input)");
             }
 
             let r = match backend.chat(model, &messages, &ct, &mut |p| match p {
@@ -577,7 +585,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
                 Err(e) => {
                     if stop.load(Ordering::Relaxed) {
-                        log!("[stopped] 用户中止(流中断)");
+                        log!("[stopped] cancelled by user (stream interrupted)");
                         dedupe_trailing_assistant(&mut messages);
                         save!();
                         return Ok(messages);
@@ -591,7 +599,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             let before = messages.len();
                             dedupe_trailing_assistant(&mut messages);
                             if messages.len() != before {
-                                log!("[{i}] 修复对话结构(连续 assistant),已清理重试");
+                                log!("[{i}] repaired conversation structure (consecutive assistant turns), cleaned up and retrying");
                                 fails += 1;
                                 if fails >= 6 {
                                     save!();
@@ -601,12 +609,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 continue;
                             }
                         }
-                        log!("[{i}] API 4xx 错误(重试无意义,已停止): {e}");
+                        log!("[{i}] API 4xx error (retrying is pointless, stopped): {e}");
                         save!();
                         return Err(Error::Ollama(e.to_string()));
                     }
                     if CTX_OVERFLOW_KEYS.iter().any(|k| low.contains(k)) {
-                        log!("[{i}] ⚠️ 上下文超限错误 → 强制 L3 压缩后重试");
+                        log!(
+                            "[{i}] ⚠️ context-overflow error → forcing L3 compaction and retrying"
+                        );
                         let todo = plan_note(qa, workdir);
                         let files = Some(workdir_files_text(workdir, 30));
                         messages =
@@ -626,19 +636,19 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             Some(ok) => {
                                 restarts += 1;
                                 log!(
-                                    "[{i}] 连续 {fails} 次 500 → 判定 ollama 进程退化,自动重启(第 {restarts}/3 次)..."
+                                    "[{i}] {fails} consecutive 500s → ollama process judged degraded, restarting automatically ({restarts}/3)..."
                                 );
                                 if ok {
-                                    log!("[{i}] ✓ ollama 已重启,继续任务");
+                                    log!("[{i}] ✓ ollama restarted, resuming the task");
                                 } else {
-                                    log!("[{i}] ⚠ ollama 重启未就绪,仍继续重试");
+                                    log!("[{i}] ⚠ ollama not ready after restart, still retrying");
                                 }
                                 fails = 0;
                                 nap(3, params.sleep_scale);
                                 continue;
                             }
                             None => {
-                                log!("[{i}] 连续 {fails} 次 500(当前引擎不可由本程序重启,继续压缩重试)");
+                                log!("[{i}] {fails} consecutive 500s (this engine cannot be restarted by Boubou; compacting and retrying)");
                             }
                         }
                     }
@@ -651,7 +661,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             messages = compact(
                                 backend, model, messages, lvl, todo, files, transcript, sink,
                             );
-                            log!("[{i}] 500 错误,已降级压缩上下文(L{lvl})再重试");
+                            log!("[{i}] 500 error, compacted the context (L{lvl}) and retrying");
                         }
                         let last_user_is_note = messages
                             .iter()
@@ -660,9 +670,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             .is_some_and(|m| m.content.starts_with("⚠️"));
                         if !last_user_is_note {
                             messages.push(Message::user(
-                                "⚠️ 系统提示:上一请求遇到服务错误。请基于当前已有进度继续完成任务,可以从换一种写法或先做下一步开始。",
+                                "⚠️ System note: the previous request hit a server error. Carry on from the progress you already have; try a different formulation or move on to the next step.",
                             ));
-                            log!("[{i}] 500 错误,已注入继续提示(打破死循环路径)");
+                            log!("[{i}] 500 error, injected a continue note (breaks the dead-loop path)");
                         }
                         nap(2, params.sleep_scale);
                         continue;
@@ -671,7 +681,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     log!("[{i}] API error: {e} (retry {fails}, wait {wait}s)");
                     nap(wait, params.sleep_scale);
                     if fails >= 8 {
-                        log!("===== FAILED: ollama 连续错误(含重启后仍失败),已停止。修复后勾选'续跑'可从中断处继续 =====");
+                        log!("===== FAILED: repeated ollama errors (still failing after restart), stopped. Fix the engine and resume to continue from the checkpoint =====");
                         save!();
                         return Err(Error::Ollama(e.to_string()));
                     }
@@ -720,7 +730,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 && tcs.is_empty()
             {
                 log!(
-                    "[{i}] ⚠️ done_reason=length 且无正文无调用(eval={:?})——疑似生成预算被烧尽",
+                    "[{i}] ⚠️ done_reason=length with no text and no calls (eval={:?}): the generation budget was probably burnt",
                     r.eval_count
                 );
                 len_truncated = true;
@@ -728,7 +738,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             if let Some(th) = r.message.thinking.as_deref().filter(|t| !t.is_empty()) {
                 if tcs.is_empty() && guards::semantically_empty(&content) {
                     log!(
-                        "[{i}] 💭 thinking {} 字符、正文为空。摘录: {}",
+                        "[{i}] 💭 thinking {} chars, empty body. Excerpt: {}",
                         text::clen(th),
                         text::head(th, 600)
                     );
@@ -738,7 +748,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 // Format leak salvage: the model wrote the call as text.
                 if let Some(salvaged) = leak::try_parse_tool_calls(&content) {
                     let names: Vec<&str> = salvaged.iter().map(|(n, _)| n.as_str()).collect();
-                    log!("[{i}] ⚡ 抢救到文本工具调用: {}", names.join(", "));
+                    log!(
+                        "[{i}] ⚡ salvaged tool call(s) from text: {}",
+                        names.join(", ")
+                    );
                     tcs = salvaged
                         .into_iter()
                         .map(|(name, args)| ToolCall {
@@ -753,7 +766,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             for tc in &mut tcs {
                 let n = resolve_alias(&tc.function.name);
                 if n != tc.function.name {
-                    log!("[{i}] ⚡ 别名映射: {} -> {}", tc.function.name, n);
+                    log!("[{i}] ⚡ alias mapped: {} -> {}", tc.function.name, n);
                     tc.function.name = n.to_string();
                 }
             }
@@ -788,7 +801,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         // Truncation debris: the model is not idle, one shot cannot hold it.
                         len_truncated = false;
                         messages.push(Message::user(format!(
-                            "⚠️ 你的上一轮输出触到生成 token 上限({})被截断,没有产生有效工具调用。大内容请分块交付:先用 create_file 写文件骨架或开头部分,再用 append_file 逐段追加(每次几百行以内);或者精简实现。不要试图一次输出完整的大文件。",
+                            "⚠️ Your previous output hit the generation token limit ({}) and was truncated without producing a valid tool call. Deliver large content in chunks: write the skeleton or opening part with create_file, then add the rest with append_file in pieces of a few hundred lines at most; or simplify the implementation. Do not try to output a whole large file in one go.",
                             params.num_predict
                         )));
                         continue;
@@ -805,16 +818,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages = vec![
                             head,
                             Message::user(format!(
-                                "{task0}\n\n⚠️ [系统] 连续多次空输出,上下文已重置。当前进度快照:\n计划:\n{}\n工作目录已有文件:\n{files}\n请从第一个未完成的步骤继续,立即用工具推进,不要输出空文本。",
+                                "{task0}\n\n⚠️ [system] Several consecutive empty outputs; the context has been reset. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{files}\nContinue from the first unfinished step and make progress with tools immediately. Do not output empty text.",
                                 load_todo_str(workdir)
                             )),
                         ];
-                        log!("[{i}] ⚠️ 连续空轮×6,硬复位上下文(第 {empty_resets}/3 次,累计空轮 {empty_total})");
+                        log!("[{i}] ⚠️ 6 consecutive empty turns, hard-resetting the context ({empty_resets}/3, {empty_total} empty turns in total)");
                         transcript.mark_compacted();
                         continue;
                     }
                     if empty_turns >= 3 && empty_resets >= 3 {
-                        log!("[{i}] 累计 {empty_total} 个空轮且 3 次复位无效,优雅退出");
+                        log!("[{i}] {empty_total} empty turns in total and 3 resets had no effect; exiting gracefully");
                         save!();
                         return Err(Error::Aborted(format!(
                             "{empty_total} empty turns after 3 context resets"
@@ -822,31 +835,49 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                     if empty_turns == 3 {
                         messages.push(Message::user(
-                            "⚠️ 你连续输出了空文本。立即调用工具做实际工作:read_file 读文件 / run_bash 运行命令 / create_file 写文件。不要输出空文本。",
+                            "⚠️ You have output empty text repeatedly. Call a tool and do real work now: read_file to read, run_bash to run a command, create_file to write. Do not output empty text.",
                         ));
                         continue;
                     }
                 } else {
                     empty_turns = 0;
                     len_truncated = false;
-                    if !last_text.is_empty() && similar(&last_text, &content, 0.75) {
+                    talk_streak += 1;
+                    let repeated = recent_texts.iter().any(|t| similar(t, &content, 0.75));
+                    recent_texts.push(content.clone());
+                    if recent_texts.len() > TEXT_WINDOW {
+                        recent_texts.remove(0);
+                    }
+                    if repeated {
                         repeat_count += 1;
-                        log!("[{i}] ⚠️ 检测到重复输出({repeat_count})");
+                        log!("[{i}] ⚠️ repeated output detected ({repeat_count})");
                         if repeat_count >= 2 {
                             casual_force = true;
                             messages.push(Message::user(
-                                "⚠️ 你重复输出了几乎相同的内容,判定为死循环。立即调用 finish 结束本轮,不要重复。",
+                                "⚠️ You have output nearly identical content repeatedly; this counts as a dead loop. Call finish now to end this turn. Do not repeat yourself.",
                             ));
                         } else {
                             messages.push(Message::user(CONTINUE_NOTE));
                         }
                     } else {
-                        last_text = content.clone();
                         repeat_count = 0;
-                        if qa {
+                        if qa || params.chat_mode {
+                            // A conversational reply is the answer: end the turn.
                             casual_force = true;
                             messages.push(Message::user(
-                                "回答已经足够,用户是在问答。立即调用 finish 结束本轮,不要重复输出。",
+                                "Your answer is already sufficient; the user is asking a question, not setting a task. Call finish now to end this turn. Do not repeat the output.",
+                            ));
+                        } else if talk_streak >= TALK_FORCE_END {
+                            // The model is talking, not working: bound the loop instead of
+                            // nagging until max_iterations.
+                            log!("[{i}] ⚠️ {talk_streak} consecutive text-only turns with no tool call; ending the turn");
+                            casual_force = true;
+                            messages.push(Message::user(
+                                "⚠️ You have replied in text several times without calling a tool. The turn ends here; your earlier text stands as the answer.",
+                            ));
+                        } else if talk_streak == TALK_SHARP_NOTE {
+                            messages.push(Message::user(
+                                "⚠️ You have replied in text without calling any tool. Reply with a tool call (create_file / run_bash / read_file …) to do the work, or call finish(summary=your answer) if the text already answers the user. Do not reply with more text.",
                             ));
                         } else {
                             messages.push(Message::user(CONTINUE_NOTE));
@@ -857,6 +888,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             }
 
             // ---- tool calls ----
+            talk_streak = 0;
             for tc in &tcs {
                 let name = tc.function.name.clone();
                 let args = args_map(&tc.function.arguments);
@@ -882,24 +914,24 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages = vec![
                             head,
                             Message::user(format!(
-                                "{task0}\n\n⚠️ [系统] 上下文已重置:工具 {name} 已被禁用,再次调用也不会执行,且不会再出现在你的工具列表里。当前进度快照:\n计划:\n{}\n工作目录已有文件:\n{}\n请立即改用 create_file 写产出文件推进任务。",
+                                "{task0}\n\n⚠️ [system] The context has been reset: the tool {name} is disabled, calling it again will not run, and it will no longer appear in your tool list. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{}\nSwitch to create_file now and write the output files to move the task forward.",
                                 load_todo_str(workdir),
                                 workdir_files_text(workdir, 30)
                             )),
                         ];
                         disabled_recall.insert(name.clone(), 0);
-                        log!("[{i}] ⚠️ {name} 被禁用后仍被调用 10 次,硬复位上下文");
+                        log!("[{i}] ⚠️ {name} called 10 times after being disabled, hard-resetting the context");
                         transcript.mark_compacted();
                         continue;
                     }
                     res = if face.is_disabled(n) {
-                        format!("[tool {name} 已被禁用(连续重复调用保护)。不要尝试用其他工具绕道读同一内容:直接用 create_file 写产出文件,或已有信息足够就调用 finish。]")
+                        format!("[tool {name} is disabled (repeated-call protection). Do not try to read the same content through another tool: write the output file with create_file, or call finish if you already have enough.]")
                     } else {
-                        format!("[工具 {name} 当前不可用(不在本次装配的工具列表里——可能本次未装配该类别,也可能这个名字并不存在)。不要发明工具名:产出文件用 create_file,改文件用 edit_file/create_file,读文件用 read_file;完整可用列表见你的工具定义。]")
+                        format!("[tool {name} is not available (not in the tool list assembled for this run: either its category was not loaded, or the name does not exist). Do not invent tool names: create_file for output files, edit_file/create_file to change files, read_file to read; the full list is in your tool definitions.]")
                     };
                     if cnt == 3 {
                         messages.push(Message::user(format!(
-                            "⚠️ 工具 {name} 已不可用(被禁用或不在装配列表)且你已多次尝试调用它。再次调用也不会执行,该工具不会再出现在你的工具列表里。现在就换动作:用 create_file 写产出文件推进,需要看已有产物就用 read_file/list_dir。"
+                            "⚠️ The tool {name} is unavailable (disabled or not assembled) and you have tried it several times. Calling it again will not run and it will no longer appear in your tool list. Change action now: write output files with create_file; use read_file/list_dir to inspect what exists."
                         )));
                     }
                 } else if let Some((_, missing)) =
@@ -909,12 +941,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // advice instead of the generic "retry with the same content".
                     truncated_call_warns += 1;
                     let res = format!(
-                        "[tool error: {name} 调用被生成 token 上限({})截断(done_reason=length, eval={}),参数不完整:缺 {missing:?}。这不是参数写错,是单次输出装不下。不要原样重发整段内容。]",
+                        "[tool error: the {name} call was truncated by the generation token limit ({}) (done_reason=length, eval={}); arguments incomplete, missing {missing:?}. The arguments were not wrong: the output did not fit in one turn. Do not resend the same content unchanged.]",
                         params.num_predict,
                         r.eval_count.map_or("?".to_string(), |v| v.to_string())
                     );
                     log!(
-                        "[{i}] ⚠️ 工具调用被截断: {name} 缺 {missing:?}(eval={:?})",
+                        "[{i}] ⚠️ tool call truncated: {name} missing {missing:?} (eval={:?})",
                         r.eval_count
                     );
                     sink(AgentEvent::ToolResult {
@@ -926,7 +958,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     messages.push(Message::tool_output(res));
                     if truncated_call_warns <= 3 {
                         messages.push(Message::user(format!(
-                            "⚠️ 你的上一轮 {name} 调用触到生成 token 上限({})被截断,后面的参数 {missing:?} 丢失了。大内容请分块交付:先用 create_file(path=\"<文件名>\", content=\"<开头部分>\") 写文件骨架或前半部分,再用 append_file(path=\"<文件名>\", content=\"<后续部分>\") 逐段追加(每次几百行以内);或者精简实现。每次调用都要先给 path 再给 content。",
+                            "⚠️ Your previous {name} call hit the generation token limit ({}) and was truncated; the trailing arguments {missing:?} were lost. Deliver large content in chunks: first create_file(path=\"<filename>\", content=\"<opening part>\") for the skeleton or first half, then append_file(path=\"<filename>\", content=\"<next part>\") piece by piece (a few hundred lines each at most); or simplify the implementation. Give path before content in every call.",
                             params.num_predict
                         )));
                     }
@@ -937,8 +969,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 {
                     // Exactly the same call as last time: the result will not change.
                     dup_warns += 1;
-                    let res = format!("[已拦截:你刚调用过完全相同的 {name}(参数一致),结果不会变。请换策略:read_file 看真实情况/换实现方式。]");
-                    log!("[{i}] ⚠️ 重复调用拦截: {name}({dup_warns})");
+                    let res = format!("[blocked: you just made this exact {name} call (identical arguments); the result will not change. Change strategy: read_file to see the real state, or try a different approach.]");
+                    log!("[{i}] ⚠️ duplicate call blocked: {name} ({dup_warns})");
                     sink(AgentEvent::ToolResult {
                         name: name.clone(),
                         args: args_v.clone(),
@@ -947,7 +979,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     });
                     messages.push(Message::tool_output(res));
                     messages.push(Message::user(
-                        "⚠️ 上一次调用被判定为重复(与此前完全一致),结果不会变。不要原样重试:先用 read_file/list_dir 确认现状,或换一种实现方式继续推进。",
+                        "⚠️ The last call was judged a duplicate (identical to an earlier one); the result will not change. Do not retry it unchanged: check the current state with read_file/list_dir first, or move forward with a different approach.",
                     ));
                     continue;
                 } else if qa && MUTATE.contains(&n) && casual_warns < 3 {
@@ -956,8 +988,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     if casual_warns >= 2 {
                         casual_force = true;
                     }
-                    let res = format!("[已拦截:用户是问答,无需 {name}。请直接用文字回答用户。]");
-                    log!("[{i}] ⚠️ 问答守护:拦截 {name}(问答消息,非任务)");
+                    let res = format!("[blocked: the user is asking a question; {name} is not needed. Answer the user directly in text.]");
+                    log!("[{i}] ⚠️ Q&A guard: blocked {name} (question, not a task)");
                     sink(AgentEvent::ToolResult {
                         name: name.clone(),
                         args: args_v.clone(),
@@ -966,7 +998,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     });
                     messages.push(Message::tool_output(res));
                     messages.push(Message::user(format!(
-                        "⚠️ 提醒(第 {casual_warns} 次):用户是在问答(问句/寒暄),不是要执行任务。你的文字回答已经足够。请【立即调用 finish(summary=你的回答)】结束本轮。不要重复输出同一段文字,不要调用任何工具。"
+                        "⚠️ Reminder ({casual_warns}): the user is asking a question or making small talk, not setting a task. Your text answer is already sufficient. CALL finish(summary=your answer) NOW to end this turn. Do not repeat the same text and do not call any tool."
                     )));
                     continue;
                 } else {
@@ -977,7 +1009,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         // ≥1 severe refusal (system-area write, irreversible command): end
                         // the child now; the dispatcher sees exit 53 and does not retry.
                         log!(
-                            "[child-mode] 严重违规熔断(exit 53): {}",
+                            "[child-mode] serious violation, circuit broken (exit 53): {}",
                             text::head(&reason, 160)
                         );
                         save!();
@@ -1035,13 +1067,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         && fake_finish_warns < 2
                     {
                         fake_finish_warns += 1;
-                        log!("[{i}] ⚠️ 拒绝假 finish:未使用任何产出型工具(create_file/edit_file/run_bash)");
+                        log!("[{i}] ⚠️ rejected a hollow finish: no producing tool used (create_file/edit_file/run_bash)");
                         messages.push(Message::user(format!(
-                            "⚠️ 你的 finish 被拒绝:你还没有做任何实际工作(未创建/修改文件或运行命令)。下一步三选一:\n1. 若最终答案/交付内容已确定:先用 create_file 把它写成文件(任务要求写 answer.txt 时就是: create_file(path=\"answer.txt\", content=\"<你的最终答案>\")),然后重新 finish。\n2. 若工作尚未完成:继续用工具推进(读写文件、运行命令、搜索),完成后再调用 finish。\n3. 若这是分析/讲解类任务、本就不该产出文件:把结论直接作为正文输出给用户(不是放在 summary 里),然后重新 finish。{}",
+                            "⚠️ Your finish was rejected: you have not done any real work yet (no file created or changed, no command run). Pick one of three next steps:\n1. If the final answer or deliverable is settled: write it to a file with create_file first (when the task asks for answer.txt that is: create_file(path=\"answer.txt\", content=\"<your final answer>\")), then finish again.\n2. If the work is not done: keep going with tools (read/write files, run commands, search) and call finish when it is complete.\n3. If this is an analysis or explanation task that should not produce files: give the conclusion to the user as body text (not inside summary), then finish again.{}",
                             ws_note(workdir)
                         )));
                         messages.push(Message::tool_output(
-                            "[finish 被拒绝:未检测到任何交付。按上面三选一行动后再 finish。]",
+                            "[finish rejected: no deliverable detected. Take one of the three actions above, then finish.]",
                         ));
                         continue;
                     }
@@ -1054,27 +1086,27 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         let (verdict, thint) = testguard::run_test_guard(workdir);
                         match verdict {
                             TestVerdict::Skip => {
-                                log!("[{i}] 测试守护跳过:环境无 pytest/python,无法自动验证测试");
+                                log!("[{i}] test guard skipped: no pytest/python in this environment, tests cannot be verified automatically");
                             }
                             TestVerdict::Fail => {
                                 test_guard_warns += 1;
                                 let h = if params.ablated("verify_feedback") {
-                                    "pytest 输出末行".to_string()
+                                    "last line of pytest output".to_string()
                                 } else {
                                     thint
                                 };
                                 let mut bak_hint = String::new();
                                 if h.contains("SyntaxError") || h.contains("IndentationError") {
                                     if let Some(b) = first_py_bak(workdir) {
-                                        bak_hint = format!("检测到语法错误。可用备份回滚:先把对应 .bak 内容恢复(如 copy {b} 覆盖原文件),或重建文件。\n");
+                                        bak_hint = format!("Syntax error detected. A backup is available to roll back: restore the matching .bak (e.g. copy {b} over the original), or rebuild the file.\n");
                                     }
                                 }
-                                log!("[{i}] ⚠️ 测试未通过,拒绝 finish(第 {test_guard_warns}/3 次,满 3 次后放行)");
+                                log!("[{i}] ⚠️ tests failing, finish rejected ({test_guard_warns}/3; let through after 3)");
                                 messages.push(Message::user(format!(
-                                    "⚠️ 你的 finish 被拒绝:目录里的测试未通过。\n精确失败: {h}\n{bak_hint}请 read_file 查看失败处代码,修复测试与实现使其一致。运行方式选环境可用的:python -m pytest -q;环境没有 pytest 就用 python -m unittest 或直接 python test_xxx.py。全绿后再 finish(第 {test_guard_warns}/3 次拒绝,满 3 次后 finish 将放行)。"
+                                    "⚠️ Your finish was rejected: the tests in the directory are failing.\nExact failure: {h}\n{bak_hint}Use read_file to look at the failing code and make the tests and implementation agree. Run them with whatever the environment has: python -m pytest -q; without pytest use python -m unittest or python test_xxx.py directly. Finish once everything is green (rejection {test_guard_warns}/3; after 3 rejections finish will be let through)."
                                 )));
                                 messages.push(Message::tool_output(
-                                    "[finish 被拒绝:测试未全绿。修复实现与测试后再 finish。]",
+                                    "[finish rejected: tests not all green. Fix the implementation and tests, then finish.]",
                                 ));
                                 continue;
                             }
@@ -1086,34 +1118,34 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         let missing = artifacts::claimed_missing_files(&summary, workdir);
                         if !missing.is_empty() {
                             finish_claim_warns += 1;
-                            log!("[{i}] ⚠️ 产物核对:summary 声称但缺失 {missing:?},拒绝 finish");
+                            log!("[{i}] ⚠️ artefact check: summary claims {missing:?} but they are missing, finish rejected");
                             messages.push(Message::user(format!(
-                                "⚠️ 你的 finish 被拒绝:summary 声称的以下产物在工作目录中不存在:\n{}\n请用 create_file/run_bash 真正生成它们;或修改 summary 只声称确实存在的文件,然后重新 finish。{}",
+                                "⚠️ Your finish was rejected: these artefacts named in your summary do not exist in the working directory:\n{}\nActually produce them with create_file/run_bash, or change the summary to name only files that really exist, then finish again.{}",
                                 bullet(&missing),
                                 ws_note(workdir)
                             )));
                             messages.push(Message::tool_output(
-                                "[finish 被拒绝:summary 点名的文件缺失。先生成或修正 summary 后再 finish。]",
+                                "[finish rejected: files named in the summary are missing. Produce them or correct the summary, then finish.]",
                             ));
                             continue;
                         }
                     }
                     // Gate 4: files the plan names must exist (existence, not checkmarks).
                     // Children are exempt from gates 4–6: one mechanical task, no plan to
-                    // maintain; their exit contract (artifacts + finish) is checked by the
+                    // maintain; their exit contract (artefacts + finish) is checked by the
                     // dispatcher, and a blocked child only burns its budget into a timeout.
                     if !qa && !child && !fg_off && plan_gate_warns < 2 {
                         let p_missing = artifacts::plan_named_missing(workdir);
                         if !p_missing.is_empty() {
                             plan_gate_warns += 1;
-                            log!("[{i}] ⚠️ 计划核对:计划点名但缺失 {p_missing:?},拒绝 finish");
+                            log!("[{i}] ⚠️ plan check: plan names {p_missing:?} but they are missing, finish rejected");
                             messages.push(Message::user(format!(
-                                "⚠️ 你的 finish 被拒绝:你的计划(todo)里点名了以下产物文件,但它们在工作目录中不存在:\n{}\n两条路二选一:①用 create_file 真正生成它们;②若计划已不符合实际,用 todo(action=create, items=[与实际一致的新计划]) 重建计划后重新 finish。{}",
+                                "⚠️ Your finish was rejected: your plan (todo) names these output files, but they do not exist in the working directory:\n{}\nTwo options: (1) actually produce them with create_file; (2) if the plan no longer matches reality, rebuild it with todo(action=create, items=[a new plan that matches what you did]) and finish again.{}",
                                 bullet(&p_missing),
                                 ws_note(workdir)
                             )));
                             messages.push(Message::tool_output(
-                                "[finish 被拒绝:计划点名的产物缺失。生成产物或重建计划后再 finish。]",
+                                "[finish rejected: artefacts named in the plan are missing. Produce them or rebuild the plan, then finish.]",
                             ));
                             continue;
                         }
@@ -1127,14 +1159,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         let (t_done, t_all) = todo_progress(&load_todo(workdir));
                         if t_all > 0 && t_done < t_all {
                             todo_gate_warns += 1;
-                            log!("[{i}] ⚠️ 计划未同步({t_done}/{t_all}),拒绝 finish");
+                            log!("[{i}] ⚠️ plan out of sync ({t_done}/{t_all}), finish rejected");
                             messages.push(Message::user(format!(
-                                "⚠️ 你的 finish 被拒绝:计划(todo)里还有 {} 项未标记完成({t_done}/{t_all})。\n当前计划:\n{}\n请先把已完成的步骤逐个勾掉: todo(action=update, index=步骤号);已全部完成可一次同步: todo(action=update, all=true)。若仍有步骤没做,请继续执行后再 finish;重新 finish 时务必在 summary 里用两三句话向用户总结成果(完成了什么、产物是什么)。",
+                                "⚠️ Your finish was rejected: the plan (todo) still has {} item(s) not marked done ({t_done}/{t_all}).\nCurrent plan:\n{}\nTick off the completed steps first: todo(action=update, index=step number); if everything is done, sync in one go: todo(action=update, all=true). If steps remain undone, carry on and finish afterwards. When you finish again, summarise the outcome for the user in two or three sentences in summary (what was done, what the artefacts are).",
                                 t_all - t_done,
                                 load_todo_str(workdir)
                             )));
                             messages.push(Message::tool_output(
-                                "[finish 暂缓:先把计划与实际进度同步(todo update)后再 finish。]",
+                                "[finish deferred: sync the plan with actual progress (todo update) first, then finish.]",
                             ));
                             continue;
                         }
@@ -1145,14 +1177,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         let orig = qa::task_original_text(&messages, 2000);
                         if !orig.is_empty() {
                             log!(
-                                "[{i}] ⚠️ 交付自查:回注任务原文({} 字符),要求自查后重新 finish",
+                                "[{i}] ⚠️ pre-delivery check: re-injected the original task ({} chars), asked for a self-check before finishing again",
                                 text::clen(&orig)
                             );
                             messages.push(Message::user(format!(
-                                "⚠️ 交付前自查:结束前逐条核对以下【原始任务指令】,确认你的最终交付完全满足其中每一条要求——特别是:答案/产物的格式(单位、小数位、取整方式)、命名、数值范围,以及任务明确点名的每一个子项。长任务执行到末尾容易遗忘题面细节。\n若发现任何一条不满足:先修正交付物,再重新 finish;若全部满足:重新 finish,并在 summary 里用两三句话向用户总结成果(完成了什么、产物/答案是什么)。\n--- 原始任务指令 ---\n{orig}\n--- 原始任务指令结束 ---"
+                                "⚠️ Pre-delivery check: before finishing, go through the ORIGINAL TASK INSTRUCTIONS below point by point and confirm your final deliverable meets every one of them, especially the format of answers/artefacts (units, decimal places, rounding), naming, value ranges, and every sub-item the task names explicitly. Details of the brief are easily forgotten by the end of a long task.\nIf anything is not met: fix the deliverable first, then finish again. If everything is met: finish again and summarise the outcome for the user in two or three sentences in summary (what was done, what the artefact/answer is).\n--- original task instructions ---\n{orig}\n--- end of original task instructions ---"
                             )));
                             messages.push(Message::tool_output(
-                                "[finish 待自查:按上方要求核对原始任务指令后重新 finish。]",
+                                "[finish pending self-check: verify against the original task instructions above, then finish again.]",
                             ));
                             continue;
                         }
@@ -1167,7 +1199,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         let mut wm = messages.clone();
                         wm.push(Message::tool_output(res.clone()));
                         wm.push(Message::user(
-                            "任务已收尾。请直接用文字向用户总结(不要调用任何工具):完成了什么、关键产物/结论是什么。不超过 5 句话。",
+                            "The task is wrapped up. Summarise for the user in plain text (do not call any tool): what was done and what the key artefacts or conclusions are. Five sentences at most.",
                         ));
                         if let Ok(wr) = backend.chat(model, &wm, &[], &mut |p| {
                             if let StreamPiece::Token(t) = p {
@@ -1202,7 +1234,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     {
                         bash_teach_warns += 1;
                         messages.push(Message::user(
-                            "提示:run_bash 执行的是 Windows shell 命令(cmd),不能直接运行 Python 代码。正确做法:先用 create_file 把代码写入 .py 文件,再用 run_bash 运行:python 文件名.py",
+                            "Hint: run_bash runs Windows shell (cmd) commands and cannot execute Python code directly. Do it this way: write the code to a .py file with create_file, then run it with run_bash: python filename.py",
                         ));
                     }
                     if let Some(key) = missing_arg_key(&res).map(str::to_string) {
@@ -1224,13 +1256,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             let plan_hint = if planned.is_empty() {
                                 String::new()
                             } else {
-                                format!("计划里尚未生成的文件:{}。", planned.join(", "))
+                                format!(
+                                    "Files in the plan not yet produced: {}.",
+                                    planned.join(", ")
+                                )
                             };
                             log!(
-                                "[{i}] ⚠️ {name} 连续 {st} 次缺少参数 '{key}',已移除 {pruned} 组失败调用,改派分块写法"
+                                "[{i}] ⚠️ {name} missing argument '{key}' {st} times in a row; removed {pruned} failed call group(s), prescribing the chunked shape"
                             );
                             after_output = Some(format!(
-                                "{MISSING_ARG_NOTE_MARK}你已连续 {st} 次调用 {name} 都漏掉参数 '{key}'(之前失败的调用已从对话中移除,不要照抄它们)。不要整段重发同样的内容。换一种调用形状:先 {name}({key}=\"<文件名>\", content=\"<开头几行>\") 建立文件,再用 append_file(path=\"<文件名>\", content=\"<后续内容>\") 逐段追加。每次调用都必须同时带上 '{key}' 和 content,先写 {key}。{plan_hint}"
+                                "{MISSING_ARG_NOTE_MARK}You have called {name} {st} times in a row without the argument '{key}' (the failed calls have been removed from the conversation; do not copy them). Do not resend the same content in one piece. Use a different call shape: first {name}({key}=\"<filename>\", content=\"<the first few lines>\") to create the file, then append_file(path=\"<filename>\", content=\"<the rest>\") piece by piece. Every call must carry both '{key}' and content, with {key} first.{plan_hint}"
                             ));
                         }
                     } else {
@@ -1240,23 +1275,23 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             if n == "edit_file" {
                                 face.disable("edit_file");
                                 messages.push(Message::user(
-                                "⚠️ edit_file 已连续 3 次失败,已被禁用。以后一律用 create_file 写入完整文件内容来修改文件。",
+                                "⚠️ edit_file has failed 3 times in a row and is now disabled. From now on change files by writing the complete content with create_file.",
                             ));
                                 *fc = 0;
                             } else if redirect_warns < 4 {
                                 redirect_warns += 1;
-                                let path_refused =
-                                    res.contains("在工作目录之外") || res.contains("越界");
+                                let path_refused = res.contains("outside the working directory")
+                                    || res.contains("out of bounds");
                                 let hint = if path_refused {
-                                    "⚠️ 被拒绝的路径在工作目录之外。任务的全部输入文件都已经在你的工作目录里:立即执行 list_dir(path='.') 列出当前目录,直接读取列出的文件;不要再访问工作目录以外的任何路径。"
+                                    "⚠️ The rejected path is outside the working directory. All of the task's input files are already in your working directory: run list_dir(path='.') now, read the files it lists, and do not touch any path outside the working directory again."
                                 } else if n == "run_bash" {
-                                    "⚠️ 不要 cd 到 /workspace 等绝对路径——工作目录已设定,直接运行命令或用相对路径;先用 list_dir 确认目录内容,用 read_file/pwd 确认实际情况。"
+                                    "⚠️ Do not cd to absolute paths like /workspace. The working directory is already set: run commands directly or use relative paths; check the directory with list_dir and the real state with read_file/pwd first."
                                 } else {
-                                    "⚠️ 先用 list_dir / read_file 确认实际情况,重新构造参数;或换一个实现方式。"
+                                    "⚠️ Check the real state with list_dir / read_file first and rebuild the arguments, or try a different approach."
                                 };
                                 let count = *fc;
                                 messages.push(Message::user(format!(
-                                "⚠️ 你已连续 {count} 次调用 {name} 失败。立刻停止重试,必须换策略:{hint}"
+                                "⚠️ Your last {count} {name} calls all failed. Stop retrying now and change strategy: {hint}"
                             )));
                                 *fc = 0;
                             }
@@ -1287,7 +1322,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 if tool_streak >= 5 && streak_warns < 3 {
                     streak_warns += 1;
                     messages.push(Message::user(format!(
-                        "⚠️ 你已连续 {tool_streak} 次调用 {name}。若结果类似或没有新进展,停止重复:综合已有结果推进到下一步(写文件 / 换其他工具 / 调用 finish)。若你在做批量步骤(每次参数不同)则属正常,继续。"
+                        "⚠️ You have called {name} {tool_streak} times in a row. If the results are similar or nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish). If you are doing a batch of steps with different arguments each time, that is fine; carry on."
                     )));
                     tool_streak = 1;
                 }
@@ -1299,7 +1334,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // Only a true loop: same tool 8×, same arguments 4× in a row.
                     face.disable(n);
                     messages.push(Message::user(format!(
-                        "⚠️ {name} 已连续调用 {tool_streak} 次,现被禁用。停止重复它,直接推进实际工作(写文件/执行/调用 finish)。"
+                        "⚠️ {name} has been called {tool_streak} times in a row and is now disabled. Stop repeating it and get on with the real work (write files / run / call finish)."
                     )));
                     tool_streak = 1;
                 }
@@ -1318,7 +1353,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             face.disable(t);
                         }
                         messages.push(Message::user(format!(
-                            "⚠️ 你已连续 {research_streak} 次重复完全相同的网络查询且尚未产出任何文件。网络工具已被禁用:换一个具体不同的查询角度,或先用 create_file 把已发现的线索写成文件,然后调用 finish。被禁用后如需继续搜索,请改写查询词并调用 enable_tools 重新启用。"
+                            "⚠️ You have repeated the exact same web query {research_streak} times without producing any file. The web tools are now disabled: take a genuinely different angle, or write what you have found to a file with create_file and then call finish. To search again, rephrase the query and re-enable the tools with enable_tools."
                         )));
                         research_streak = 0;
                         research_seen.clear();
@@ -1335,7 +1370,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     if same_sig_streak >= 6 || todo_streak >= 15 {
                         face.disable("todo");
                         messages.push(Message::user(format!(
-                            "⚠️ todo 已被禁用(同一调用连发 {same_sig_streak} 次/累计 {todo_streak} 次无实际工作)。立即改用产出型工具推进:create_file 写产出文件、run_bash 执行验证;需要记录计划就直接写进产出文件里。"
+                            "⚠️ todo is now disabled (the same call {same_sig_streak} times in a row / {todo_streak} calls with no real work). Switch to producing tools now: create_file for output files, run_bash to verify; if you need to record a plan, write it into an output file."
                         )));
                         todo_streak = 0;
                     }
@@ -1346,7 +1381,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 if n == "edit_file" && res.starts_with("[edited") {
                     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
                     if let Some(hint) = edit_guard.observe(path) {
-                        log!("[{i}] ⚠️ 霰弹枪编辑提示: {path}");
+                        log!("[{i}] ⚠️ shotgun-edit hint: {path}");
                         messages.push(Message::user(hint));
                     }
                 }
@@ -1355,7 +1390,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     let el = prev_elapsed + t0.elapsed().as_secs_f64();
                     budget::save_elapsed(workdir, el);
                     if let Some(bn) = budget::budget_nudge(budget_total, el, &mut budget_fired) {
-                        log!("[{i}] ⏱ 预算提示已注入(已用 {:.0}min)", el / 60.0);
+                        log!("[{i}] ⏱ budget nudge injected ({:.0}min used)", el / 60.0);
                         messages.push(Message::user(bn));
                     }
                 }
@@ -1371,10 +1406,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         todo_nudge_warns += 1;
                         todo_stale = 0;
                         messages.push(Message::user(format!(
-                            "⚠️ 计划进度提醒:你已完成多步实际工作,但计划仍是 {t_done}/{t_all}。每完成一步就同步一次: todo(action=update, index=已完成步骤号)。\n当前计划:\n{}",
+                            "⚠️ Plan progress reminder: you have done several steps of real work but the plan is still at {t_done}/{t_all}. Sync after every step: todo(action=update, index=completed step number).\nCurrent plan:\n{}",
                             load_todo_str(workdir)
                         )));
-                        log!("[{i}] 📌 计划停滞提醒({t_done}/{t_all},连续 {stale} 步未更新)");
+                        log!("[{i}] 📌 stale-plan reminder ({t_done}/{t_all}, {stale} steps without an update)");
                     }
                 }
             }

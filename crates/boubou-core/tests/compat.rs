@@ -174,9 +174,9 @@ fn ndjson_decoder_handles_split_lines_and_tool_calls() {
 fn mingbird_skill_file_parses_and_loads() {
     let skill = Skill::from_path(&fixture("architecture.md")).expect("frontmatter");
     assert_eq!(skill.name, "architecture");
-    assert!(skill.description.starts_with("系统设计"));
+    assert!(skill.description.starts_with("System design"));
     let body = skill.load().expect("body");
-    assert!(body.starts_with("# 架构设计"));
+    assert!(body.starts_with("# Architecture design"));
     assert!(!body.contains("---\nname:"));
 }
 
@@ -212,9 +212,9 @@ fn mcp_config_example_parses_with_category_overrides() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mcp.json.example");
     let cfg = mcp::load_from(&root).expect("example parses");
     let big = &cfg["big_server"];
-    assert_eq!(big.categories_for("search_web"), vec!["网络"]);
-    assert_eq!(big.categories_for("save_note"), vec!["记忆", "文件"]);
-    assert_eq!(big.categories_for("anything_else"), vec!["文件"]);
+    assert_eq!(big.categories_for("search_web"), vec!["web"]);
+    assert_eq!(big.categories_for("save_note"), vec!["memory", "files"]);
+    assert_eq!(big.categories_for("anything_else"), vec!["files"]);
     assert!(big.unknown_categories().is_empty());
     assert!(!cfg["utils"].is_http());
     assert_eq!(mcp::qualified_name("utils", "calculate"), "utils.calculate");

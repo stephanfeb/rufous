@@ -21,7 +21,7 @@ fn uninstall_denied_unattended_allowed_with_flag() {
         &SafetyPolicy::unattended(),
     )
     .expect("denied");
-    assert!(r.contains("无人值守") && r.contains("AGENT_ALLOW_ENV_MUTATION"));
+    assert!(r.contains("unattended") && r.contains("AGENT_ALLOW_ENV_MUTATION"));
     let allowed = SafetyPolicy {
         unattended: true,
         allow_env_mutation: true,
@@ -66,9 +66,9 @@ fn recursive_delete_inside_workdir_allowed_outside_denied() {
         &p,
     )
     .expect("denied");
-    assert!(r.contains("工作目录之外"));
+    assert!(r.contains("outside the working directory"));
     let r2 = classify("del /s /q D:\\data", d.path(), &p).expect("denied");
-    assert!(r2.contains("工作目录之外"));
+    assert!(r2.contains("outside the working directory"));
 }
 
 #[test]
@@ -82,10 +82,10 @@ fn posix_recursive_delete_scoped() {
     assert!(classify("find . -name x -delete", d.path(), &p).is_none());
     assert!(classify("rm -r /home/user/other", d.path(), &p)
         .expect("denied")
-        .contains("工作目录之外"));
+        .contains("outside the working directory"));
     assert!(classify("find /etc -name x -delete", d.path(), &p)
         .expect("denied")
-        .contains("工作目录之外"));
+        .contains("outside the working directory"));
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn posix_uninstall_and_services_denied_unattended() {
     ] {
         let r = classify(cmd, d.path(), &p);
         assert!(
-            r.as_deref().is_some_and(|r| r.contains("无人值守")),
+            r.as_deref().is_some_and(|r| r.contains("unattended")),
             "{cmd}"
         );
     }
@@ -151,7 +151,10 @@ fn powershell_benign_allowed_high_risk_blocked() {
         "powershell Set-ExecutionPolicy Bypass",
     ] {
         let msg = gate.check(&bash(cmd), d.path());
-        assert!(msg.as_deref().is_some_and(|m| m.contains("高危")), "{cmd}");
+        assert!(
+            msg.as_deref().is_some_and(|m| m.contains("high-risk")),
+            "{cmd}"
+        );
     }
 }
 
@@ -162,7 +165,7 @@ fn danger_commands_refused_outright_and_file_boundary_enforced() {
     assert!(gate
         .check(&bash("rm -rf /"), d.path())
         .expect("blocked")
-        .contains("危险操作"));
+        .contains("dangerous operation"));
     let outside = ToolInvocation::ReadFile {
         path: "../../../../etc/passwd".into(),
         start_line: None,
@@ -171,7 +174,7 @@ fn danger_commands_refused_outright_and_file_boundary_enforced() {
     assert!(gate
         .check(&outside, d.path())
         .expect("blocked")
-        .contains("工作目录之外"));
+        .contains("outside the working directory"));
     let inside = ToolInvocation::ReadFile {
         path: "notes.txt".into(),
         start_line: None,
@@ -186,5 +189,5 @@ fn danger_commands_refused_outright_and_file_boundary_enforced() {
     assert!(gate
         .check(&sensitive_write, d.path())
         .expect("blocked")
-        .contains("敏感模式"));
+        .contains("sensitive pattern"));
 }

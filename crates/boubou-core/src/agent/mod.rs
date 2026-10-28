@@ -66,8 +66,6 @@ pub struct RunParams {
     pub keep_alive: String,
     /// `AGENT_TIME_BUDGET_SEC`: module-level fallback when `run` gets no explicit budget.
     pub budget_env_sec: Option<f64>,
-    /// `AGENT_LANG=en`: force English in the prompts.
-    pub lang_en: bool,
     /// `AGENT_UNATTENDED=1`: wording of the platform block (hard refusals, no confirms).
     pub unattended: bool,
     /// `AGENT_ABLATION`: comma-separated switches used by the benchmark harness.
@@ -78,6 +76,9 @@ pub struct RunParams {
     pub child_mode: bool,
     /// Multiplier on the loop's retry/back-off sleeps (`AGENT_SLEEP_SCALE`; tests use 0).
     pub sleep_scale: f32,
+    /// Interactive chat (`boubou chat`, the web page): a plain text reply ends the turn
+    /// instead of drawing a "continue with tools" note.
+    pub chat_mode: bool,
 }
 
 impl RunParams {
@@ -104,7 +105,6 @@ impl RunParams {
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_KEEP_ALIVE.to_string()),
             budget_env_sec: budget.filter(|b| *b > 0.0),
-            lang_en: std::env::var("AGENT_LANG").is_ok_and(|v| v == "en"),
             unattended: std::env::var("AGENT_UNATTENDED").is_ok_and(|v| v == "1"),
             ablation: std::env::var("AGENT_ABLATION")
                 .unwrap_or_default()
@@ -116,6 +116,7 @@ impl RunParams {
             max_iterations: MAX_ITERATIONS,
             child_mode: std::env::var("AGENT_CHILD_SANDBOX").is_ok_and(|v| v == "1"),
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
+            chat_mode: false,
         })
     }
 
@@ -132,12 +133,12 @@ impl RunParams {
             slim_output: false,
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
             budget_env_sec: None,
-            lang_en: false,
             unattended: false,
             ablation: Vec::new(),
             max_iterations: MAX_ITERATIONS,
             child_mode: false,
             sleep_scale: 1.0,
+            chat_mode: false,
         }
     }
 

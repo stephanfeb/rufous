@@ -1,7 +1,7 @@
 //! Voice input without a microphone: WAV parsing/encoding, resampling, model-directory
 //! resolution (the int8 discipline from `test_v191_universal.py::TestBilingualSTT`), the
-//! silence gate, the Ollama transcript post-processing, and — when the bundled Chinese
-//! model is present and the `sherpa` feature is on — a real transcription of its sample WAV.
+//! silence gate, the Ollama transcript post-processing, and — when a bundled model is
+//! present and the `sherpa` feature is on — a real transcription of its sample WAV.
 
 use std::path::{Path, PathBuf};
 
@@ -106,28 +106,28 @@ fn fake_model_dir(root: &Path, lang_dir: &str, int8: bool) -> PathBuf {
 fn model_dir_resolution_and_int8_discipline() {
     let root = tempfile::tempdir().expect("tmp");
     let bases = vec![root.path().to_path_buf()];
-    assert!(stt_model_dir("zh", &bases).is_none());
+    assert!(stt_model_dir("en", &bases).is_none());
     assert!(installed_langs(&bases).is_empty());
-    let zh = fake_model_dir(root.path(), STT_MODEL_DIRS[0].1, true);
-    assert_eq!(stt_model_dir("zh", &bases), Some(zh.clone()));
+    let en = fake_model_dir(root.path(), STT_MODEL_DIRS[0].1, true);
+    assert_eq!(stt_model_dir("en", &bases), Some(en.clone()));
     assert_eq!(
         stt_model_dir("xx", &bases),
-        Some(zh.clone()),
-        "unknown language → Chinese"
+        Some(en.clone()),
+        "unknown language → English"
     );
-    let f = stt_files(&zh).expect("files");
+    let f = stt_files(&en).expect("files");
     for p in [&f.encoder, &f.decoder, &f.joiner] {
         assert!(p.to_string_lossy().contains("int8"));
     }
     assert!(f.tokens.is_file());
-    assert_eq!(installed_langs(&bases), ["zh"]);
+    assert_eq!(installed_langs(&bases), ["en"]);
     // float-only weights do not count as an installed model
-    let en = fake_model_dir(root.path(), STT_MODEL_DIRS[1].1, false);
-    assert!(stt_files(&en).is_none());
-    assert_eq!(installed_langs(&bases), ["zh"]);
+    let zh = fake_model_dir(root.path(), STT_MODEL_DIRS[1].1, false);
+    assert!(stt_files(&zh).is_none());
+    assert_eq!(installed_langs(&bases), ["en"]);
     // A base may name the model directory itself (BOUBOU_STT_DIR pointing straight at it).
-    assert_eq!(stt_model_dir("zh", std::slice::from_ref(&zh)), Some(zh));
-    assert!(install_hint("en", root.path()).contains(STT_MODEL_DIRS[1].1));
+    assert_eq!(stt_model_dir("en", std::slice::from_ref(&en)), Some(en));
+    assert!(install_hint("zh", root.path()).contains(STT_MODEL_DIRS[1].1));
 }
 
 #[test]
@@ -167,14 +167,14 @@ fn silence_is_no_voice_and_no_engine_is_unavailable() {
 
 #[test]
 fn ollama_transcript_post_processing() {
-    assert_eq!(extract_transcript(&json!({"content": " 你好 "})), "你好");
+    assert_eq!(extract_transcript(&json!({"content": " hello "})), "hello");
     assert_eq!(
         extract_transcript(&json!({"content": "", "thinking": "from thinking"})),
         "from thinking"
     );
     assert_eq!(
-        extract_transcript(&json!({"content": "转录结果\n实际文字"})),
-        "实际文字"
+        extract_transcript(&json!({"content": "Transcript\nthe actual words"})),
+        "the actual words"
     );
     assert_eq!(extract_transcript(&json!({"content": "Analysis"})), "");
     let long = "x".repeat(600);

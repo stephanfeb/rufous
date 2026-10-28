@@ -92,7 +92,12 @@ pub fn pick_stt_model(host: &str, preferred: &str) -> String {
 }
 
 /// Leading markers some models print before the transcript; the first line is dropped.
-pub const STRIP_MARKERS: &[&str] = &["Thinking Process", "Analysis", "转录结果", "以下为转录"];
+pub const STRIP_MARKERS: &[&str] = &[
+    "Thinking Process",
+    "Analysis",
+    "Transcript",
+    "Transcription",
+];
 
 /// `transcribe_ollama`'s post-processing: content, else thinking; a marker heading dropped.
 pub fn extract_transcript(message: &Value) -> String {
@@ -127,7 +132,7 @@ pub fn transcribe_ollama(host: &str, model: &str, wav: &[u8]) -> Result<String, 
         "model": model,
         "messages": [{
             "role": "user",
-            "content": "请把这段语音转录成文字,直接输出转录结果,不要解释。",
+            "content": "Transcribe this audio to text. Output only the transcript, with no explanation.",
             "images": [base64(wav)],
         }],
         "stream": false,

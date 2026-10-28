@@ -1,16 +1,16 @@
 ---
 name: web_research
-description: 深度搜索:多查询检索+交叉验证+汇总成报告文件
+description: Deep research: multi-query search + cross-checking, summarised into a report file
 ---
-# 深度搜索与报告
-1. 拆问题:把用户问题拆成 3~5 个具体查询词(web_search_multi 一次并行)。
-2. 检索:web_search_multi(queries=[...]) 拿标题+摘要+链接;挑最相关的 2~4 个链接。
-3. 读原文:web_fetch 抓全文(自动存 sources/);关键事实必须以原文为准,不信摘要。
-4. 交叉验证:关键数字/结论至少两个独立来源;矛盾就都写出来,标明分歧。
-5. 成文:create_file 写 markdown 报告到工作目录(报告名带主题与日期):
-   - 一句话结论(放最前)
-   - 关键发现(每条:事实 + 来源链接)
-   - 分歧与不确定项
-   - 来源清单
-6. 收尾:finish 里给结论一句话 + 报告文件路径。
-注意:检索类查询要互不相同(同查询反复搜会被反循环禁用);信息找不到就明说,不编。
+# Deep research and report
+1. Break the question down: split the user's question into 3-5 specific queries (web_search_multi runs them in parallel at once).
+2. Search: web_search_multi(queries=[...]) returns title + snippet + link; pick the 2-4 most relevant links.
+3. Read the sources: web_fetch the full text (saved automatically under sources/); key facts must come from the source text, not the snippets.
+4. Cross-check: every key figure / conclusion needs at least two independent sources; when they disagree, write both down and flag the disagreement.
+5. Write it up: create_file a markdown report in the working directory (file name includes the topic and date):
+   - One-sentence conclusion (first)
+   - Key findings (each: fact + source link)
+   - Disagreements and uncertainties
+   - Source list
+6. Wrap up: in finish give the one-sentence conclusion plus the report file path.
+Note: search queries must differ from one another (repeating the same query gets blocked by the anti-loop guard); if the information cannot be found, say so plainly; do not invent it.

@@ -30,28 +30,28 @@ pub fn estimate_messages_tokens(messages: &[Message], tools: &[Value]) -> usize 
     total
 }
 
-/// `_workdir_files_text`: sorted directory listing, first `limit` names, or `(空)`.
+/// `_workdir_files_text`: sorted directory listing, first `limit` names, or `(empty)`.
 pub fn workdir_files_text(workdir: &Path, limit: usize) -> String {
     let mut names: Vec<String> = match std::fs::read_dir(workdir) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect(),
-        Err(_) => return "(空)".to_string(),
+        Err(_) => return "(empty)".to_string(),
     };
     names.sort();
     names.truncate(limit);
     if names.is_empty() {
-        "(空)".to_string()
+        "(empty)".to_string()
     } else {
         names.join("\n")
     }
 }
 
 const SUMMARY_SYSTEM_L2: &str =
-    "用中文压缩成 ≤150 字摘要,保留目标、关键文件名、已做决定、错误和未完成事项,丢弃旧日志与已读全文。";
+    "Compress this into a summary of at most 150 words in English. Keep the goal, key file names, decisions made, errors and unfinished items; drop old logs and full texts already read.";
 const SUMMARY_SYSTEM_L3: &str =
-    "用中文把下面这段 agent 对话压缩成 ≤150 字摘要,保留关键文件名、代码决策、错误信息和未完成事项。";
+    "Compress the following agent conversation into a summary of at most 150 words in English. Keep key file names, code decisions, error messages and unfinished items.";
 
 /// Result of a compaction attempt.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,11 +85,11 @@ fn summarise<B: ChatBackend>(
         summary = "(summary failed)".to_string();
     }
     if let Some(t) = todo_text.filter(|t| !t.is_empty()) {
-        summary.push_str("\n\n[当前计划(todo),以此为准继续]\n");
+        summary.push_str("\n\n[Current plan (todo); continue from this]\n");
         summary.push_str(t);
     }
     if let Some(f) = files_text.filter(|f| !f.is_empty()) {
-        summary.push_str("\n\n[工作目录已有文件(已完成的产物,不要重复创建)]\n");
+        summary.push_str("\n\n[Files already in the working directory (finished artefacts; do not create them again)]\n");
         summary.push_str(f);
     }
     Ok(summary)
@@ -130,7 +130,7 @@ pub fn compact_history<B: ChatBackend>(
                 let len = text::clen(&m.content);
                 if len > MAX_TOOL {
                     m.content = format!(
-                        "{}…(已截断,原 {} 字符)",
+                        "{}… (truncated, originally {} chars)",
                         text::head(&m.content, MAX_TOOL),
                         len
                     );
@@ -138,7 +138,7 @@ pub fn compact_history<B: ChatBackend>(
             }
             out.push(m);
         }
-        log("[上下文压缩 L1: 截断旧工具输出]".to_string());
+        log("[context compaction L1: truncated old tool outputs]".to_string());
         return unchanged(out);
     }
     let (keep_tail, system) = if level <= 2 {
@@ -158,10 +158,13 @@ pub fn compact_history<B: ChatBackend>(
         Ok(summary) => {
             let mut out = Vec::with_capacity(keep_tail + 2);
             out.push(messages[0].clone());
-            out.push(Message::user(format!("[先前上下文摘要] {summary}")));
+            out.push(Message::user(format!(
+                "{} {summary}",
+                crate::guards::qa::CONTEXT_SUMMARY_MARK
+            )));
             out.extend_from_slice(&messages[n - keep_tail..]);
             log(format!(
-                "[上下文压缩 L{}: {} → {} 条消息]",
+                "[context compaction L{}: {} → {} messages]",
                 level.min(3),
                 n,
                 out.len()
@@ -173,7 +176,7 @@ pub fn compact_history<B: ChatBackend>(
         }
         Err(e) => {
             log(format!(
-                "[上下文压缩 L{} 失败,本层跳过: {}]",
+                "[context compaction L{} failed, level skipped: {}]",
                 level.min(3),
                 text::head(&e, 120)
             ));

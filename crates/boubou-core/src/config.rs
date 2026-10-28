@@ -253,7 +253,7 @@ impl Config {
     /// `engine_display_name`: product names, not translated.
     pub fn engine_display_name(&self) -> &'static str {
         if self.backend_openai().is_some() {
-            "OpenAI 兼容"
+            "OpenAI-compatible"
         } else {
             "Ollama"
         }

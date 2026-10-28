@@ -55,7 +55,7 @@ fn stub(mp: usize) -> Stub {
     }
 }
 
-const SIMPLE: &str = "把 data.csv 转成 markdown 表格";
+const SIMPLE: &str = "convert data.csv to a markdown table";
 
 fn six(dir: &Path) -> JsonTodoProvider {
     write_todo(dir, &[(SIMPLE, false); 6]);
@@ -129,18 +129,24 @@ fn missing_file_is_empty_not_error() {
 
 #[test]
 fn classifier_positive_and_vetoes() {
-    assert!(classify_task("把 data.csv 里的列名翻译成中文并另存", &cfg()).dispatchable);
+    assert!(
+        classify_task(
+            "translate the column names in data.csv and save a copy",
+            &cfg()
+        )
+        .dispatchable
+    );
     for t in [
-        "删除 tmp.log 并统计行数",
-        "覆盖 config.json 里的字段",
-        "把 result.md 上传到服务器",
-        "重构 project.py 的所有模块结构",
-        "pip install pandas 后生成 out.csv",
-        "运行 test_report.py 验证输出",
-        "为 report.md 设计一个更好的结构",
-        "[simple] 整理所有文件",
-        "[complex] 把 a.csv 转成 b.md",
-        "转换 main.py,这一步很关键,别搞错",
+        "delete tmp.log and count the lines",
+        "overwrite the fields in config.json",
+        "upload result.md to the server",
+        "refactor the whole module structure of project.py",
+        "pip install pandas then generate out.csv",
+        "run the tests in test_report.py and verify the output",
+        "design a better structure for report.md",
+        "[simple] tidy up all files",
+        "[complex] convert a.csv to b.md",
+        "convert main.py, this step is critical, do not get it wrong",
         "",
     ] {
         let r = classify_task(t, &cfg());
@@ -151,19 +157,20 @@ fn classifier_positive_and_vetoes() {
 
 #[test]
 fn multi_file_not_dispatchable_but_annotation_escapes_mechanical_rule() {
-    let r = classify_task("把 a.csv 和 b.csv 都转成 markdown", &cfg());
+    let r = classify_task("convert both a.csv and b.csv to markdown", &cfg());
     assert!(!r.dispatchable);
     assert!(r.reason.contains("files="), "{}", r.reason);
-    let r = classify_task("[simple] 为 out.md 补一个标题行", &cfg());
+    let r = classify_task("[simple] add a heading line to out.md", &cfg());
     assert!(r.dispatchable);
     assert_eq!(r.file_tokens, ["out.md"]);
 }
 
 #[test]
 fn safety_precheck_second_gate() {
-    let e = safety_precheck("清理 wsl --unregister Ubuntu 的残留", &cfg()).expect_err("blocked");
+    let e = safety_precheck("clean up the leftovers of wsl --unregister Ubuntu", &cfg())
+        .expect_err("blocked");
     assert!(e.contains("severe_command"), "{e}");
-    let e = safety_precheck("把结果写到 .env 里", &cfg()).expect_err("blocked");
+    let e = safety_precheck("write the result into .env", &cfg()).expect_err("blocked");
     assert!(e.contains("sensitive_in_task_text"), "{e}");
     assert!(safety_precheck(SIMPLE, &cfg()).is_ok());
 }
@@ -206,7 +213,7 @@ fn too_few_pending_or_dispatchable() {
     assert!(!plan.should && plan.reasons[0].contains("too_few_pending"));
 
     let mut items = vec![(SIMPLE, false)];
-    let others: Vec<String> = (0..5).map(|i| format!("重构模块{i}")).collect();
+    let others: Vec<String> = (0..5).map(|i| format!("refactor module{i}")).collect();
     items.extend(others.iter().map(|s| (s.as_str(), false)));
     write_todo(d.path(), &items);
     let plan = should_dispatch(
@@ -259,8 +266,8 @@ fn done_items_not_dispatched_and_skipped_carry_reason() {
         d.path(),
         &[
             (SIMPLE, false),
-            ("删除 old.csv", false),
-            ("重构 core.py", false),
+            ("delete old.csv", false),
+            ("refactor core.py", false),
         ],
     );
     let plan = should_dispatch(

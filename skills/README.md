@@ -1,27 +1,27 @@
-# 技能(skill)目录说明
+# Skills directory
 
-鸣鸟的"技能"= 一份给模型看的操作手册(.md 文件)。agent 平时只知道技能的名字和一句话描述(省 token),干活时用 `skills(load)` 按需加载全文。这就是"渐进式加载"。
+A Boubou "skill" is an operating manual for the model (a .md file). Normally the agent only knows each skill's name and one-line description (saving tokens); when it needs one it loads the full text with `skills(load)`. This is "progressive loading".
 
-## 目录与优先级
-查找顺序(同名时靠前的生效):
-1. `<工作目录>/skills/` —— 当前任务的专属技能
-2. `~/.ollama_agent/skills/` —— 你自己装的全局技能(推荐放这里)
-3. `<安装目录>/skills/` —— 出厂内置技能(17 个:11 个编码向 + 6 个通用向)
+## Directories and precedence
+Lookup order (on a name clash, the earlier one wins):
+1. `<workdir>/skills/` -- skills specific to the current task
+2. `~/.ollama_agent/skills/` -- global skills you installed yourself (recommended location)
+3. `<install dir>/skills/` -- built-in skills shipped with the install (coding-oriented plus general-purpose)
 
-## 自己装一个技能
-在 `~/.ollama_agent/skills/` 放一个 .md 文件,开头写两行元信息:
+## Installing your own skill
+Put a .md file in `~/.ollama_agent/skills/` with two lines of metadata at the top:
 
 ```
 ---
 name: my_skill
-description: 一句话说清什么时候用它
+description: One sentence saying when to use it
 ---
-正文写操作步骤(给模型看的指令)…
+Body: the operating steps (instructions for the model)...
 ```
 
-重启鸣鸟后在 GUI「技能」按钮里就能看到。写法参考本目录内置技能:步骤化、工具名写全(list_dir/run_python/web_search…)、把红线(不许做什么)写在末尾。
+After restarting Boubou it appears under the "Skills" button in the UI. Follow the built-in skills in this directory as a model: step by step, tool names written in full (list_dir / run_bash / web_search ...), and the red lines (what must not be done) at the end.
 
-## MCP 服务器
-技能管"怎么做",MCP 管"多了什么工具"。MCP 服务器配置在 `~/.ollama_agent/mcp.json`,
-配置后模型通过 enable_tools 装配其工具并调用。仓库根目录的 `mcp_utils_server.py`
-(时间/计算/哈希)是一个可直接体验的本地 MCP 示例。GUI「技能」窗口里也能看到已配置的 MCP 服务器。
+## MCP servers
+Skills cover "how to do it"; MCP covers "which extra tools exist". MCP servers are configured in `~/.ollama_agent/mcp.json`;
+once configured, their tools are routed by category (`files`, `code`, `web`, `memory`, `mcp`) and the model calls them as
+`server.tool`; see `mcp.json.example` in the repository root for the format. The "Skills" window in the UI also lists the configured MCP servers.

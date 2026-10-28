@@ -70,12 +70,12 @@ pub fn format_bash_out(returncode: i32, stdout: &str, stderr: &str, small_model:
     );
     if returncode == 9009 && stdout.trim().is_empty() && stderr.trim().is_empty() {
         out.push_str(
-            "\n[提示: exit 9009 = 本机找不到这个命令(无任何输出)。Windows 上没有 python3,运行 Python 请用 python;heredoc/cat/grep 等 bash 专用语法在此也不可用,写文件请用 create_file 工具。]",
+            "\n[hint: exit 9009 = this machine cannot find the command (no output at all). Windows has no python3; run Python as python. Bash-only syntax such as heredocs/cat/grep does not work here either; write files with the create_file tool.]",
         );
     }
     if small_model && (text::clen(stdout) > 2500 || text::clen(stderr) > 1200) {
         out = format!(
-            "[exit {returncode}]\nSTDOUT(末尾):\n{}\nSTDERR(末尾):\n{}\n[超长命令输出已精简(只保留末尾的摘要/报错;上下文预算紧张时的保护)。需要完整输出时:run_bash 执行 `命令 > out.txt 2>&1` 再 read_file 分段读。]",
+            "[exit {returncode}]\nSTDOUT (tail):\n{}\nSTDERR (tail):\n{}\n[very long command output was trimmed to its tail (summary/errors) to protect a tight context budget. For the full output run `command > out.txt 2>&1` with run_bash and read it in parts with read_file.]",
             text::tail(stdout, 2500),
             text::tail(stderr, 1200)
         );

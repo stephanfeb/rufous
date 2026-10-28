@@ -49,8 +49,8 @@ fn fake_server(py: &str) -> ServerConfig {
     cfg(json!({
         "command": py,
         "args": [fixture("fake_mcp.py").to_string_lossy()],
-        "categories": ["网络"],
-        "tools": {"needs_q": {"expose": "on-demand"}, "save_path": ["文件"], "write_file": ["文件"]}
+        "categories": ["web"],
+        "tools": {"needs_q": {"expose": "on-demand"}, "save_path": ["files"], "write_file": ["files"]}
     }))
 }
 
@@ -59,14 +59,14 @@ fn fake_server(py: &str) -> ServerConfig {
 #[test]
 fn expose_parser_matches_mingbird() {
     let c = cfg(json!({"command": "x", "tools": {
-        "a": ["网络"],
-        "b": {"categories": ["文件"], "expose": "on-demand"}
+        "a": ["web"],
+        "b": {"categories": ["files"], "expose": "on-demand"}
     }}));
     assert_eq!(c.expose_for("a"), "auto");
     assert_eq!(c.expose_for("b"), "on-demand");
-    assert_eq!(c.categories_for("a"), vec!["网络"]);
-    assert_eq!(c.categories_for("b"), vec!["文件"]);
-    assert_eq!(c.categories_for("zzz"), vec!["MCP"]); // nothing declared → MCP
+    assert_eq!(c.categories_for("a"), vec!["web"]);
+    assert_eq!(c.categories_for("b"), vec!["files"]);
+    assert_eq!(c.categories_for("zzz"), vec!["mcp"]); // nothing declared → mcp
     let d = cfg(json!({"command": "x", "expose": "disabled"}));
     assert_eq!(d.expose_for("c"), "disabled");
 }
@@ -74,14 +74,15 @@ fn expose_parser_matches_mingbird() {
 #[test]
 fn server_categories_filter_unknown_tags_and_unknown_keys_are_ignored() {
     let c = cfg(
-        json!({"command": "x", "categories": ["网络", "bogus"], "disabled": false, "type": "stdio"}),
+        // Mingbird's Chinese tag for "web" (\u{7f51}\u{7edc}) and a capitalised English one both normalise.
+        json!({"command": "x", "categories": ["\u{7f51}\u{7edc}", "Files", "bogus"], "disabled": false, "type": "stdio"}),
     );
-    assert_eq!(c.server_categories(), vec!["网络"]);
+    assert_eq!(c.server_categories(), vec!["web", "files"]);
     assert_eq!(c.unknown_categories(), vec!["bogus"]);
     let h = cfg(json!({"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer k"}}));
     assert!(h.is_http() && h.is_runnable());
-    assert_eq!(h.server_categories(), vec!["MCP"]);
-    assert!(!cfg(json!({"categories": ["MCP"]})).is_runnable());
+    assert_eq!(h.server_categories(), vec!["mcp"]);
+    assert!(!cfg(json!({"categories": ["mcp"]})).is_runnable());
     assert_eq!(
         mcp::split_qualified("utils.calculate"),
         Some(("utils", "calculate"))
@@ -164,8 +165,8 @@ fn manifest_stale_merge_and_short_ttl() {
     // Expired disk cache that still knows an old tool for `slow`.
     std::fs::write(
         d.path().join(CACHE_FILE),
-        json!({"ts": now() - 400.0, "data": {"slow": {"categories": ["MCP"], "tools": [
-            {"name": "old_tool", "desc": "", "schema": {}, "categories": ["MCP"], "expose": "auto"}
+        json!({"ts": now() - 400.0, "data": {"slow": {"categories": ["mcp"], "tools": [
+            {"name": "old_tool", "desc": "", "schema": {}, "categories": ["mcp"], "expose": "auto"}
         ]}}})
         .to_string(),
     )
@@ -187,7 +188,7 @@ fn manifest_stale_merge_and_short_ttl() {
         serde_json::from_str(&std::fs::read_to_string(d.path().join(CACHE_FILE)).expect("read"))
             .expect("json");
     assert!(disk["ts"].as_f64().is_some());
-    assert_eq!(disk["data"]["slow"]["categories"], json!(["MCP"]));
+    assert_eq!(disk["data"]["slow"]["categories"], json!(["mcp"]));
 }
 
 #[test]
@@ -227,16 +228,16 @@ fn tool_defs_flatten_by_category_expose_and_builtin_overlap() {
     let mut servers = McpConfig::new();
     servers.insert(
         "web".into(),
-        cfg(json!({"command": "x", "categories": ["网络"], "tools": {
+        cfg(json!({"command": "x", "categories": ["web"], "tools": {
             "heavy": {"expose": "on-demand"},
             "off": {"expose": "disabled"},
-            "note": ["记忆"],
-            "write_file": ["文件"]
+            "note": ["memory"],
+            "write_file": ["files"]
         }})),
     );
     servers.insert(
         "fs".into(),
-        cfg(json!({"url": "https://mcp.example/fs", "categories": ["文件"]})),
+        cfg(json!({"url": "https://mcp.example/fs", "categories": ["files"]})),
     );
     let p = Scripted::new(Some(vec![
         probed("search", &format!("{}\nline2", "x".repeat(70))),
@@ -252,21 +253,21 @@ fn tool_defs_flatten_by_category_expose_and_builtin_overlap() {
             .map(|d| d["function"]["name"].as_str().unwrap_or("").to_string())
             .collect()
     };
-    let defs = reg.tool_defs(&set(&["网络"]), &set(&[]), false);
-    assert_eq!(names(&defs), vec!["web.search"]); // heavy/off need extra; note is 记忆; dup names skipped
+    let defs = reg.tool_defs(&set(&["web"]), &set(&[]), false);
+    assert_eq!(names(&defs), vec!["web.search"]); // heavy/off need extra; note is memory; dup names skipped
     let desc = defs[0]["function"]["description"].as_str().unwrap_or("");
     assert_eq!(desc.chars().count(), 61);
     assert!(desc.ends_with('…') && !desc.contains('\n'));
     assert_eq!(defs[0]["function"]["parameters"]["required"], json!(["q"]));
 
-    let defs = reg.tool_defs(&set(&["记忆"]), &set(&[]), false);
+    let defs = reg.tool_defs(&set(&["memory"]), &set(&[]), false);
     let n = names(&defs);
     assert_eq!(n, vec!["web.note"]);
-    assert_eq!(defs[0]["function"]["description"], json!("web 工具"));
+    assert_eq!(defs[0]["function"]["description"], json!("web tool"));
 
     // extra forces on-demand/disabled/dup tools in regardless of category.
     let defs = reg.tool_defs(
-        &set(&["代码"]),
+        &set(&["code"]),
         &set(&["web.heavy", "web.off", "web.read_file", "web.write_file"]),
         false,
     );
@@ -275,15 +276,15 @@ fn tool_defs_flatten_by_category_expose_and_builtin_overlap() {
         vec!["web.heavy", "web.off", "web.read_file", "web.write_file"]
     );
 
-    // 文件 category: the scripted prober gives `fs` the same six tools. read_file (same name
+    // files category: the scripted prober gives `fs` the same six tools. read_file (same name
     // as a built-in) and write_file (file verb the built-ins cover) are skipped; the rest ride
-    // along in probe order. web.write_file is 文件 too but a covered verb → only when named.
+    // along in probe order. web.write_file is files too but a covered verb → only when named.
     assert_eq!(
-        names(&reg.tool_defs(&set(&["文件"]), &set(&[]), false)),
+        names(&reg.tool_defs(&set(&["files"]), &set(&[]), false)),
         vec!["fs.search", "fs.heavy", "fs.off", "fs.note"]
     );
     assert_eq!(
-        names(&reg.tool_defs(&set(&["文件"]), &set(&["web.write_file"]), false)),
+        names(&reg.tool_defs(&set(&["files"]), &set(&["web.write_file"]), false)),
         vec![
             "fs.search",
             "fs.heavy",
@@ -293,7 +294,7 @@ fn tool_defs_flatten_by_category_expose_and_builtin_overlap() {
         ]
     );
     // Offline skips url servers entirely → only web is left, and its file verb is covered.
-    assert!(reg.tool_defs(&set(&["文件"]), &set(&[]), true).is_empty());
+    assert!(reg.tool_defs(&set(&["files"]), &set(&[]), true).is_empty());
     assert!(
         reg.is_mcp_tool("web.search") && !reg.is_mcp_tool("nope.search") && !reg.is_mcp_tool("web")
     );
@@ -304,7 +305,7 @@ fn empty_registry_yields_nothing_and_names_the_config_file() {
     let d = tempfile::tempdir().expect("tmp");
     let reg = McpRegistry::new(d.path(), McpConfig::new());
     assert!(reg
-        .tool_defs(&set(&["网络", "MCP"]), &set(&["x.y"]), false)
+        .tool_defs(&set(&["web", "mcp"]), &set(&["x.y"]), false)
         .is_empty());
     let out = reg.call("utils", "calculate", &Map::new(), d.path());
     assert!(out.starts_with("[MCP server 'utils' not configured. Edit "));
@@ -440,7 +441,10 @@ fn executor_calls_flattened_and_mcp_call_tools() {
     // argument error → expected parameter names appended (from the manifest)
     let err = ex.run_tool("fake.needs_q", &json!({}));
     assert!(err.starts_with("[mcp_call error:"), "{err}");
-    assert!(err.contains("工具 needs_q 期望参数: q"), "{err}");
+    assert!(
+        err.contains("The tool needs_q expects the parameters: q"),
+        "{err}"
+    );
     // relative path argument resolved against the workdir before the call
     let out = ex.run_tool("fake.save_path", &json!({"path": "docs/a.md"}));
     let want = wd.join("docs").join("a.md").to_string_lossy().into_owned();
@@ -453,13 +457,13 @@ fn executor_calls_flattened_and_mcp_call_tools() {
         .run_tool("fake.missing", &json!({}))
         .starts_with("[mcp_call error:"));
     // the registry served the loop's definitions for the routed category
-    let defs = reg.tool_defs(&set(&["网络"]), &set(&[]), false);
+    let defs = reg.tool_defs(&set(&["web"]), &set(&[]), false);
     let names: Vec<&str> = defs
         .iter()
         .filter_map(|d| d["function"]["name"].as_str())
         .collect();
-    assert_eq!(names, vec!["fake.echo"]); // needs_q on-demand, write_file dup, save_path is 文件
-    let defs = reg.tool_defs(&set(&["文件"]), &set(&[]), false);
+    assert_eq!(names, vec!["fake.echo"]); // needs_q on-demand, write_file dup, save_path is files
+    let defs = reg.tool_defs(&set(&["files"]), &set(&[]), false);
     let names: Vec<&str> = defs
         .iter()
         .filter_map(|d| d["function"]["name"].as_str())

@@ -18,7 +18,7 @@ impl ChatBackend for Summariser {
         _t: &[Value],
         _on: &mut dyn FnMut(StreamPiece<'_>),
     ) -> Result<ChatResponse, ChatError> {
-        Ok(ChatResponse::text("摘要"))
+        Ok(ChatResponse::text("summary"))
     }
 }
 
@@ -65,7 +65,7 @@ fn l3_reinjects_plan() {
         &mut |s| log.push(s),
     );
     let j = joined(&c.messages);
-    assert!(j.contains("[当前计划(todo)") && j.contains("[x] 2. b"));
+    assert!(j.contains("[Current plan (todo)") && j.contains("[x] 2. b"));
     assert!(c.summarised);
     assert_eq!(c.messages.len(), 5); // system + summary + last 3
     assert!(log.iter().any(|l| l.contains("L3")));
@@ -89,7 +89,7 @@ fn l2_reinjects_plan() {
 #[test]
 fn no_plan_no_marker() {
     let c = compact_history(&mut Summariser, "m", msgs(8), 3, None, None, &mut |_| {});
-    assert!(!joined(&c.messages).contains("[当前计划(todo)"));
+    assert!(!joined(&c.messages).contains("[Current plan (todo)"));
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn files_text_rides_along() {
         &mut |_| {},
     );
     let j = joined(&c.messages);
-    assert!(j.contains("[工作目录已有文件") && j.contains("b.py"));
+    assert!(j.contains("[Files already in the working directory") && j.contains("b.py"));
 }
 
 #[test]
@@ -116,7 +116,9 @@ fn l1_truncates_old_tool_output_only() {
     v.push(Message::assistant("done"));
     let c = compact_history(&mut Broken, "m", v, 1, None, None, &mut |_| {});
     assert!(!c.summarised);
-    assert!(c.messages[2].content.contains("已截断,原 500 字符"));
+    assert!(c.messages[2]
+        .content
+        .contains("truncated, originally 500 chars"));
     assert_eq!(c.messages[4].content.len(), 500); // last two untouched
 }
 
@@ -129,7 +131,7 @@ fn failed_summary_leaves_history_untouched_and_logs() {
     });
     assert_eq!(c.messages, input);
     assert!(!c.summarised);
-    assert!(log.iter().any(|l| l.contains("失败")));
+    assert!(log.iter().any(|l| l.contains("failed")));
 }
 
 #[test]
@@ -202,12 +204,12 @@ fn sanitize_checkpoint_tail() {
 #[test]
 fn similar_detects_repeats() {
     assert!(similar(
-        "我将开始实现这个功能,首先创建文件。",
-        "我将开始实现这个功能, 首先创建文件。",
+        "I will start implementing this feature, first creating the file.",
+        "I will start implementing this feature,  first creating the file.",
         0.75
     ));
     assert!(!similar(
-        "完全不同的内容 A",
+        "Completely different content A",
         "another thing entirely B",
         0.75
     ));

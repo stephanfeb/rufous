@@ -19,8 +19,8 @@ pub use wav::{encode_wav16, parse_wav, Pcm};
 
 /// Bundled streaming zipformer directories per language (int8 weights only).
 pub const STT_MODEL_DIRS: &[(&str, &str)] = &[
-    ("zh", "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"),
     ("en", "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"),
+    ("zh", "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"),
 ];
 
 /// Where the models are fetched from (the k2-fsa release that Mingbird's installer bundles).
@@ -45,7 +45,7 @@ pub fn stt_bases(install_dir: &Path, agent_home: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// `_stt_model_dir`: the model directory for `lang` (unknown language → Chinese), or `None`.
+/// `_stt_model_dir`: the model directory for `lang` (unknown language → English), or `None`.
 /// A base may be a root (`<base>/stt/<dir>`), a `stt` folder (`<base>/<dir>`), or the model
 /// directory itself.
 pub fn stt_model_dir(lang: &str, bases: &[PathBuf]) -> Option<PathBuf> {
@@ -126,7 +126,7 @@ pub fn install_hint(lang: &str, agent_home: &Path) -> String {
         .map(|(_, d)| *d)
         .unwrap_or_default();
     format!(
-        "语音模型未安装:下载 {STT_MODEL_URL_BASE}{dir}.tar.bz2 并解压到 {}/stt/{dir}/(只需 *int8.onnx 与 tokens.txt)",
+        "Speech model not installed: download {STT_MODEL_URL_BASE}{dir}.tar.bz2 and unpack it into {}/stt/{dir}/ (only the *int8.onnx files and tokens.txt are needed)",
         agent_home.display()
     )
 }
@@ -160,7 +160,7 @@ pub struct Transcript {
 pub enum VoiceError {
     #[error("bad_audio: {0}")]
     BadAudio(String),
-    /// Below the energy floor: nothing was said (`未捕捉到声音,请重试`).
+    /// Below the energy floor: nothing was said ("no speech captured, please try again").
     #[error("no_voice")]
     NoVoice,
     /// No local model and no audio-capable Ollama model.
@@ -174,7 +174,7 @@ pub enum VoiceError {
 #[derive(Debug, Clone)]
 pub struct Request<'a> {
     pub wav: &'a [u8],
-    /// `zh` | `en` (the prefs' `stt_lang`).
+    /// `en` | `zh` (the prefs' `stt_lang`).
     pub lang: &'a str,
     pub bases: &'a [PathBuf],
     /// Ollama host for the fallback.
@@ -186,7 +186,7 @@ pub struct Request<'a> {
 /// RMS below this is treated as silence (the recorder's VAD uses 0.008 for "speech").
 pub const SILENCE_RMS: f32 = 0.002;
 
-/// `transcribe`: local sherpa (chosen language, then Chinese) → Ollama audio model → error.
+/// `transcribe`: local sherpa (chosen language, then any other bundled language) → Ollama audio model → error.
 pub fn transcribe(req: &Request<'_>) -> Result<Transcript, VoiceError> {
     let pcm = parse_wav(req.wav).map_err(VoiceError::BadAudio)?;
     if pcm.samples.is_empty() || pcm.rms() < SILENCE_RMS {
@@ -198,8 +198,10 @@ pub fn transcribe(req: &Request<'_>) -> Result<Transcript, VoiceError> {
     #[cfg(feature = "sherpa")]
     {
         let mut langs: Vec<&str> = vec![req.lang];
-        if req.lang != "zh" {
-            langs.push("zh");
+        for (l, _) in STT_MODEL_DIRS {
+            if *l != req.lang {
+                langs.push(l);
+            }
         }
         for lang in langs {
             if let Some(dir) = stt_model_dir(lang, req.bases) {

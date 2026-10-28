@@ -1,10 +1,10 @@
 ---
 name: refactor
-description: 重构:行为不变结构变,测试全绿才交付
+description: Refactoring: behaviour unchanged, structure changed; deliver only when all tests are green
 ---
-# 重构原则
-1. 行为不变,结构变;重构前后测试必须全绿
-2. 提取重复逻辑为函数;把长函数拆成小函数
-3. 一次只做一种重构,每步都跑测试
-4. 命名即文档:变量/函数名说清意图
-5. 不顺手加功能——那是新需求,不是重构
+# Refactoring principles
+1. Behaviour unchanged, structure changed; tests must be all green before and after the refactor
+2. Extract duplicated logic into functions; split long functions into small ones
+3. One kind of refactoring at a time; run the tests after every step
+4. Names are documentation: variable / function names state the intent
+5. Do not add features while you are there; that is a new requirement, not a refactor

@@ -65,8 +65,8 @@ impl ToolRunner for ScriptedTools {
     }
 }
 
-const TASK: &str = "修复 m08.py 里的 bug,并运行测试验证。";
-const EDIT_OK: &str = "[edited m08.py (已备份),.bak 备份可用]";
+const TASK: &str = "Fix the bug in m08.py and run the tests to verify.";
+const EDIT_OK: &str = "[edited m08.py (backed up); .bak backup available]";
 
 fn agent_for(workdir: &Path, calls: &[Call]) -> Agent<Scripted, ScriptedTools> {
     agent_with(workdir, calls, "done", "all done")
@@ -113,7 +113,7 @@ fn edit(i: usize, ok: bool) -> Call {
     let r = if ok {
         EDIT_OK
     } else {
-        "[edit failed: old text not found. 文件开头预览: ...]"
+        "[edit failed: old text not found. Preview of the file start: ...]"
     };
     (
         "edit_file",
@@ -157,7 +157,7 @@ fn shotgun_hint_injected_once_and_not_disabled() {
     ];
     let mut a = agent_for(d.path(), &calls);
     let msgs = a.run(start(TASK), None, None).expect("loop");
-    let hints = user_msgs(&msgs, "连续成功编辑");
+    let hints = user_msgs(&msgs, "edited m08.py successfully");
     assert_eq!(hints.len(), 1);
     assert!(hints[0].content.contains("m08.py"));
     assert!(!a.face.is_disabled("edit_file"));
@@ -168,7 +168,7 @@ fn failed_edits_not_counted() {
     let d = tempfile::tempdir().expect("tmp");
     let calls: Vec<Call> = (0..5).map(|i| edit(i, false)).collect();
     let msgs = scripted(d.path(), &calls);
-    assert!(user_msgs(&msgs, "连续成功编辑").is_empty());
+    assert!(user_msgs(&msgs, "edited m08.py successfully").is_empty());
 }
 
 #[test]
@@ -179,18 +179,18 @@ fn disabled_edit_hallucination_not_counted() {
             (
                 "edit_file",
                 json!({"path": "m08.py", "old": i.to_string(), "new": "x"}),
-                "[tool edit_file 已被禁用(连续重复调用保护)。]",
+                "[tool edit_file is disabled (repeated-call protection).]",
             )
         })
         .collect();
     let mut a = agent_for(d.path(), &calls);
     a.face.disabled.insert("edit_file".into());
     let msgs = a.run(start(TASK), None, None).expect("loop");
-    assert!(user_msgs(&msgs, "连续成功编辑").is_empty());
+    assert!(user_msgs(&msgs, "edited m08.py successfully").is_empty());
     // The refusal text is the loop's own (the scripted result is never consulted).
     assert!(msgs
         .iter()
-        .any(|m| m.role == Role::Tool && m.content.contains("已被禁用")));
+        .any(|m| m.role == Role::Tool && m.content.contains("is disabled")));
 }
 
 // ---- time budget wiring ----
@@ -259,10 +259,10 @@ fn finish_reread_injects_task_once_then_passes() {
     let msgs = agent_for(d.path(), &calls)
         .run(start(task), None, None)
         .expect("loop");
-    let rereads = user_msgs(&msgs, "交付前自查");
+    let rereads = user_msgs(&msgs, "Pre-delivery check");
     assert_eq!(rereads.len(), 1);
     assert!(rereads[0].content.contains(task));
-    assert!(rereads[0].content.contains("重新 finish"));
+    assert!(rereads[0].content.contains("finish again"));
     assert!(rereads[0].content.starts_with("⚠️"));
     assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
 }
@@ -271,9 +271,9 @@ fn finish_reread_injects_task_once_then_passes() {
 fn finish_reread_skipped_for_qa() {
     let d = tempfile::tempdir().expect("tmp");
     let msgs = agent_for(d.path(), &[])
-        .run(start("你好"), None, None)
+        .run(start("hello"), None, None)
         .expect("loop");
-    assert!(user_msgs(&msgs, "交付前自查").is_empty());
+    assert!(user_msgs(&msgs, "Pre-delivery check").is_empty());
 }
 
 /// Phase-driven backend: create real.txt, then a finish whose summary lies about report.md.
@@ -299,9 +299,9 @@ impl ChatBackend for Liar {
             2 => ChatResponse::call(
                 "",
                 "finish",
-                json!({"summary": "已完成,见 report.md 和 real.txt"}),
+                json!({"summary": "Done, see report.md and real.txt"}),
             ),
-            _ => ChatResponse::call("done", "finish", json!({"summary": "全部完成"})),
+            _ => ChatResponse::call("done", "finish", json!({"summary": "all done"})),
         };
         r.prompt_eval_count = Some(500);
         Ok(r)
@@ -324,15 +324,15 @@ impl ToolRunner for CreateOnly {
 fn finish_reread_only_after_existence_gates_pass() {
     let d = tempfile::tempdir().expect("tmp");
     std::fs::write(d.path().join("real.txt"), "x").expect("write");
-    let task = "写一份报告到 report.md,输出纯数字结论。";
+    let task = "Write a report to report.md with a purely numeric conclusion.";
     let mut a = Agent::new(
         RunParams::plain("gemma4:12b", d.path()),
         Liar { phase: 0 },
         CreateOnly,
     );
     let msgs = a.run(start(task), None, None).expect("loop");
-    assert!(!user_msgs(&msgs, "声称的以下产物").is_empty());
-    assert!(user_msgs(&msgs, "交付前自查").len() <= 1);
+    assert!(!user_msgs(&msgs, "named in your summary do not exist").is_empty());
+    assert!(user_msgs(&msgs, "Pre-delivery check").len() <= 1);
 }
 
 #[test]
@@ -341,13 +341,13 @@ fn fake_finish_rejection_carries_next_action() {
     let msgs = agent_with(d.path(), &[], "", "")
         .run(start(TASK), None, None)
         .expect("loop");
-    let rejects = user_msgs(&msgs, "finish 被拒绝");
+    let rejects = user_msgs(&msgs, "finish was rejected");
     assert!(!rejects.is_empty());
     let c = &rejects[0].content;
-    assert!(c.contains("下一步三选一"));
+    assert!(c.contains("Pick one of three"));
     assert!(c.contains("create_file") && c.contains("answer.txt"));
-    assert!(c.contains("继续用工具推进"));
-    assert!(c.contains("分析/讲解类任务"));
+    assert!(c.contains("keep going with tools"));
+    assert!(c.contains("analysis or explanation task"));
     let abs = std::path::absolute(d.path()).expect("abs");
     assert!(c.contains(&abs.to_string_lossy().into_owned()));
     // The refused call never gets a success receipt.
@@ -360,19 +360,24 @@ fn fake_finish_rejection_carries_next_action() {
 #[test]
 fn fake_finish_allows_text_delivery() {
     let d = tempfile::tempdir().expect("tmp");
-    let msgs = agent_with(d.path(), &[], "变量逐条解释如下:…", "all done")
-        .run(start(TASK), None, None)
-        .expect("loop");
-    assert!(user_msgs(&msgs, "finish 被拒绝").is_empty());
+    let msgs = agent_with(
+        d.path(),
+        &[],
+        "The variables, explained one by one: …",
+        "all done",
+    )
+    .run(start(TASK), None, None)
+    .expect("loop");
+    assert!(user_msgs(&msgs, "finish was rejected").is_empty());
 }
 
 #[test]
 fn fake_finish_allows_substantive_summary() {
     let d = tempfile::tempdir().expect("tmp");
-    let msgs = agent_with(d.path(), &[], "", "结论:共 17 千小时。")
+    let msgs = agent_with(d.path(), &[], "", "Conclusion: 17 thousand hours in total.")
         .run(start(TASK), None, None)
         .expect("loop");
-    assert!(user_msgs(&msgs, "finish 被拒绝").is_empty());
+    assert!(user_msgs(&msgs, "finish was rejected").is_empty());
 }
 
 #[test]
@@ -389,7 +394,7 @@ fn todo_sync_gate_blocks_twice_then_passes() {
         "[created out.txt]",
     )];
     let msgs = scripted(d.path(), &calls);
-    let gates = user_msgs(&msgs, "项未标记完成");
+    let gates = user_msgs(&msgs, "not marked done");
     assert_eq!(gates.len(), 2);
     assert!(gates[0].content.contains("1/2"));
     assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
@@ -410,9 +415,9 @@ fn research_streak_ignores_new_queries() {
         calls.push(("web_search", json!({"query": q}), "• r"));
     }
     let msgs = scripted(d.path(), &calls);
-    assert!(user_msgs(&msgs, "已被禁用").is_empty());
-    // enable_tools really put web_search on the face: no "当前不可用" refusals.
-    assert!(!msgs.iter().any(|m| m.content.contains("当前不可用")));
+    assert!(user_msgs(&msgs, "disabled").is_empty());
+    // enable_tools really put web_search on the face: no "is not available" refusals.
+    assert!(!msgs.iter().any(|m| m.content.contains("is not available")));
 }
 
 #[test]
@@ -429,7 +434,7 @@ fn research_streak_bans_repeated_fingerprints() {
     }
     let mut a = agent_for(d.path(), &calls);
     let msgs = a.run(start(TASK), None, None).expect("loop");
-    assert!(!user_msgs(&msgs, "重复完全相同的网络查询").is_empty());
+    assert!(!user_msgs(&msgs, "repeated the exact same web query").is_empty());
     assert!(a.face.is_disabled("web_search"));
 }
 
@@ -446,7 +451,7 @@ fn research_streak_covers_multi() {
         calls.push(("web_search_multi", json!({"queries": [q]}), "• r"));
     }
     let msgs = scripted(d.path(), &calls);
-    assert!(!user_msgs(&msgs, "重复完全相同的网络查询").is_empty());
+    assert!(!user_msgs(&msgs, "repeated the exact same web query").is_empty());
 }
 
 #[test]
@@ -464,7 +469,7 @@ fn enable_tools_unlocks_a_disabled_tool() {
     a.face.disable("web_search");
     let msgs = a.run(start(TASK), None, None).expect("loop");
     assert!(!a.face.is_disabled("web_search"));
-    assert!(!msgs.iter().any(|m| m.content.contains("当前不可用")));
+    assert!(!msgs.iter().any(|m| m.content.contains("is not available")));
 }
 
 // ---- duplicate-call interception ----
@@ -479,10 +484,10 @@ fn identical_consecutive_call_is_intercepted() {
     let msgs = scripted(d.path(), &calls);
     let blocked: Vec<&Message> = msgs
         .iter()
-        .filter(|m| m.role == Role::Tool && m.content.starts_with("[已拦截"))
+        .filter(|m| m.role == Role::Tool && m.content.starts_with("[blocked:"))
         .collect();
     assert_eq!(blocked.len(), 1);
-    assert!(!user_msgs(&msgs, "不要原样重试").is_empty());
+    assert!(!user_msgs(&msgs, "Do not retry it unchanged").is_empty());
 }
 
 // ---- output cap: truncation feedback and the empty-turn ladder ----
@@ -530,7 +535,7 @@ fn run_responder<F: FnMut(usize) -> ChatResponse>(workdir: &Path, f: F) -> Vec<M
         Responder { n: 0, f },
         OkTools,
     );
-    a.run(start("写一个大文件并验证。"), None, None)
+    a.run(start("Write a large file and verify it."), None, None)
         .expect("loop")
 }
 
@@ -546,7 +551,7 @@ fn truncation_feedback_injected_once_with_limit() {
         ),
         _ => ChatResponse::call("done", "finish", json!({"summary": "all done"})),
     });
-    let advice = user_msgs(&out, "append_file 逐段追加");
+    let advice = user_msgs(&out, "append_file in pieces");
     assert_eq!(advice.len(), 1);
     assert!(advice[0].content.contains("8192"));
 }
@@ -566,8 +571,10 @@ fn hard_reset_reachable_after_six_empties() {
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    assert!(joined.contains("上下文已重置"));
-    assert!(out.iter().any(|m| m.content.contains("写一个大文件并验证")));
+    assert!(joined.contains("the context has been reset"));
+    assert!(out
+        .iter()
+        .any(|m| m.content.contains("Write a large file and verify")));
 }
 
 #[test]
@@ -581,7 +588,9 @@ fn empty_ladder_exits_after_three_resets() {
         },
         OkTools,
     );
-    let err = a.run(start("写一个大文件并验证。"), None, None).err();
+    let err = a
+        .run(start("Write a large file and verify it."), None, None)
+        .err();
     assert!(matches!(err, Some(boubou_core::Error::Aborted(_))));
 }
 
@@ -594,15 +603,15 @@ fn qa_text_answer_is_force_closed() {
         RunParams::plain("gemma4:12b", d.path()),
         Responder {
             n: 0,
-            f: |_| ChatResponse::text("你好!我是布布。"),
+            f: |_| ChatResponse::text("Hello! I'm Boubou."),
         },
         OkTools,
     );
-    let out = a.run(start("你好"), None, None).expect("loop");
+    let out = a.run(start("hello"), None, None).expect("loop");
     assert!(out
         .last()
         .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
-    assert!(!user_msgs(&out, "回答已经足够").is_empty());
+    assert!(!user_msgs(&out, "Your answer is already sufficient").is_empty());
     assert!(out.len() < 8);
 }
 
@@ -611,15 +620,126 @@ fn repeated_text_is_a_dead_loop() {
     let d = tempfile::tempdir().expect("tmp");
     let out = run_responder(d.path(), |n| {
         if n <= 3 {
-            ChatResponse::text("我将开始实现这个功能,首先创建文件。")
+            ChatResponse::text("I will start implementing this feature by creating the file.")
         } else {
             ChatResponse::call("done", "finish", json!({"summary": "all done"}))
         }
     });
-    assert!(!user_msgs(&out, "判定为死循环").is_empty());
+    assert!(!user_msgs(&out, "counts as a dead loop").is_empty());
     assert!(out
         .last()
         .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+}
+
+#[test]
+fn cycling_text_outputs_are_a_dead_loop() {
+    // gemma4 alternated three different sentences forever: a window of recent texts catches
+    // the cycle where comparing only with the previous turn did not.
+    let d = tempfile::tempdir().expect("tmp");
+    const CYCLE: [&str; 3] = [
+        "What would you like to do next?",
+        "I can help you with software development tasks. What are you working on?",
+        "I can help you with writing code, explaining concepts, debugging, and generating code snippets.",
+    ];
+    let out = run_responder(d.path(), |n| ChatResponse::text(CYCLE[(n - 1) % 3]));
+    assert!(!user_msgs(&out, "counts as a dead loop").is_empty());
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+    let texts = out
+        .iter()
+        .filter(|m| m.role == Role::Assistant && m.tool_calls.is_empty())
+        .count();
+    assert!(texts <= 5, "{texts} text turns before the loop was closed");
+}
+
+#[test]
+fn text_only_task_turns_are_capped() {
+    // Distinct text every turn, never a tool call: the sharper note at the second turn, the
+    // turn ended at the fourth instead of nagging until max_iterations.
+    let d = tempfile::tempdir().expect("tmp");
+    const PROSE: [&str; 5] = [
+        "First I would sketch the overall structure of the file.",
+        "The data model needs a header section and several numbered entries.",
+        "Validation could run as a separate pass once everything is written.",
+        "Let me think about how large the output is going to be.",
+        "There are a few ways to approach the verification step.",
+    ];
+    let out = run_responder(d.path(), |n| ChatResponse::text(PROSE[(n - 1) % 5]));
+    assert_eq!(user_msgs(&out, "Do not reply with more text").len(), 1);
+    assert_eq!(user_msgs(&out, "The turn ends here").len(), 1);
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+    let texts = out
+        .iter()
+        .filter(|m| m.role == Role::Assistant && m.tool_calls.is_empty())
+        .count();
+    assert_eq!(texts, 4);
+    // The generic continue note fired for the first and third text turns.
+    assert_eq!(user_msgs(&out, "Continue: keep making").len(), 2);
+}
+
+#[test]
+fn chat_mode_text_reply_ends_the_turn() {
+    // `boubou chat`: a plain text reply is the answer even when the message reads like a task.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.chat_mode = true;
+    let mut a = Agent::new(
+        params,
+        Responder {
+            n: 0,
+            f: |_| {
+                ChatResponse::text(
+                    "Rust in the morning / borrow checker hums along / fearless, we compile",
+                )
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(start("Write me a haiku about Rust"), None, None)
+        .expect("loop");
+    assert!(user_msgs(&out, "Continue: keep making").is_empty());
+    assert!(!user_msgs(&out, "Your answer is already sufficient").is_empty());
+    assert_eq!(
+        out.iter()
+            .filter(|m| m.role == Role::Assistant && m.tool_calls.is_empty())
+            .count(),
+        1
+    );
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+}
+
+#[test]
+fn trailing_question_mark_is_qa_in_the_loop() {
+    // The transcript's opening line: 41 characters, no question word, a space before the `?`.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |_| {
+                ChatResponse::text(
+                    "I can help with writing code, debugging and explaining concepts.",
+                )
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(
+            start("Are you capable of software development ?"),
+            None,
+            None,
+        )
+        .expect("loop");
+    assert!(user_msgs(&out, "Continue: keep making").is_empty());
+    assert!(!user_msgs(&out, "Your answer is already sufficient").is_empty());
+    assert!(out.len() < 8);
 }
 
 // ---- every injected user message starts with a harness prefix ----
@@ -741,7 +861,7 @@ fn stop_flag_ends_the_run_before_the_next_turn_and_saves() {
 
 // ---- missing-argument ladder and truncated tool calls (LRAB WF-08 post-mortem) ----
 
-const MISSING_PATH: &str = "[tool error: create_file 缺少参数 'path'。必须提供参数: [\"path\"]。你实际传了: [\"content\"]。 正确示例: create_file(path=\"app.py\", content=\"...文件内容...\")请补全参数后原样重试(内容不变,只补上缺失的参数)。]";
+const MISSING_PATH: &str = "[tool error: create_file is missing argument 'path'. Required arguments: [\"path\"]. You passed: [\"content\"]. Correct example: create_file(path=\"app.py\", content=\"...file content...\") Add the missing argument and retry with the same content (change nothing else).]";
 
 fn pathless_calls(msgs: &[Message]) -> Vec<String> {
     msgs.iter()
@@ -777,20 +897,26 @@ fn repeated_missing_path_prunes_history_and_prescribes_chunked_shape() {
     assert_eq!(pathless_calls(&msgs), vec!["C".to_string()]);
     let errs = msgs
         .iter()
-        .filter(|m| m.role == Role::Tool && m.content.contains("缺少参数 'path'"))
+        .filter(|m| m.role == Role::Tool && m.content.contains("is missing argument 'path'"))
         .count();
     assert_eq!(errs, 1, "one missing-arg error left as the single example");
     // One note (the earlier one went with its pair), prescribing a different call shape.
-    let notes = user_msgs(&msgs, "[参数缺失]");
+    let notes = user_msgs(&msgs, "[missing argument]");
     assert_eq!(notes.len(), 1);
     assert!(notes[0].content.contains("append_file"));
-    assert!(notes[0].content.contains("连续 3 次"));
+    assert!(notes[0].content.contains("3 times in a row"));
     assert!(
-        !notes[0].content.contains("计划里尚未生成"),
+        !notes[0]
+            .content
+            .contains("Files in the plan not yet produced"),
         "no plan → no plan hint"
     );
     // The generic failure ladder did not fire for this class of error.
-    assert!(user_msgs(&msgs, "先用 list_dir / read_file 确认实际情况").is_empty());
+    assert!(user_msgs(
+        &msgs,
+        "Check the real state with list_dir / read_file first"
+    )
+    .is_empty());
     // Order: kept failed call → its error → the note; system + task untouched.
     assert_eq!(msgs[0].role, Role::System);
     assert_eq!(msgs[1].content, TASK);
@@ -802,8 +928,8 @@ fn repeated_missing_path_prunes_history_and_prescribes_chunked_shape() {
                 && m.tool_calls[0].function.arguments.get("content") == Some(&json!("C"))
         })
         .expect("call C");
-    assert!(msgs[c_idx + 1].content.contains("缺少参数"));
-    assert!(msgs[c_idx + 2].content.starts_with("⚠️ [参数缺失]"));
+    assert!(msgs[c_idx + 1].content.contains("missing argument"));
+    assert!(msgs[c_idx + 2].content.starts_with("⚠️ [missing argument]"));
     // The successful write landed afterwards.
     assert!(msgs
         .iter()
@@ -828,7 +954,7 @@ fn complete_call_resets_missing_arg_ladder() {
         pathless_calls(&msgs),
         vec!["A".to_string(), "B".to_string()]
     );
-    assert!(user_msgs(&msgs, "[参数缺失]").is_empty());
+    assert!(user_msgs(&msgs, "[missing argument]").is_empty());
 }
 
 struct Recording(Arc<Mutex<Vec<String>>>);
@@ -865,7 +991,7 @@ fn run_recording<F: FnMut(usize) -> ChatResponse>(
         Recording(seen.clone()),
     );
     let msgs = a
-        .run(start("写一个大文件并验证。"), None, None)
+        .run(start("Write a large file and verify it."), None, None)
         .expect("loop");
     let calls = seen.lock().expect("lock").clone();
     (msgs, calls)
@@ -887,15 +1013,17 @@ fn truncated_tool_call_gets_chunking_advice_instead_of_verbatim_retry() {
     assert_eq!(calls.iter().filter(|c| *c == "create_file").count(), 1);
     let err = msgs
         .iter()
-        .find(|m| m.role == Role::Tool && m.content.contains("截断"))
+        .find(|m| m.role == Role::Tool && m.content.contains("truncated"))
         .expect("truncation tool error");
     assert!(err.content.contains("done_reason=length"));
     assert!(err.content.contains("\"path\""));
     assert!(err.content.contains("8192"), "{}", err.content);
-    let note = user_msgs(&msgs, "触到生成 token 上限");
+    let note = user_msgs(&msgs, "hit the generation token limit");
     assert_eq!(note.len(), 1);
     assert!(note[0].content.contains("append_file"));
-    assert!(!msgs.iter().any(|m| m.content.contains("原样重试")));
+    assert!(!msgs
+        .iter()
+        .any(|m| m.content.contains("retry with the same content")));
 }
 
 #[test]
@@ -906,7 +1034,7 @@ fn truncated_response_with_complete_call_runs_normally() {
         _ => ChatResponse::call("done", "finish", json!({"summary": "wrote app.py"})),
     });
     assert_eq!(calls.iter().filter(|c| *c == "create_file").count(), 1);
-    assert!(!msgs.iter().any(|m| m.content.contains("截断")));
+    assert!(!msgs.iter().any(|m| m.content.contains("truncated")));
     assert!(msgs
         .iter()
         .any(|m| m.content.starts_with("[created app.py")));

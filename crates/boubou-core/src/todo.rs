@@ -114,7 +114,7 @@ pub fn run_todo(workdir: &Path, args: &TodoArgs) -> String {
         TodoAction::Update => {
             let mut t = load_todo(workdir);
             if t.is_empty() {
-                return "[todo update: 计划为空。先调用 todo(action=create, items=[...]) 建计划。]"
+                return "[todo update: the plan is empty. Call todo(action=create, items=[...]) first to create one.]"
                     .to_string();
             }
             let done_flag = args.done.unwrap_or(true);
@@ -143,7 +143,7 @@ pub fn run_todo(workdir: &Path, args: &TodoArgs) -> String {
                     .collect::<Vec<_>>()
                     .join(", ");
                 return format!(
-                    "[todo update: index 无效(计划共 {} 项,可用 index: {valid})。要全部勾选请用 todo(action=update, all=true)。]",
+                    "[todo update: invalid index (the plan has {} items; valid index values: {valid}). To tick everything use todo(action=update, all=true).]",
                     t.len()
                 );
             }

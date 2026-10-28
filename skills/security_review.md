@@ -1,10 +1,10 @@
 ---
 name: security_review
-description: 安全检查清单:注入/路径穿越/敏感信息/权限
+description: Security checklist: injection / path traversal / sensitive data / permissions
 ---
-# 安全检查
-1. 输入验证:shell 命令拼接→命令注入;SQL 字符串拼接→SQL注入;路径拼接不受控→路径穿越
-2. 敏感信息:硬编码密码/API key/密钥 → 必须删除或改用环境变量
-3. 权限:检查文件路径是否可越界(..)、是否任意位置写入
-4. 修复:优先参数化查询、白名单校验、subprocess 数组参数(不用 shell=True 拼字符串)
-5. 修复后运行测试确认行为不变
+# Security check
+1. Input validation: shell command concatenation -> command injection; SQL string concatenation -> SQL injection; uncontrolled path joining -> path traversal
+2. Sensitive data: hard-coded passwords / API keys / secrets -> must be removed or moved to environment variables
+3. Permissions: check whether file paths can escape (..) and whether writes can land anywhere
+4. Fixes: prefer parameterised queries, allow-list validation, subprocess with an argument list (no shell=True string building)
+5. After fixing, run the tests to confirm behaviour is unchanged

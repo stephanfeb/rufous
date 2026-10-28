@@ -32,11 +32,14 @@ fn mk(dir: &std::path::Path, name: &str, n_lines: usize, pad: &str) {
 #[test]
 fn clobber_blocked_and_replace_escapes() {
     let (d, mut e) = ex();
-    let big = format!("# 手册\n{}", "正文段落,内容充足。\n".repeat(60));
+    let big = format!(
+        "# Manual\n{}",
+        "A body paragraph with plenty of content.\n".repeat(60)
+    );
     assert!(create(&mut e, "doc.md", &big).contains("created"));
-    let stub = "## 只有第二节\n一点尾巴";
+    let stub = "## Only the second section\nA short tail";
     let r2 = create(&mut e, "doc.md", stub);
-    assert!(r2.contains("覆盖防护") && r2.contains("replace=true"));
+    assert!(r2.contains("overwrite guard") && r2.contains("replace=true"));
     assert_eq!(
         std::fs::read_to_string(d.path().join("doc.md")).expect("read"),
         big
@@ -56,7 +59,12 @@ fn clobber_blocked_and_replace_escapes() {
 fn grow_and_new_file_not_blocked() {
     let (_d, mut e) = ex();
     assert!(create(&mut e, "new.txt", "hello world").contains("created"));
-    assert!(create(&mut e, "new.txt", &"hello world, 更长的续写".repeat(20)).contains("created"));
+    assert!(create(
+        &mut e,
+        "new.txt",
+        &"hello world, a longer continuation".repeat(20)
+    )
+    .contains("created"));
     create(&mut e, "tiny.txt", &"a".repeat(100));
     assert!(create(&mut e, "tiny.txt", &"b".repeat(80)).contains("created")); // under 300 B
 }
@@ -74,7 +82,7 @@ fn clobber_regression_wf10_shape() {
         "user_manual.md",
         "## 2. Real Captured Terminal Outputs\n\n```text\nsome output\n```",
     );
-    assert!(r.contains("覆盖防护"));
+    assert!(r.contains("overwrite guard"));
     assert!(std::fs::read_to_string(d.path().join("user_manual.md"))
         .expect("read")
         .contains("Introduction"));
@@ -85,7 +93,7 @@ fn clobber_regression_wf10_shape() {
 #[test]
 fn delete_moves_to_trash() {
     let (d, mut e) = ex();
-    std::fs::write(d.path().join("precious.txt"), "重要内容").expect("write");
+    std::fs::write(d.path().join("precious.txt"), "important content").expect("write");
     let r = e.run_tool("delete_file", &json!({"path": "precious.txt"}));
     assert!(r.contains("mingbird_trash"));
     assert!(!d.path().join("precious.txt").exists());
@@ -98,7 +106,7 @@ fn delete_moves_to_trash() {
     assert!(name.starts_with("precious.txt"));
     assert!(std::fs::read_to_string(trashed[0].path())
         .expect("read")
-        .contains("重要内容"));
+        .contains("important content"));
     assert!(e
         .run_tool("delete_file", &json!({"path": "ghost.txt"}))
         .contains("not found"));
@@ -110,7 +118,7 @@ fn delete_moves_to_trash() {
 fn tilde_path_teachback() {
     let (d, mut e) = ex();
     let r = create(&mut e, "~/.timetrack/entries.json", "[]");
-    assert!(r.contains("安全垫") && r.contains("相对路径"));
+    assert!(r.contains("safety net") && r.contains("relative path"));
     assert!(!d.path().join("~").exists());
 }
 
@@ -151,7 +159,7 @@ fn within_budget_returns_requested_range() {
         &json!({"path": "data.txt", "start_line": 10, "end_line": 12}),
     );
     assert!(r1.starts_with("L010") && r1.contains("L012") && !r1.contains("L013"));
-    assert!(!r1.contains("crawl-guard") && !r1.contains("[提示"));
+    assert!(!r1.contains("crawl-guard") && !r1.contains("[hint"));
     let r2 = e.run_tool(
         "read_file",
         &json!({"path": "data.txt", "start_line": 50, "end_line": 60}),
@@ -170,11 +178,11 @@ fn nudge_at_4th_and_10th_only() {
     let nudged: Vec<usize> = results
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.contains("[提示"))
+        .filter(|(_, r)| r.contains("[hint"))
         .map(|(i, _)| i + 1)
         .collect();
     assert_eq!(nudged, vec![4, 10]);
-    assert!(results[3].starts_with("[提示"));
+    assert!(results[3].starts_with("[hint"));
     assert!(results[3].contains("L001") && results[3].contains("L030"));
     assert!(!results[3].contains("crawl-guard"));
 }
@@ -191,19 +199,23 @@ fn throttle_respects_requested_range() {
     let r1 = read(&mut e, "big.txt");
     assert!(!r1.contains("crawl-guard"));
     let r2 = read(&mut e, "big.txt");
-    assert!(r2.contains("读取不会被拒绝"));
+    assert!(r2.contains("Reads are not refused"));
     assert!(r2.contains("run_bash") && r2.contains("python"));
     let r3 = e.run_tool(
         "read_file",
         &json!({"path": "big.txt", "start_line": 150, "end_line": 200}),
     );
-    assert!(r3.contains("限速中"));
+    assert!(r3.contains("rate-limited"));
     assert!(r3.lines().nth(1).expect("body").starts_with("L150"));
-    assert!(!r3.split_once("限速中").expect("note").1.contains("L001"));
+    assert!(!r3
+        .split_once("rate-limited")
+        .expect("note")
+        .1
+        .contains("L001"));
     let body3 = r3.split_once("]\n").expect("note").1;
     assert!(
         body3
-            .split("\n[文件共")
+            .split("\n[file has")
             .next()
             .expect("body")
             .chars()
@@ -273,7 +285,7 @@ fn batch_tools_shares_crawl_accounting() {
             "batch_tools",
             &json!({"calls": [{"tool": "batch_tools", "args": {}}]})
         )
-        .contains("禁止嵌套"));
+        .contains("nested batch_tools"));
 }
 
 #[test]
@@ -305,9 +317,9 @@ fn aliases_coercion_and_missing_args() {
         .run_tool("cat", &json!({"path": "x.txt"}))
         .starts_with("hi"));
     let r = e.run_tool("read_file", &json!({"path": "x.txt", "start_line": "abc"}));
-    assert!(r.contains("需要 number 类型"));
+    assert!(r.contains("must be of type number"));
     let r = e.run_tool("create_file", &json!({"content": "hi"}));
-    assert!(r.contains("缺少参数 'path'") && r.contains("正确示例"));
+    assert!(r.contains("is missing argument 'path'") && r.contains("Correct example"));
     assert_eq!(e.run_tool("teleport", &json!({})), "[unknown tool]");
     assert!(e
         .run_tool("finish", &json!({"summary": "ok"}))
@@ -338,7 +350,7 @@ fn enable_tools_receipts() {
     let (_d, mut e) = ex();
     let r = e.run_tool("enable_tools", &json!({"tools": ["web_fetch", "nonsense"]}));
     assert!(r.starts_with("[enabled tools: web_fetch."));
-    assert!(r.contains("未知的工具名") && r.contains("nonsense"));
+    assert!(r.contains("Unknown tool name") && r.contains("nonsense"));
     let r = e.run_tool("enable_tools", &json!({"tools": ["web_fetch"]}));
-    assert!(r.contains("无需再启用"));
+    assert!(r.contains("Nothing to enable"));
 }

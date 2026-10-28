@@ -54,8 +54,8 @@ impl ChildProcess for FakeProc {
     }
 }
 
-/// What a successful child leaves behind: artifact + agent.log + checkpoint. The summary
-/// must name the artifact (the judge cross-checks claims against files).
+/// What a successful child leaves behind: artefact + agent.log + checkpoint. The summary
+/// must name the artefact (the judge cross-checks claims against files).
 fn fake_child_ok(dir: &Path, artifact: &str, summary: Option<&str>) {
     let summary = summary
         .map(String::from)
@@ -78,7 +78,12 @@ fn fake_child_ok(dir: &Path, artifact: &str, summary: Option<&str>) {
 
 fn items(n: usize) -> Vec<DispatchItem> {
     (1..=n)
-        .map(|i| DispatchItem::new(i.to_string(), format!("把 data{i}.csv 转成 markdown 表格")))
+        .map(|i| {
+            DispatchItem::new(
+                i.to_string(),
+                format!("convert data{i}.csv to a markdown table"),
+            )
+        })
         .collect()
 }
 
@@ -228,7 +233,7 @@ fn child_env_strips_parent_time_budget() {
 fn three_items_all_ok_and_collected() {
     let d = tempfile::tempdir().expect("tmp");
     let todo: Vec<Value> = (0..3)
-        .map(|_| json!({"item": "把 data.csv 转成 markdown 表格", "done": false}))
+        .map(|_| json!({"item": "convert data.csv to a markdown table", "done": false}))
         .collect();
     std::fs::write(
         d.path().join("todo.json"),
@@ -418,7 +423,7 @@ fn all_failed_falls_back_to_parent() {
         .iter()
         .all(|(_, w)| w.starts_with("child_exit_1")));
     let note = summary_for_parent(&res, &[]);
-    assert!(note.contains("需要你按原计划自己完成"));
+    assert!(note.contains("do them yourself as originally planned"));
 }
 
 // ---------------- safety integration ----------------
@@ -598,8 +603,8 @@ fn verify_cmd_must_pass_blacklist() {
 
 #[test]
 fn summary_lists_done_and_fallback() {
-    let it_bad = DispatchItem::new("2", "b.csv 转成 md");
-    let mut ok = ChildTask::new(DispatchItem::new("1", "a.csv 转成 md"), 0);
+    let it_bad = DispatchItem::new("2", "convert b.csv to md");
+    let mut ok = ChildTask::new(DispatchItem::new("1", "convert a.csv to md"), 0);
     ok.status = ChildStatus::Ok;
     ok.files = vec!["a.md".into()];
     let mut bad = ChildTask::new(it_bad.clone(), 1);
@@ -614,7 +619,7 @@ fn summary_lists_done_and_fallback() {
         ..Default::default()
     };
     let note = summary_for_parent(&res, &["a.md".to_string()]);
-    assert!(note.contains("a.md") && note.contains("b.csv 转成 md"));
-    assert!(note.contains("不必重做") && note.contains("自己完成"));
+    assert!(note.contains("a.md") && note.contains("convert b.csv to md"));
+    assert!(note.contains("do not redo them") && note.contains("do them yourself"));
     assert_eq!(summary_for_parent(&DispatchResult::default(), &[]), "");
 }

@@ -152,7 +152,7 @@ pub fn call_tool(
                 Ok(Ok(r)) => Ok(render_result(&r)),
                 Ok(Err(e)) => Err(format!("[mcp_call error: {e}]")),
                 Err(_) => Err(format!(
-                    "[mcp_call error: 工具 {tool} 调用超时(60s)。服务器可能卡死,请换其他工具或稍后重试。]"
+                    "[mcp_call error: the {tool} call timed out (60s). The server may be stuck; use another tool or retry later.]"
                 )),
             };
             let _ = tokio::time::timeout(Duration::from_secs(2), client.cancel()).await;
@@ -160,8 +160,8 @@ pub fn call_tool(
         };
         let out = match tokio::time::timeout(timeout, work).await {
             Ok(Ok(text)) | Ok(Err(text)) => text,
-            Err(_) => "[mcp_call error: 服务器启动或握手超时(120s)。该 MCP server \
-                       可能卡死或启动极慢,请改用其他工具完成本步。]"
+            Err(_) => "[mcp_call error: server start-up or handshake timed out (120s). This MCP server \
+                       may be stuck or very slow to start; complete this step with another tool.]"
                 .to_string(),
         };
         settle().await;

@@ -1,7 +1,7 @@
 //! OpenAI-compatible chat engines (`_call_cloud` / `_call_openai_local` in Mingbird).
 //!
 //! Two deployments share one wire format but differ in measured ways Mingbird insists on
-//! keeping apart ("均为实测口径差异,勿统一"):
+//! keeping apart (Mingbird's note: "all measured differences, do not unify"):
 //!
 //! * **cloud** (`config.cloud`): non-streaming, `Authorization: Bearer` always, and
 //!   `enable_thinking: false` (thinking off by default, like the local protocol);

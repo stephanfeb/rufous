@@ -222,7 +222,9 @@ impl ResourceProbe {
 impl CapacityPlanner for ResourceProbe {
     fn plan_capacity(&self, child_model: &str, cfg: &ParallelConfig) -> CapacityPlan {
         let Some(snap) = self.snapshot() else {
-            return CapacityPlan::none("memory_probe_failed(无法确认物理内存,按不派处理)");
+            return CapacityPlan::none(
+                "memory_probe_failed(could not determine physical memory; treated as no dispatch)",
+            );
         };
         let mut reasons = Vec::new();
         let available = snap.available_ram;
@@ -243,7 +245,9 @@ impl CapacityPlanner for ResourceProbe {
             snapshot: Some(snap),
         };
         if !snap.models_ok {
-            reasons.push("ollama_ps_unreachable(按无法确认容量处理,不派)".to_string());
+            reasons.push(
+                "ollama_ps_unreachable(capacity cannot be confirmed; no dispatch)".to_string(),
+            );
             return stop(reasons, None, snap);
         }
         // Parent coexistence: swapping models on one instance evicts the parent → thrash.
@@ -255,7 +259,7 @@ impl CapacityPlanner for ResourceProbe {
             .collect();
         if !others.is_empty() && !cfg.allow_parent_eviction {
             reasons.push(format!(
-                "parent_model_would_be_evicted(已加载: {}; 与子模型不同 tag,同实例换模型会抖动) -> 0",
+                "parent_model_would_be_evicted(loaded: {}; a different tag from the child model, and swapping models on one instance thrashes) -> 0",
                 others.iter().take(3).copied().collect::<Vec<_>>().join(", ")
             ));
             return stop(reasons, None, snap);
@@ -279,7 +283,7 @@ impl CapacityPlanner for ResourceProbe {
             }
         };
         if cost <= 0.0 {
-            reasons.push("child_cost_non_positive(配置异常)".to_string());
+            reasons.push("child_cost_non_positive(configuration error)".to_string());
             return stop(reasons, Some(cost), snap);
         }
         let mut n = (budget / cost).floor() as usize;
@@ -294,7 +298,9 @@ impl CapacityPlanner for ResourceProbe {
             n = cfg.hard_cap;
         }
         if n < 1 {
-            reasons.push("no_headroom_for_even_one_child(放不下一个小模型)".to_string());
+            reasons.push(
+                "no_headroom_for_even_one_child(no room for even one small model)".to_string(),
+            );
         }
         CapacityPlan {
             max_parallel: n,
@@ -308,7 +314,7 @@ impl CapacityPlanner for ResourceProbe {
 
 /// `format_capacity_table`: the human-readable plan for `boubou plan` and the log.
 pub fn format_capacity_table(plan: &CapacityPlan, _cfg: &ParallelConfig) -> String {
-    let mut lines = vec!["[parallel] 容量计划".to_string()];
+    let mut lines = vec!["[parallel] capacity plan".to_string()];
     for r in &plan.reasons {
         lines.push(format!("  - {r}"));
     }

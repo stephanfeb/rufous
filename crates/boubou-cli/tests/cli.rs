@@ -92,7 +92,7 @@ fn plan_reports_capacity_without_spawning() {
     let o = boubou(d.path(), d.path(), &["plan"]);
     assert!(o.status.success(), "{}", text(&o));
     let t = text(&o);
-    assert!(t.contains("容量计划"), "{t}");
+    assert!(t.contains("capacity plan"), "{t}");
     assert!(
         t.contains("max_parallel = 0"),
         "no child model configured → 0:\n{t}"

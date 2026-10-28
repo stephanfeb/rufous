@@ -53,36 +53,41 @@ fn claim_missing_detected() {
     let d = tempfile::tempdir().expect("tmp");
     touch(d.path(), "report.md");
     assert_eq!(
-        claimed_missing_files("已写入 report.md 和 anomalies.md", d.path()),
+        claimed_missing_files("wrote report.md and anomalies.md", d.path()),
         vec!["anomalies.md"]
     );
 }
 
 #[test]
-fn claim_all_exist_subdir_and_chinese_prefix() {
+fn claim_all_exist_subdir_and_glued_prefix() {
     let d = tempfile::tempdir().expect("tmp");
     touch(d.path(), "report.md");
-    assert!(claimed_missing_files("已写入 report.md", d.path()).is_empty());
+    assert!(claimed_missing_files("wrote report.md", d.path()).is_empty());
     touch(d.path(), "sub/fig1.png");
-    assert!(claimed_missing_files("生成 sub/fig1.png", d.path()).is_empty());
-    touch(d.path(), "温度分布图.png");
-    assert!(claimed_missing_files("生成了温度分布图.png", d.path()).is_empty());
+    assert!(claimed_missing_files("generated sub/fig1.png", d.path()).is_empty());
+    // A basename glued to a word without a space still resolves (suffix match).
+    touch(d.path(), "plot.png");
+    assert!(claimed_missing_files("generated:plot.png", d.path()).is_empty());
 }
 
 #[test]
 fn claim_no_false_positive_numbers() {
     let d = tempfile::tempdir().expect("tmp");
-    assert!(claimed_missing_files("准确率 95.3%,v1.2.3 版本,耗时 2.5s", d.path()).is_empty());
+    assert!(
+        claimed_missing_files("accuracy 95.3%, version v1.2.3, took 2.5s", d.path()).is_empty()
+    );
 }
 
 #[test]
 fn claim_input_fixture_mention() {
-    // Mentioning an input file that exists is not a missing artifact.
+    // Mentioning an input file that exists is not a missing artefact.
     let d = tempfile::tempdir().expect("tmp");
     touch(d.path(), "data/input.csv");
-    assert!(
-        claimed_missing_files("读取了 input.csv 并生成 data/input.csv 的统计", d.path()).is_empty()
-    );
+    assert!(claimed_missing_files(
+        "read input.csv and generated statistics in data/input.csv",
+        d.path()
+    )
+    .is_empty());
 }
 
 // ---- _plan_named_missing ----
@@ -93,7 +98,10 @@ fn plan_named_missing_checks_filesystem_not_checkboxes() {
     assert!(plan_named_missing(d.path()).is_empty()); // no todo.json
     save_todo(
         d.path(),
-        &[TodoItem::new("写 report.md"), TodoItem::new("跑测试验证")],
+        &[
+            TodoItem::new("write report.md"),
+            TodoItem::new("run the tests to verify"),
+        ],
     )
     .expect("save");
     assert_eq!(plan_named_missing(d.path()), vec!["report.md"]);
@@ -104,7 +112,7 @@ fn plan_named_missing_checks_filesystem_not_checkboxes() {
     save_todo(
         d2.path(),
         &[TodoItem {
-            item: "生成 change_log.md".into(),
+            item: "generate change_log.md".into(),
             done: true,
         }],
     )
@@ -114,7 +122,9 @@ fn plan_named_missing_checks_filesystem_not_checkboxes() {
     let d3 = tempfile::tempdir().expect("tmp");
     save_todo(
         d3.path(),
-        &[TodoItem::new("验证 3.5b 模型输出 v1.1.0 格式")],
+        &[TodoItem::new(
+            "verify the 3.5b model output in v1.1.0 format",
+        )],
     )
     .expect("save");
     assert!(plan_named_missing(d3.path()).is_empty());
@@ -129,8 +139,10 @@ fn shotgun_hint_at_4th_then_capped_at_two() {
     assert!(outs[0].is_none() && outs[1].is_none() && outs[2].is_none());
     assert!(outs[3]
         .as_deref()
-        .is_some_and(|h| h.contains("连续成功编辑 4 次")));
-    assert!(outs[4].as_deref().is_some_and(|h| h.contains("根因假设")));
+        .is_some_and(|h| h.contains("successfully 4 times")));
+    assert!(outs[4]
+        .as_deref()
+        .is_some_and(|h| h.contains("root-cause hypothesis")));
     assert!(outs[5..].iter().all(Option::is_none));
     assert_eq!(outs.iter().flatten().count(), 2);
 }
@@ -175,13 +187,13 @@ fn shotgun_per_file_hint_budget() {
         .last()
         .flatten()
         .expect("first hint");
-    assert!(!first.contains("根因假设"));
+    assert!(!first.contains("root-cause hypothesis"));
     assert!((0..4).map(|_| g.observe("q.py")).last().flatten().is_some());
     for _ in 0..3 {
         assert!(g.observe("p.py").is_none());
     }
     let second = g.observe("p.py").expect("second hint");
-    assert!(second.contains("根因假设"));
+    assert!(second.contains("root-cause hypothesis"));
     assert!(g.observe("p.py").is_none());
     assert!(g.observe("q.py").is_none());
 }
@@ -196,10 +208,10 @@ fn shotgun_empty_path_safe_and_hint_actionable() {
         .last()
         .flatten()
         .expect("hint");
-    for kw in ["run_bash", "根因", ".bak"] {
+    for kw in ["run_bash", "root", ".bak"] {
         assert!(h.contains(kw), "{kw}");
     }
-    assert!(!h.contains("禁用") && !h.contains("已被禁用"));
+    assert!(!h.contains("disabled"));
 }
 
 // ---- _format_bash_out ----
@@ -219,18 +231,20 @@ fn bash_out_formats() {
     let full = format_bash_out(0, &x, &y, false);
     let slim = format_bash_out(0, &x, &y, true);
     assert!(slim.len() < full.len());
-    assert!(slim.contains("已精简") && slim.contains("read_file"));
+    assert!(slim.contains("trimmed") && slim.contains("read_file"));
     assert!(slim.contains(&"y".repeat(1200)));
     assert!(slim.contains(&"x".repeat(2500)) && !slim.contains(&"x".repeat(2501)));
-    assert!(slim.ends_with("分段读。]"));
+    assert!(slim.ends_with("in parts with read_file.]"));
 }
 
 #[test]
 fn exit_9009_receipt_hint() {
     let out = format_bash_out(9009, "", "", false);
     assert!(out.contains("9009") && out.contains("python3"));
-    assert!(!format_bash_out(9009, "some real output", "", false).contains("本机找不到"));
-    assert!(!format_bash_out(0, "", "", false).contains("本机找不到"));
+    assert!(
+        !format_bash_out(9009, "some real output", "", false).contains("cannot find the command")
+    );
+    assert!(!format_bash_out(0, "", "", false).contains("cannot find the command"));
 }
 
 // ---- _semantically_empty ----
@@ -243,16 +257,24 @@ fn semantically_empty_cases() {
     assert!(semantically_empty(
         "  <think>partial thought, cut off by length"
     ));
-    assert!(!semantically_empty("先写计划 <think>再想想细节"));
+    assert!(!semantically_empty(
+        "Write the plan first <think>think about the details"
+    ));
     assert!(semantically_empty("<think>\n\n</think>"));
     assert!(semantically_empty("  <think></think>  "));
-    assert!(semantically_empty("<think>只有思考没有答案</think>"));
+    assert!(semantically_empty(
+        "<think>only thinking, no answer</think>"
+    ));
     assert!(semantically_empty("<THINK></THINK>"));
     assert!(semantically_empty("") && semantically_empty("   "));
-    assert!(!semantically_empty("<think>推理过程</think>\n答案是 42"));
-    assert!(!semantically_empty("我来读取文件"));
-    assert!(!semantically_empty("先写计划 <think>被截断的思考没有闭合"));
-    assert!(semantically_empty("<think>被截断的思考没有闭合"));
+    assert!(!semantically_empty(
+        "<think>reasoning</think>\nThe answer is 42"
+    ));
+    assert!(!semantically_empty("I will read the file"));
+    assert!(!semantically_empty(
+        "Write the plan first <think>truncated thinking, not closed"
+    ));
+    assert!(semantically_empty("<think>truncated thinking, not closed"));
 }
 
 // ---- try_parse_tool_calls ----
@@ -278,10 +300,12 @@ fn parse_placeholder_quote_forms() {
         )])
     );
     assert_eq!(
-        try_parse_tool_calls(r#"finish{summary:<|"|>无法根据搜索结果完成计算。<|"|>}"#),
+        try_parse_tool_calls(
+            r#"finish{summary:<|"|>Cannot complete the calculation from the search results.<|"|>}"#
+        ),
         Some(vec![call(
             "finish",
-            json!({"summary": "无法根据搜索结果完成计算。"})
+            json!({"summary": "Cannot complete the calculation from the search results."})
         )])
     );
     assert_eq!(
@@ -317,7 +341,10 @@ fn parse_json_and_shells() {
 
 #[test]
 fn parse_prose_not_salvaged() {
-    assert_eq!(try_parse_tool_calls("我先看一下目录结构再继续。"), None);
+    assert_eq!(
+        try_parse_tool_calls("Let me look at the directory structure first."),
+        None
+    );
     assert_eq!(
         try_parse_tool_calls("Just a normal answer, no calls here."),
         None
@@ -404,20 +431,20 @@ fn parse_func_expr_forms() {
 fn task_original_text_takes_last_real_user_message() {
     let msgs = vec![
         Message::system("s"),
-        Message::user("原始任务:输出纯数字。"),
+        Message::user("Original task: output just the number."),
         Message::assistant(""),
-        Message::user("⚠️ harness 注入,应被跳过"),
-        Message::user("⏱ 时间预算:已用约 75%,也应被跳过"),
-        Message::user("[先前上下文摘要] 也应被跳过"),
-        Message::user("续跑追加指令:这次交付响应的是它"),
+        Message::user("⚠️ harness injection, should be skipped"),
+        Message::user("⏱ Time budget: about 75% used, should be skipped too"),
+        Message::user("[Earlier context summary] should be skipped too"),
+        Message::user("Resume follow-up: this delivery answers this one"),
     ];
     assert_eq!(
         task_original_text(&msgs, 2000),
-        "续跑追加指令:这次交付响应的是它"
+        "Resume follow-up: this delivery answers this one"
     );
     assert_eq!(
         task_original_text(&msgs[..2], 2000),
-        "原始任务:输出纯数字。"
+        "Original task: output just the number."
     );
     assert_eq!(task_original_text(&[Message::system("s")], 2000), "");
     assert_eq!(task_original_text(&[], 2000), "");
@@ -428,8 +455,8 @@ fn task_original_text_truncates_long_task() {
     let long = format!("{}{}", "A".repeat(2000), "B".repeat(2000));
     let t = task_original_text(&[Message::user(long)], 2000);
     assert!(t.chars().count() <= 2100);
-    assert!(t.contains("(中略)") && t.starts_with('A') && t.ends_with('B'));
-    assert!(!task_original_text(&[Message::user("short task")], 2000).contains("(中略)"));
+    assert!(t.contains("(omitted)") && t.starts_with('A') && t.ends_with('B'));
+    assert!(!task_original_text(&[Message::user("short task")], 2000).contains("(omitted)"));
 }
 
 // ---- _has_task_progress / _is_qa (test_todo.py) ----
@@ -441,7 +468,7 @@ fn a_tool(name: &str) -> Message {
 #[test]
 fn has_task_progress_counts_only_mutating_or_mcp_tools() {
     assert!(has_task_progress(&[
-        Message::user("帮我看看这个目录"),
+        Message::user("have a look at this directory for me"),
         a_tool("list_dir"),
         a_tool("run_bash")
     ]));
@@ -459,13 +486,54 @@ fn has_task_progress_counts_only_mutating_or_mcp_tools() {
         Message::user("x"),
         a_tool("acme.render_docx")
     ]));
-    assert!(!has_task_progress(&[Message::user("你好")]));
+    assert!(!has_task_progress(&[Message::user("hello")]));
+}
+
+#[test]
+fn trailing_question_mark_and_question_openers() {
+    use boubou_core::guards::qa::ends_with_question;
+    assert!(ends_with_question(
+        "Are you capable of software development ?"
+    ));
+    assert!(ends_with_question("is that right?\""));
+    assert!(ends_with_question("really?)"));
+    assert!(!ends_with_question(
+        "How many hours did it take? Output just the number."
+    ));
+    assert!(!ends_with_question("write a report"));
+    // In the classifier: a trailing `?` is Q&A unless a task verb wins.
+    assert!(is_qa(
+        &[Message::user("Are you capable of software development ?")],
+        false
+    ));
+    assert!(is_qa(
+        &[Message::user(
+            "Is there a config file somewhere in this repository?"
+        )],
+        false
+    ));
+    assert!(is_qa(
+        &[Message::user("Do you know what day it is today")],
+        false
+    ));
+    assert!(!is_qa(
+        &[Message::user(
+            "How many thousand hours did it take? Output just the number."
+        )],
+        false
+    ));
+    assert!(!is_qa(
+        &[Message::user(
+            "Can you write a script that parses the logs in this directory?"
+        )],
+        false
+    ));
 }
 
 #[test]
 fn is_qa_followup_fix_and_regressions() {
-    let real_task = "这个目录里保存了一批待处理的数据文件，请你帮我好好检查这几个文件有没有低级错误，并逐一核对细节。";
-    let followup = "你还有别的工具可以读这些文件 你找找";
+    let real_task = "This directory holds a batch of data files awaiting processing. Please check these files carefully for basic mistakes and verify the details one by one.";
+    let followup = "there are other tools for these files";
     let msgs = vec![
         Message::user(real_task),
         a_tool("run_bash"),
@@ -477,11 +545,14 @@ fn is_qa_followup_fix_and_regressions() {
         &[
             Message::user(real_task),
             a_tool("run_bash"),
-            Message::user("谢谢")
+            Message::user("thanks")
         ],
         true
     ));
-    assert!(!is_qa(&[Message::user("帮我检查代码里的 bug")], false));
+    assert!(!is_qa(
+        &[Message::user("help me check the code for bugs")],
+        false
+    ));
     assert!(!is_qa(
         &[
             Message::user("please fix the failing tests in app.py"),

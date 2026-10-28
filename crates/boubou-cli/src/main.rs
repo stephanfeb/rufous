@@ -28,7 +28,7 @@ use boubou_core::{mcp, tools};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "boubou", version = boubou_core::VERSION, about = "Boubou (布布) · local-model autonomous agent")]
+#[command(name = "boubou", version = boubou_core::VERSION, about = "Boubou · local-model autonomous agent")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -50,7 +50,7 @@ enum Cmd {
         /// Continue the conversation: append the task to the saved session/checkpoint.
         #[arg(long)]
         append: bool,
-        /// Time budget in minutes, or with a unit: `40`, `1.5h`, `90m`, `半小时`.
+        /// Time budget in minutes, or with a unit: `40`, `1.5h`, `90m`, `half an hour`.
         #[arg(long = "time-budget")]
         time_budget: Option<String>,
     },
@@ -83,8 +83,8 @@ enum Cmd {
     /// Transcribe a 16 kHz WAV file (local sherpa-onnx model, else an Ollama audio model).
     Voice {
         wav: PathBuf,
-        /// `zh` or `en` (which bundled model to use).
-        #[arg(long, default_value = "zh")]
+        /// `en` or `zh` (which bundled model to use).
+        #[arg(long, default_value = "en")]
         lang: String,
         /// Ollama audio-capable model to fall back to when no local model is installed.
         #[arg(long)]
@@ -187,7 +187,7 @@ fn main() -> Result<()> {
         Cmd::Plan => {
             let pc = ParallelConfig::from_config(&cfg).with_env(&env_snapshot());
             let model = if pc.child_model.is_empty() {
-                "(未配置 child_model)".to_string()
+                "(child_model not configured)".to_string()
             } else {
                 pc.child_model.clone()
             };
@@ -209,7 +209,7 @@ fn main() -> Result<()> {
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let (local, server) = boubou_web::bind(addr, state).await?;
                 println!(
-                    "Boubou Web UI {}: http://{local}  (local only · 仅本机访问)",
+                    "Boubou Web UI {}: http://{local}  (local only)",
                     boubou_core::VERSION
                 );
                 server.await
@@ -266,12 +266,12 @@ fn cli_budget(raw: Option<&str>) -> Option<f64> {
     let raw = raw?;
     match parse_duration_str(raw) {
         Some(m) => {
-            println!("[time-budget] CLI 时限 {}", fmt_hm(m));
+            println!("[time-budget] CLI limit {}", fmt_hm(m));
             Some(m)
         }
         None => {
             println!(
-                "[time-budget] 无法解析 --time-budget 的值,已忽略(示例: 40 / 1.5h / 90m / 半小时)"
+                "[time-budget] could not parse the --time-budget value; ignored (examples: 40 / 1.5h / 90m / half an hour)"
             );
             None
         }
@@ -281,10 +281,10 @@ fn cli_budget(raw: Option<&str>) -> Option<f64> {
 fn budget_label(src: BudgetSource, minutes: f64) -> String {
     let v = boubou_core::text::fmt_g(minutes);
     match src {
-        BudgetSource::Prompt => format!("提示词识别到时限 {v} 分钟"),
-        BudgetSource::Cli => format!("CLI 时限 {v} 分钟"),
-        BudgetSource::Env => format!("环境变量时限 {v} 分钟"),
-        BudgetSource::Off => format!("{v} 分钟"),
+        BudgetSource::Prompt => format!("time limit of {v} min found in the prompt"),
+        BudgetSource::Cli => format!("CLI time limit {v} min"),
+        BudgetSource::Env => format!("environment time limit {v} min"),
+        BudgetSource::Off => format!("{v} min"),
     }
 }
 
@@ -340,7 +340,7 @@ fn run_task(
         if msgs.is_empty() {
             agent.task_messages(&task)
         } else {
-            println!("[RESUMED: {} msgs + 追加新消息]", msgs.len());
+            println!("[RESUMED: {} msgs + new message appended]", msgs.len());
             msgs.push(Message::user(task.clone()));
             msgs
         }
@@ -353,7 +353,9 @@ fn run_task(
             session.unwrap_or_default(),
             msgs.len()
         );
-        msgs.push(Message::user("继续之前的对话,完成或回答当前需求。"));
+        msgs.push(Message::user(
+            "Continue the previous conversation: complete or answer the current request.",
+        ));
         msgs
     } else {
         agent.task_messages(&task)
@@ -369,7 +371,7 @@ fn run_task(
         Ok(_) => Ok(()),
         Err(boubou_core::Error::ChildTerminated(reason)) => {
             // The child sandbox fuse: the dispatcher reads exit 53 and falls back without a retry.
-            println!("[child-mode] 严重违规熔断: {reason}");
+            println!("[child-mode] serious violation, circuit broken: {reason}");
             std::process::exit(SEVERE_EXIT_CODE);
         }
         Err(e) => Err(e.into()),
@@ -385,7 +387,8 @@ fn chat(
 ) -> Result<()> {
     let workdir = std::path::absolute(workdir)?;
     std::fs::create_dir_all(&workdir)?;
-    let params = RunParams::from_env(model, &workdir)?;
+    let mut params = RunParams::from_env(model, &workdir)?;
+    params.chat_mode = true;
     let cli_tb = cli_budget(time_budget.as_deref());
     ensure_engine(cfg);
     let mut agent = Agent::standard(params, cfg)?.with_sink(print_event);
@@ -399,10 +402,10 @@ fn chat(
             m.pop();
             m
         });
-    println!("[交互模式] 输入 exit 退出。");
+    println!("[interactive] type exit to quit.");
     let stdin = std::io::stdin();
     loop {
-        print!("你> ");
+        print!("you> ");
         std::io::stdout().flush()?;
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 {
@@ -434,21 +437,26 @@ fn ensure_engine(cfg: &Config) {
             std::time::Duration::from_secs(3),
         ) {
             println!(
-                "⚠️ OpenAI 兼容引擎未就绪: {} — 请先启动 LM Studio / llama.app / llama-server 后重试。",
+                "⚠️ OpenAI-compatible engine not ready: {} — start LM Studio / llama.app / llama-server first, then retry.",
                 eng.base_url
             );
         }
     } else if cfg.cloud_provider().is_none()
         && !OllamaProc::from_config(cfg).ensure(std::time::Duration::from_secs(25))
     {
-        println!("⚠️ 未能自动启动 ollama,请手动运行 ollama serve 后重试。");
+        println!("⚠️ could not start ollama automatically; run ollama serve yourself, then retry.");
     }
 }
 
 fn print_event(ev: AgentEvent) {
     match ev {
-        AgentEvent::Text(t) | AgentEvent::Thinking(t) => {
+        AgentEvent::Text(t) => {
             print!("{t}");
+            let _ = std::io::stdout().flush();
+        }
+        // Thinking is dimmed so it reads apart from the answer in the terminal.
+        AgentEvent::Thinking(t) => {
+            print!("\x1b[2m{t}\x1b[0m");
             let _ = std::io::stdout().flush();
         }
         AgentEvent::Log(l) => println!("{l}"),

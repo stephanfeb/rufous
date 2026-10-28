@@ -34,7 +34,7 @@ fn all_basenames_lower(dir: &Path, out: &mut Vec<String>) {
 /// `_missing_files_in_text`: artifact-looking tokens in `text` that do not exist under
 /// `workdir`. A token counts as present if the relative path exists, a file with that
 /// basename exists anywhere below, or an existing basename is a suffix of the token
-/// (Chinese verb prefixes glue onto filenames: `生成了温度分布图.png`).
+/// (a verb can be glued onto a filename with no space in some scripts, e.g. a CJK prefix on `plot.png`).
 pub fn missing_files_in_text(text: &str, workdir: &Path) -> Vec<String> {
     let mut toks: Vec<String> = FILE_TOKEN
         .find_iter(text)

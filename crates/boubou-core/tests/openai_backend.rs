@@ -45,14 +45,14 @@ fn local_backend_openai_normalizes_trailing_slash() {
     let e = c.backend_openai().expect("openai");
     assert_eq!(e.base_url, "http://127.0.0.1:9931/v1");
     assert_eq!(e.api_key, "sk-x");
-    assert_eq!(c.engine_display_name(), "OpenAI 兼容");
+    assert_eq!(c.engine_display_name(), "OpenAI-compatible");
 }
 
 #[test]
 fn local_backend_openai_without_base_url_falls_back() {
     let c = cfg_with(json!({"type": "openai", "base_url": "   "}), json!({}));
     assert_eq!(c.local_backend(), LocalBackend::Ollama);
-    let c = cfg_with(json!("垃圾值"), json!({}));
+    let c = cfg_with(json!("garbage"), json!({}));
     assert_eq!(c.local_backend(), LocalBackend::Ollama);
 }
 
@@ -78,21 +78,21 @@ fn cloud_requires_full_config_and_is_off_when_offline() {
 #[test]
 fn split_inline_thinking_cases() {
     assert_eq!(
-        split_inline_thinking("<think>推理</think>\n\n正文"),
-        ("正文".into(), "推理".into())
+        split_inline_thinking("<think>reasoning</think>\n\nbody"),
+        ("body".into(), "reasoning".into())
     );
     assert_eq!(
         split_inline_thinking("<think>a</think>x<think>b</think>y"),
         ("xy".into(), "ab".into())
     );
     assert_eq!(
-        split_inline_thinking("没有标签"),
-        ("没有标签".into(), String::new())
+        split_inline_thinking("no tags"),
+        ("no tags".into(), String::new())
     );
     assert_eq!(split_inline_thinking(""), (String::new(), String::new()));
-    let (body, think) = split_inline_thinking("<think>没说完就被截断");
+    let (body, think) = split_inline_thinking("<think>cut off before it finished");
     assert_eq!(body, "");
-    assert!(think.contains("截断"));
+    assert!(think.contains("cut off"));
 }
 
 // ---------------- inline <think>: streaming state machine ----------------
@@ -100,10 +100,13 @@ fn split_inline_thinking_cases() {
 #[test]
 fn splitter_basic_routing() {
     let mut sp = InlineThinkSplitter::new();
-    assert_eq!(sp.feed("<think>推理中"), (String::new(), "推理中".into()));
     assert_eq!(
-        sp.feed("继续</think>正文来了"),
-        ("正文来了".into(), "继续".into())
+        sp.feed("<think>reasoning"),
+        (String::new(), "reasoning".into())
+    );
+    assert_eq!(
+        sp.feed(" more</think>body arrives"),
+        ("body arrives".into(), " more".into())
     );
     assert_eq!(sp.finish(), (String::new(), String::new()));
 }
@@ -111,23 +114,32 @@ fn splitter_basic_routing() {
 #[test]
 fn splitter_torn_tag_across_chunks() {
     let mut sp = InlineThinkSplitter::new();
-    assert_eq!(sp.feed("正文前半<th"), ("正文前半".into(), String::new()));
-    assert_eq!(sp.feed("ink>思考</thin"), (String::new(), "思考".into()));
-    assert_eq!(sp.feed("k>正文后半"), ("正文后半".into(), String::new()));
+    assert_eq!(
+        sp.feed("first half<th"),
+        ("first half".into(), String::new())
+    );
+    assert_eq!(
+        sp.feed("ink>thought</thin"),
+        (String::new(), "thought".into())
+    );
+    assert_eq!(
+        sp.feed("k>second half"),
+        ("second half".into(), String::new())
+    );
 }
 
 #[test]
 fn splitter_lone_lt_is_body_and_unclosed_at_finish() {
     let mut sp = InlineThinkSplitter::new();
     assert_eq!(
-        sp.feed("a < b 且 3<5"),
-        ("a < b 且 3<5".into(), String::new())
+        sp.feed("a < b and 3<5"),
+        ("a < b and 3<5".into(), String::new())
     );
     assert_eq!(sp.finish(), (String::new(), String::new()));
     let mut sp = InlineThinkSplitter::new();
     assert_eq!(
-        sp.feed("开头<think>思考没"),
-        ("开头".into(), "思考没".into())
+        sp.feed("start<think>thought not"),
+        ("start".into(), "thought not".into())
     );
     assert_eq!(sp.finish(), (String::new(), String::new()));
     // A held tail that never became a tag is returned as body at the end.
@@ -141,10 +153,10 @@ fn splitter_lone_lt_is_body_and_unclosed_at_finish() {
 #[test]
 fn normalize_merges_reasoning_and_inline_think() {
     let m = normalize_message(&json!({
-        "role": "assistant", "content": "<think>行内</think>答案", "reasoning_content": "字段态"
+        "role": "assistant", "content": "<think>inline</think>answer", "reasoning_content": "field"
     }));
-    assert_eq!(m.content, "答案");
-    assert_eq!(m.thinking.as_deref(), Some("字段态行内"));
+    assert_eq!(m.content, "answer");
+    assert_eq!(m.thinking.as_deref(), Some("fieldinline"));
 }
 
 #[test]
@@ -152,10 +164,10 @@ fn normalize_tool_args_str_dict_and_broken() {
     let m = normalize_message(&json!({"role": "assistant", "content": "", "tool_calls": [
         {"id": "c1", "function": {"name": "run_bash", "arguments": "{\"cmd\": \"ls\"}"}},
         {"id": "c2", "function": {"name": "read_file", "arguments": {"path": "x"}}},
-        {"id": "c3", "function": {"name": "t", "arguments": "{坏 JSON"}}]}));
+        {"id": "c3", "function": {"name": "t", "arguments": "{bad JSON"}}]}));
     assert_eq!(m.tool_calls[0].function.arguments, json!({"cmd": "ls"}));
     assert_eq!(m.tool_calls[1].function.arguments, json!({"path": "x"}));
-    assert_eq!(m.tool_calls[2].function.arguments["_raw"], "{坏 JSON");
+    assert_eq!(m.tool_calls[2].function.arguments["_raw"], "{bad JSON");
     assert_eq!(tc_args_from_str("  "), json!({}));
 }
 
@@ -319,9 +331,9 @@ fn sse(chunks: &[Value]) -> String {
 fn stream_tokens_and_think_routing() {
     let body = sse(&[
         json!({"choices": [{"delta": {"content": "<th"}}]}),
-        json!({"choices": [{"delta": {"content": "ink>思考</think>你"}}]}),
-        json!({"choices": [{"delta": {"reasoning_content": "字段思考"}}]}),
-        json!({"choices": [{"delta": {"content": "好"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}}),
+        json!({"choices": [{"delta": {"content": "ink>thought</think>he"}}]}),
+        json!({"choices": [{"delta": {"reasoning_content": "fieldthought"}}]}),
+        json!({"choices": [{"delta": {"content": "llo"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}}),
     ]);
     let mut toks = Vec::new();
     let mut thinks = Vec::new();
@@ -336,10 +348,10 @@ fn stream_tokens_and_think_routing() {
     }
     assert!(asm.done);
     let r = asm.finish(&mut on);
-    assert_eq!(toks, ["你", "好"]);
-    assert_eq!(thinks.concat(), "思考字段思考");
-    assert_eq!(r.message.content, "你好");
-    assert_eq!(r.message.thinking.as_deref(), Some("思考字段思考"));
+    assert_eq!(toks, ["he", "llo"]);
+    assert_eq!(thinks.concat(), "thoughtfieldthought");
+    assert_eq!(r.message.content, "hello");
+    assert_eq!(r.message.thinking.as_deref(), Some("thoughtfieldthought"));
     assert_eq!(r.prompt_eval_count, Some(5));
 }
 
@@ -429,7 +441,7 @@ fn serve_once(
 fn local_engine_round_trip_non_stream_fields_and_callbacks() {
     let d = tempfile::tempdir().expect("tmp");
     let reply = json!({"choices": [{"message": {"role": "assistant",
-        "content": "<think>t</think>答案", "reasoning_content": "r"}, "finish_reason": "stop"}],
+        "content": "<think>t</think>answer", "reasoning_content": "r"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7}});
     let (base, rx) = serve_once("200 OK", "application/json", reply.to_string());
     // Cloud flavor = non-streaming; use it to exercise the once() path against the fake.
@@ -456,8 +468,8 @@ fn local_engine_round_trip_non_stream_fields_and_callbacks() {
         body["messages"][0],
         json!({"role": "user", "content": "hi"})
     );
-    assert_eq!(r.message.content, "答案");
-    assert_eq!(toks, ["答案"]);
+    assert_eq!(r.message.content, "answer");
+    assert_eq!(toks, ["answer"]);
     assert_eq!(thinks, ["rt"]); // field-form first, inline second
     assert_eq!((r.prompt_eval_count, r.eval_count), (Some(11), Some(7)));
 }
@@ -466,8 +478,8 @@ fn local_engine_round_trip_non_stream_fields_and_callbacks() {
 fn local_engine_streams_sse_and_sends_no_bearer_without_key() {
     let d = tempfile::tempdir().expect("tmp");
     let body = sse(&[
-        json!({"choices": [{"delta": {"content": "你"}}]}),
-        json!({"choices": [{"delta": {"content": "好"}}], "usage": {"prompt_tokens": 5}}),
+        json!({"choices": [{"delta": {"content": "he"}}]}),
+        json!({"choices": [{"delta": {"content": "llo"}}], "usage": {"prompt_tokens": 5}}),
     ]);
     let (base, rx) = serve_once("200 OK", "text/event-stream", body);
     let mut b = OpenAiBackend::local(
@@ -490,8 +502,8 @@ fn local_engine_streams_sse_and_sends_no_bearer_without_key() {
     assert!(!head.to_lowercase().contains("authorization"));
     assert_eq!(body["stream"], true);
     assert_eq!(body["model"], "qwen");
-    assert_eq!(toks, ["你", "好"]);
-    assert_eq!(r.message.content, "你好");
+    assert_eq!(toks, ["he", "llo"]);
+    assert_eq!(r.message.content, "hello");
     assert_eq!(r.prompt_eval_count, Some(5));
 }
 
@@ -530,7 +542,7 @@ fn standard_picks_engine_from_config() {
         json!({}),
     );
     let a = Agent::standard(p.clone(), &c).expect("agent");
-    assert!(a.engine.starts_with("OpenAI 兼容"), "{}", a.engine);
+    assert!(a.engine.starts_with("OpenAI-compatible"), "{}", a.engine);
     if std::env::var("AGENT_OFFLINE").is_err() {
         let c = cfg_with(
             json!({}),
@@ -633,7 +645,7 @@ fn run_flaky(dir: &Path, restartable: bool, fails: usize) -> (Vec<String>, bool)
         }
     });
     a.sessions_dir = dir.join("sessions");
-    let msgs = vec![Message::system("s"), Message::user("把 a.csv 转成 a.md")];
+    let msgs = vec![Message::system("s"), Message::user("convert a.csv to a.md")];
     let ok = a.run(msgs, None, None).is_ok();
     let restarted = a.backend.restarts > 0;
     let l = logs.lock().expect("logs").clone();
@@ -646,11 +658,12 @@ fn four_consecutive_500s_restart_a_restartable_engine() {
     let (logs, ok) = run_flaky(d.path(), true, 4);
     assert!(ok);
     assert!(
-        logs.iter().any(|l| l.contains("自动重启(第 1/3 次)")),
+        logs.iter()
+            .any(|l| l.contains("restarting automatically (1/3)")),
         "{logs:?}"
     );
     assert!(
-        logs.iter().any(|l| l.contains("✓ ollama 已重启")),
+        logs.iter().any(|l| l.contains("✓ ollama restarted")),
         "{logs:?}"
     );
     assert!(logs.iter().any(|l| l.contains("TASK COMPLETE")));
@@ -662,10 +675,13 @@ fn openai_engine_is_not_restarted_but_the_run_still_recovers() {
     let (logs, ok) = run_flaky(d.path(), false, 4);
     assert!(ok);
     assert!(
-        logs.iter().any(|l| l.contains("不可由本程序重启")),
+        logs.iter()
+            .any(|l| l.contains("cannot be restarted by Boubou")),
         "{logs:?}"
     );
-    assert!(!logs.iter().any(|l| l.contains("自动重启(")));
+    assert!(!logs
+        .iter()
+        .any(|l| l.contains("restarting automatically (")));
 }
 
 #[test]

@@ -1,10 +1,10 @@
 ---
 name: architecture
-description: 系统设计:需求→约束→模块划分→接口→实现
+description: System design: requirements -> constraints -> module split -> interfaces -> implementation
 ---
-# 架构设计
-1. 明确需求与约束(性能/并发/可维护性/规模)
-2. 划分模块:单一职责,接口清晰
-3. 画数据流:数据从哪来→怎么处理→到哪去
-4. 选择数据结构与关键算法,说明理由
-5. 先写设计文档(design.md),再实现;实现遵循设计
+# Architecture design
+1. Pin down requirements and constraints (performance / concurrency / maintainability / scale)
+2. Split into modules: single responsibility, clear interfaces
+3. Draw the data flow: where data comes from -> how it is processed -> where it goes
+4. Choose data structures and key algorithms, and give the reasons
+5. Write the design document first (design.md), then implement; the implementation follows the design

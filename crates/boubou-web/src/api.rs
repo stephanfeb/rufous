@@ -133,7 +133,7 @@ async fn status(State(st): St) -> Response {
 /// build and an installed model; otherwise an Ollama audio model (whisper) is the fallback.
 fn voice_status(st: &AppState, p: &Map<String, Value>, models: &[Value]) -> Value {
     let bases = boubou_voice::stt_bases(&st.install_dir, &st.home);
-    let lang = p.get("stt_lang").and_then(Value::as_str).unwrap_or("zh");
+    let lang = p.get("stt_lang").and_then(Value::as_str).unwrap_or("en");
     let langs = boubou_voice::installed_langs(&bases);
     let local = boubou_voice::local_stt_available(lang, &bases);
     // Cheap fallback hint: a whisper model in the installed list (no per-model probing here).
@@ -159,7 +159,7 @@ struct VoiceQuery {
     model: Option<String>,
 }
 
-/// `POST /api/voice?lang=zh&model=…` with a WAV body → `{text, engine, lang, secs}`.
+/// `POST /api/voice?lang=en&model=…` with a WAV body → `{text, engine, lang, secs}`.
 /// 400 bad audio · 422 nothing said · 503 no engine · 500 transcription failed.
 async fn voice(State(st): St, Query(q): Query<VoiceQuery>, body: axum::body::Bytes) -> Response {
     let cfg = st.load_config();
@@ -171,7 +171,7 @@ async fn voice(State(st): St, Query(q): Query<VoiceQuery>, body: axum::body::Byt
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "zh".to_string());
+        .unwrap_or_else(|| "en".to_string());
     let bases = boubou_voice::stt_bases(&st.install_dir, &st.home);
     let host = cfg.ollama_host();
     let offline = cfg.offline();
@@ -234,8 +234,7 @@ fn first_user_text(msgs: &[Value], limit: usize) -> String {
             .join(" ");
         if c.is_empty()
             || c.starts_with("Continue: keep making")
-            || c.starts_with("⚠️ 交付前自查")
-            || c.starts_with("[时间预算]")
+            || boubou_core::guards::qa::is_harness_note(&c)
         {
             continue;
         }

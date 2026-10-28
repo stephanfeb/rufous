@@ -31,13 +31,13 @@ impl BudgetMark {
     fn template(self, remain_min: i64) -> String {
         match self {
             Self::Half => format!(
-                "⏱ 时间预算:已用约 50%,剩约 {remain_min} 分钟。先核对剩余工作量:优先完成核心产出;若某个问题反复修不好,记录现状并跳到下一步,不要在一处死磨。"
+                "⏱ Time budget: about 50% used, roughly {remain_min} minutes left. Check the remaining workload: finish the core deliverables first; if one problem keeps resisting, note the current state and move to the next step rather than grinding on it."
             ),
             Self::ThreeQuarters => format!(
-                "⏱ 时间预算:已用约 75%,剩约 {remain_min} 分钟。停止探索性尝试:完成必须交付的产物,并预留时间做验证(跑测试/检查文件确实存在)。"
+                "⏱ Time budget: about 75% used, roughly {remain_min} minutes left. Stop exploratory attempts: complete the artefacts that must be delivered and leave time to verify them (run the tests / check the files really exist)."
             ),
             Self::Ninety => format!(
-                "⏱ 时间预算:已用约 90%,即将耗尽(剩约 {remain_min} 分钟)。立即收尾:只声称真实存在的产物文件,然后调用 finish。不要开始新的子任务。"
+                "⏱ Time budget: about 90% used, nearly exhausted (roughly {remain_min} minutes left). Wrap up now: claim only artefact files that really exist, then call finish. Do not start new sub-tasks."
             ),
         }
     }
@@ -91,24 +91,26 @@ pub fn save_elapsed(workdir: &Path, sec: f64) {
 
 // ---- parsing a stated deadline ----
 
-const NUM_ALT: &str = r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十]{1,3}|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:-(?:one|two|three|four|five|six|seven|eight|nine))?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)";
-const HU: &str = r"(?:小时|钟头|hours?\b|hrs?\b|h\b)";
-const MU: &str = r"(?:分钟|minutes?\b|mins?\b)";
+const NUM_ALT: &str = r"(?:\d+(?:\.\d+)?|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:-(?:one|two|three|four|five|six|seven|eight|nine))?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)";
+const HU: &str = r"(?:hours?\b|hrs?\b|h\b)";
+const MU: &str = r"(?:minutes?\b|mins?\b)";
 /// Ordinal / frequency / relative-position words: the number after them is not a deadline.
 const SKIP_BEFORE: &[&str] = &[
-    "第", "最前", "最后", "前", "后", "开头", "首", "每", "per", "every", "next", "last", "first",
-    "final",
+    "per", "every", "next", "last", "first", "final", "after", "before", "step", "chapter",
+    "section", "page", "line",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// `X个半小时` / `X小时半`: (n + 0.5) hours
+    /// `X and a half hours` / `X.5 hours`: (n + 0.5) hours
     HalfH,
-    /// `X小时`: n hours
+    /// `X hours`: n hours
     H,
     Fixed30,
     Fixed60,
-    /// `X分钟`: n minutes
+    /// `an hour and a half`
+    Fixed90,
+    /// `X minutes`: n minutes
     M,
 }
 
@@ -117,107 +119,37 @@ struct Pat {
     kind: Kind,
     /// Python `(?<![A-Za-z0-9.])`: the char before the match must not be alnum or '.'.
     guard_before: bool,
-    /// Python `(?![\d一-九])`: the char after must not be a digit or 一..九.
-    guard_after: bool,
 }
 
 static PATTERNS: LazyLock<Vec<Pat>> = LazyLock::new(|| {
-    let mk = |re: String, kind, guard_before, guard_after| Pat {
+    let mk = |re: String, kind, guard_before| Pat {
         re: Regex::new(&re).expect("regex"),
         kind,
         guard_before,
-        guard_after,
     };
     vec![
         mk(
-            format!(r"(?P<n>{NUM_ALT})\s*个?\s*半\s*{HU}"),
+            format!(r"(?P<n>{NUM_ALT})\s+and\s+a\s+half\s+{HU}"),
             Kind::HalfH,
             true,
-            false,
         ),
         mk(
-            format!(r"(?P<n>{NUM_ALT})\s*个?\s*{HU}\s*半"),
+            format!(r"(?P<n>{NUM_ALT})\s*{HU}\s+and\s+a\s+half\b"),
             Kind::HalfH,
             true,
-            true,
         ),
+        mk(format!(r"(?P<n>{NUM_ALT})\s*{HU}"), Kind::H, true),
+        mk(r"half\s+an?\s+hours?\b".to_string(), Kind::Fixed30, false),
+        mk(r"an?\s+half\s+hours?\b".to_string(), Kind::Fixed30, false),
         mk(
-            format!(r"(?P<n>{NUM_ALT})\s*个?\s*{HU}"),
-            Kind::H,
-            true,
+            r"\ban?\s+hours?\s+and\s+a\s+half\b".to_string(),
+            Kind::Fixed90,
             false,
         ),
-        mk(
-            r"半\s*个?\s*(?:小时|钟头)".to_string(),
-            Kind::Fixed30,
-            false,
-            false,
-        ),
-        mk(
-            r"half\s+an?\s+hours?\b".to_string(),
-            Kind::Fixed30,
-            false,
-            false,
-        ),
-        mk(
-            r"an?\s+half\s+hours?\b".to_string(),
-            Kind::Fixed30,
-            false,
-            false,
-        ),
-        mk(r"\ban?\s+hours?\b".to_string(), Kind::Fixed60, false, false),
-        mk(format!(r"(?P<n>{NUM_ALT})\s*{MU}"), Kind::M, true, false),
+        mk(r"\ban?\s+hours?\b".to_string(), Kind::Fixed60, false),
+        mk(format!(r"(?P<n>{NUM_ALT})\s*{MU}"), Kind::M, true),
     ]
 });
-
-fn cn_digit(c: char) -> Option<f64> {
-    Some(match c {
-        '零' => 0.0,
-        '一' | '壹' => 1.0,
-        '二' | '两' => 2.0,
-        '三' => 3.0,
-        '四' => 4.0,
-        '五' => 5.0,
-        '六' => 6.0,
-        '七' => 7.0,
-        '八' => 8.0,
-        '九' => 9.0,
-        _ => return None,
-    })
-}
-
-/// `_cn_num_value`: 0–99 in Chinese numerals (十 / 二十三 / 四十).
-fn cn_num_value(s: &str) -> Option<f64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    if let Some((a, b)) = s.split_once('十') {
-        let tens = if a.is_empty() {
-            1.0
-        } else {
-            cn_digit(a.chars().next()?)?
-        };
-        if a.chars().count() > 1 {
-            return None;
-        }
-        let ones = if b.is_empty() {
-            0.0
-        } else {
-            if b.chars().count() > 1 {
-                return None;
-            }
-            cn_digit(b.chars().next()?)?
-        };
-        return Some(tens * 10.0 + ones);
-    }
-    let mut it = s.chars();
-    let c = it.next()?;
-    if it.next().is_some() {
-        return None;
-    }
-    cn_digit(c)
-}
 
 fn en_num(word: &str) -> Option<f64> {
     const ONES: [(&str, f64); 19] = [
@@ -270,14 +202,13 @@ fn value_minutes(raw: &str, kind: Kind) -> Option<f64> {
     match kind {
         Kind::Fixed30 => return Some(30.0),
         Kind::Fixed60 => return Some(60.0),
+        Kind::Fixed90 => return Some(90.0),
         _ => {}
     }
     let raw = raw.trim();
     let first = raw.chars().next()?;
     let v = if first.is_ascii_digit() {
         raw.parse::<f64>().ok()?
-    } else if cn_digit(first).is_some() || first == '十' {
-        cn_num_value(raw)?
     } else {
         en_num(&raw.to_lowercase())?
     };
@@ -288,30 +219,19 @@ fn value_minutes(raw: &str, kind: Kind) -> Option<f64> {
     })
 }
 
-/// `_fw_normalize`: full-width digits and `．` to ASCII, same length.
-fn fullwidth_normalize(text: &str) -> String {
-    text.chars()
-        .map(|ch| match ch as u32 {
-            0xFF10..=0xFF19 => char::from_u32(ch as u32 - 0xFF10 + 0x30).unwrap_or(ch),
-            _ if ch == '．' => '.',
-            _ => ch,
-        })
-        .collect()
-}
-
 fn char_before(s: &str, byte_idx: usize) -> Option<char> {
     s[..byte_idx].chars().next_back()
 }
 
 /// `parse_time_budget`: minutes stated in the task text, or `None`.
-/// Rules: an explicit unit is required (bare 分 may be a score); the earliest hit wins,
-/// longest span on ties; ordinal/frequency/relative numbers and path fragments are
-/// skipped; values under 0.5 min or over 24 h are ignored.
+/// Rules: an explicit unit is required (a bare number may be a score or a count); the
+/// earliest hit wins, longest span on ties; ordinal/frequency/relative numbers and path
+/// fragments are skipped; values under 0.5 min or over 24 h are ignored.
 pub fn parse_time_budget(text: &str) -> Option<f64> {
     if text.is_empty() {
         return None;
     }
-    let low = fullwidth_normalize(text).to_lowercase();
+    let low = text.to_lowercase();
     // (start, -len, kind, n-group)
     let mut cands: Vec<(usize, usize, Kind, Option<String>)> = Vec::new();
     for pat in PATTERNS.iter() {
@@ -326,13 +246,6 @@ pub fn parse_time_budget(text: &str) -> Option<f64> {
             if pat.guard_before {
                 if let Some(c) = char_before(&low, s) {
                     if c.is_ascii_alphanumeric() || c == '.' {
-                        ok = false;
-                    }
-                }
-            }
-            if ok && pat.guard_after {
-                if let Some(c) = low[e..].chars().next() {
-                    if c.is_ascii_digit() || ('一'..='九').contains(&c) {
                         ok = false;
                     }
                 }
@@ -384,7 +297,7 @@ pub fn parse_time_budget(text: &str) -> Option<f64> {
 }
 
 /// `parse_duration_str`: the deadline input box / `--time-budget` value. Bare numbers
-/// are minutes; `1.5h`, `90m`, `1小时`, `半小时` go through the text parser.
+/// are minutes; `1.5h`, `90m`, `2 hours`, `half an hour` go through the text parser.
 pub fn parse_duration_str(s: &str) -> Option<f64> {
     static PLAIN: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^\d+(?:\.\d+)?$").expect("regex"));
@@ -442,12 +355,12 @@ pub fn budget_env_value(minutes: Option<f64>) -> Option<String> {
     Some(((m * 60.0).round() as i64).to_string())
 }
 
-/// `_fmt_hm`: `40 → "40 分钟"`, `90 → "90 分钟(1.5 小时)"`.
+/// `_fmt_hm`: `40 → "40 min"`, `90 → "90 min (1.5 h)"`.
 pub fn fmt_hm(minutes: f64) -> String {
-    let mut txt = format!("{} 分钟", text::fmt_g(minutes));
+    let mut txt = format!("{} min", text::fmt_g(minutes));
     let hours = minutes / 60.0;
     if minutes >= 60.0 && (hours - (hours * 100.0).round() / 100.0).abs() < 1e-9 {
-        txt.push_str(&format!("({} 小时)", text::fmt_g(hours)));
+        txt.push_str(&format!(" ({} h)", text::fmt_g(hours)));
     }
     txt
 }

@@ -5,6 +5,6 @@
   <!-- Merged into the app bundle by tauri-build. Voice input records from the microphone
        in the page (getUserMedia); macOS refuses the capture without this string. -->
   <key>NSMicrophoneUsageDescription</key>
-  <string>Boubou 用麦克风做本地语音输入(转写在本机完成,音频不出本机)。 / Boubou uses the microphone for on-device voice input; audio never leaves this machine.</string>
+  <string>Boubou uses the microphone for on-device voice input; audio never leaves this machine.</string>
 </dict>
 </plist>

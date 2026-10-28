@@ -25,9 +25,9 @@ const BING: &str = r#"<html><body><ol id="b_results">
 </ol></body></html>"#;
 
 const BAIDU: &str = r#"<html><body>
-<div class="result c-container"><h3 class="t"><a href="http://b.example/x">百度 结果</a></h3>
-  <div class="c-abstract">摘要文字</div></div>
-<div class="result c-container"><h3><a href="http://b.example/y">第二条</a></h3></div>
+<div class="result c-container"><h3 class="t"><a href="http://b.example/x">Baidu result</a></h3>
+  <div class="c-abstract">snippet text</div></div>
+<div class="result c-container"><h3><a href="http://b.example/y">second item</a></h3></div>
 </body></html>"#;
 
 fn home() -> tempfile::TempDir {
@@ -89,7 +89,10 @@ fn bing_results_parse_like_bs4() {
 fn baidu_results_parse_like_bs4() {
     let out = parse_search_results(BAIDU, Engine::Baidu, 5);
     assert_eq!(out.len(), 2);
-    assert_eq!(out[0], "• 百度 结果\n  http://b.example/x\n  摘要文字"); // bs4 strips only the ends of a text node
+    assert_eq!(
+        out[0],
+        "• Baidu result\n  http://b.example/x\n  snippet text"
+    ); // bs4 strips only the ends of a text node
     assert!(parse_search_results(BAIDU, Engine::Bing, 5).is_empty());
 }
 
@@ -165,7 +168,7 @@ fn web_fetch_stores_full_text_and_returns_summary() {
     let web = Web::with_backends(&d.path().join("home"), vec![]);
     let out = web.fetch(&url, Some(d.path()));
     assert!(out.starts_with("Title Body text"));
-    assert!(out.contains("[全文已存: sources/fetch_"));
+    assert!(out.contains("[full text saved: sources/fetch_"));
     let key = cache_key(&["fetch", &url]);
     let saved = std::fs::read_to_string(d.path().join("sources").join(format!("fetch_{key}.txt")))
         .expect("source file");
@@ -195,11 +198,11 @@ fn web_search_reports_last_error_when_all_backends_fail() {
     let out = web.search("anything", 5);
     assert!(out.starts_with("[web_search error:"));
     let multi = web.search_multi(&["q1".to_string(), "q2".to_string()], 2);
-    assert!(multi.starts_with("### 查询: q1\n[web_search error:"));
-    assert!(multi.contains("\n\n### 查询: q2\n"));
+    assert!(multi.starts_with("### Query: q1\n[web_search error:"));
+    assert!(multi.contains("\n\n### Query: q2\n"));
     assert_eq!(
         web.search_multi(&[], 2),
-        "[web_search_multi: 需提供 queries 数组]"
+        "[web_search_multi: a queries array is required]"
     );
 }
 
@@ -222,7 +225,10 @@ fn memory_store_and_recall() {
         memory_store(d.path(), "user likes Rust and static linking"),
         "[saved 1 facts]"
     );
-    assert_eq!(memory_store(d.path(), "项目名叫布布"), "[saved 2 facts]");
+    assert_eq!(
+        memory_store(d.path(), "the project is called Boubou"),
+        "[saved 2 facts]"
+    );
     assert_eq!(memory_store(d.path(), "unrelated note"), "[saved 3 facts]");
     let mem = load_memory(d.path());
     assert_eq!(mem.len(), 3);
@@ -235,7 +241,7 @@ fn memory_store_and_recall() {
     let r = memory_recall(d.path(), "zzz", 3);
     assert_eq!(
         r,
-        "user likes Rust and static linking\n项目名叫布布\nunrelated note"
+        "user likes Rust and static linking\nthe project is called Boubou\nunrelated note"
     );
 }
 
@@ -278,7 +284,7 @@ fn batch_nested_blocked() {
         "batch_tools",
         &json!({"calls": [{"tool": "batch_tools", "args": {}}]}),
     );
-    assert!(out.contains("禁止嵌套"));
+    assert!(out.contains("nested batch_tools"));
 }
 
 #[test]
@@ -289,7 +295,7 @@ fn batch_dangerous_still_blocked() {
         "batch_tools",
         &json!({"calls": [{"tool": "run_bash", "args": {"command": "rm -rf /x"}}]}),
     );
-    assert!(out.contains("危险操作"));
+    assert!(out.contains("dangerous operation"));
 }
 
 #[test]

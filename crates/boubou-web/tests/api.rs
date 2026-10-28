@@ -40,7 +40,7 @@ impl Spawner for Scripted {
             let v = confirmer.confirm(&ConfirmRequest {
                 tool: "read_file",
                 target: "/etc/hosts".into(),
-                action: "访问",
+                action: "access",
                 workdir: &req.workdir,
             });
             self.seen
@@ -196,7 +196,7 @@ fn index_and_404() {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|c| c.starts_with("text/html")));
     let body = r.text().expect("text");
-    assert!(body.contains("布布 · Boubou") && body.contains("/api/events"));
+    assert!(body.contains("<title>Boubou</title>") && body.contains("/api/events"));
     assert!(!body.contains("Mingbird"));
     let r = http().get(s.url("/api/nope")).send().expect("get");
     assert_eq!(r.status().as_u16(), 404);
@@ -281,7 +281,7 @@ fn sessions_list_detail_select_and_newchat() {
         sd.join("a.json"),
         json!([
             {"role": "system", "content": "sys"},
-            {"role": "user", "content": "[时间预算] skip me"},
+            {"role": "user", "content": "⏱ Time budget: skip me"},
             {"role": "user", "content": "  write   a poem   about rust  "},
             {"role": "assistant", "content": "ok"}
         ])
@@ -423,7 +423,7 @@ fn chat_streams_events_asks_and_exits() {
     assert_eq!(ask["ask_id"], json!("ask_1"));
     assert_eq!(ask["data"]["tool"], json!("read_file"));
     assert_eq!(ask["data"]["path"], json!("/etc/hosts"));
-    assert_eq!(ask["data"]["action"], json!("访问"));
+    assert_eq!(ask["data"]["action"], json!("access"));
     assert!(events.iter().all(|e| e["id"].as_u64().is_some()));
     let seen = sc.seen.lock().expect("lock").clone();
     assert!(
@@ -548,7 +548,7 @@ fn status_reports_engine_and_voice_state() {
     assert_eq!(d["engine"], "Ollama");
     let v = &d["voice"];
     assert!(v.get("local").is_some() && v.get("langs").is_some());
-    assert_eq!(v["lang"], "zh");
+    assert_eq!(v["lang"], "en");
     assert_eq!(v["feature"], cfg!(feature = "voice"));
     // No model installed under the scratch home → a hint tells the user where it goes.
     if v["local"] == false {
@@ -562,7 +562,7 @@ fn status_reports_engine_and_voice_state() {
     )
     .expect("cfg");
     let d = srv.get("/api/status");
-    assert_eq!(d["engine"], "OpenAI 兼容");
+    assert_eq!(d["engine"], "OpenAI-compatible");
     assert_eq!(d["ollama_ok"], false);
     assert_eq!(d["models"], json!([]));
 }
@@ -573,7 +573,7 @@ fn voice_endpoint_status_codes() {
     let srv = serve(sp);
     let post_wav = |bytes: Vec<u8>| -> (u16, Value) {
         let r = http()
-            .post(srv.url("/api/voice?lang=zh"))
+            .post(srv.url("/api/voice?lang=en"))
             .header("Content-Type", "audio/wav")
             .body(bytes)
             .send()

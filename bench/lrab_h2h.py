@@ -162,13 +162,17 @@ def wait_for_quiet(workdir, quiet_secs=20, max_wait=180):
     return False
 
 
+# Mingbird's "resets had no effect, exiting gracefully" log line (Chinese, written as escapes).
+MINGBIRD_EMPTY_SPIN = "\u590d\u4f4d\u65e0\u6548,\u4f18\u96c5\u9000\u51fa"
+
+
 def classify(rc, wall, transcript, score, workdir):
     """run_bench's failure-mode ladder, applied to the boubou arm verbatim."""
     if rc != 0:
         mode = "crash" if wall < 60 else "error"
         if mode == "crash" and "UnicodeEncodeError" in transcript:
             mode = "gbk_degraded"
-        elif "复位无效,优雅退出" in transcript:
+        elif MINGBIRD_EMPTY_SPIN in transcript or "3 resets had no effect" in transcript:
             mode = "empty_spin"
         return mode
     if score.get("total", 0) == 0:
