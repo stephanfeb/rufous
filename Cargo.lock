@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "boubou-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boubou-core",
  "boubou-web",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "boubou-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "boubou-core",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "boubou-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "boubou-voice"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boubou-core",
  "reqwest",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "boubou-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "boubou-core",
