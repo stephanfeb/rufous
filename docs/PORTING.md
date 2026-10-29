@@ -468,10 +468,10 @@ classified first:
    fragment leaking into the call, now gets `[invalid tool name …]` naming the fault and where
    the command belongs, instead of the generic "not available" text; the name is compacted in
    notes and logs. Both are model-agnostic and cheap; neither has a measurement yet.
-3. **Profile (1sm).** `UNFAMILIAR_SYNTAX_NUDGE` is appended to qwen3.5:9b's prompt note: the
-   model read Dart 3.11 dot-shorthands as syntax errors and planned to "fix" valid code.
-   Missing knowledge cannot be gated; the note defers "is this an error" to the project's
-   tooling. Per tag, as with the honest-failure nudge; `"prompt_note": ""` switches both off.
+3. **Profile (1sm), recorded only.** qwen3.5:9b read Dart 3.11 dot-shorthands as syntax errors
+   and planned to "fix" valid code. A prompt note for it was added and then dropped the same
+   day: it is model knowledge, and a note about one language's syntax belongs to a coding
+   agent, which Boubou is not. The evidence stays in the profile's `note`.
 4. **Left open (9c5, i3r).** The read-only-call cap for question turns and the refusal of
    command-shaped `web_search` queries were derived from one transcript whose root cause (no
    shell on the question route) o5a fixed; the replay dropped from 19 calls to 5. Guards for a
@@ -792,6 +792,41 @@ notes after an empty or text turn push it on. That is bead boubou-he2. Two more 
 the replay: the question route let `cat > file` through (`run_bash` is allowed there and only the
 file tools are blocked; bead boubou-ldj), and `DEFAULT_NUM_CTX` 131072 means Zed loads qwen3.5:9b
 at 17 GB (bead boubou-0lg).
+
+
+## Follow-up turns (2026-10-29, bead boubou-he2, open)
+
+Mechanism. `Intent::FollowUp` existed in the heuristic and the decider but the loop ran it
+exactly as `Task`: finish gates, continue notes, "call a tool and do real work now" after an
+empty turn. For a one-action steer in an editor session ("I think we already did that one. It
+can be closed.") those notes push the model past the instruction into the next piece of work.
+
+Changes: (1) `guards/qa.rs`: after progress, a cue-free message up to `FOLLOWUP_MAX_CHARS` (80)
+is a follow-up instead of 40 (the live sentence is 51 chars). Labelled set, heuristic only:
+3-class accuracy 71.6% → 72.2%, follow-ups right 41 → 43, tasks unchanged (113 right, 0 called
+follow-up). (2) `agent/run.rs`: on a follow-up, once a non-idle call has run (`acted_this_turn`),
+a text-only reply ends the turn as a question's answer does, and the first empty reply draws
+"If the user's instruction is done, say so in one line and stop" instead of the empty-turn
+ladder. The task prompt, tools and gates are otherwise unchanged. Four loop tests, one guard
+test.
+
+Measurement, one controlled replay (copy of the overshare checkout with its own beads
+database, qwen3.5:9b, decider off):
+
+| turn | live, old binary | replay, new binary |
+|---|---|---|
+| "What is the next item for us to work on ?" | 3 calls, answered | 3 calls, 49 s, answered |
+| "I think we already did that one. It can be closed." | `bd done` in 3 calls, then 44 reads; cancelled at 6 min | 42 calls at the 10-min client timeout, zero text; did not close the bead |
+
+What happened in the replay: the model did not know the `bd` verb (`bd set done`, `bd sql`,
+`bd dolt commit`, all failed), concluded the item was not done, wrote itself a six-step plan and
+implemented mDNS discovery (five edits, one new file) in the copy. The follow-up route was
+active: the "say so in one line" note appeared after its one empty reply. The ending rule never
+fired because the model never produced text; it went tool → tool → tool for 42 calls, and the
+idle nudge and the plan-progress reminder both fired on the way. So the rule is necessary and
+not sufficient for this model. The bead stays open with the obvious next step for the user to
+decide: a follow-up call budget (a bound on calls after the first action, then a forced report,
+the question route's cap shape), and silencing the plan-progress reminder on follow-ups.
 
 ## Recency pruning before the ladder (2026-10-29, bead boubou-65d.6)
 
