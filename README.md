@@ -28,6 +28,8 @@ Web search defaults to Brave, then DuckDuckGo, then Bing, then Baidu (`AGENT_SEA
 (every tool call with its step time), inline permission cards, a pinned composer with the model and
 Online/Offline controls, and an inspector with the live plan, activity and files; dark by default,
 light available; the agent runs in-process. `cargo run -p boubou-app` opens the same UI in a native window.
+A chat turn ends when the model replies or calls `finish`, as in an editor; "Batch task mode" in
+the settings opts a session into the unattended task harness (finish gates, test guard, continue notes).
 Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, "child_model":
 "<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
 sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside

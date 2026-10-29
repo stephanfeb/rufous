@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 
 pub const PREFS_FILE: &str = "gui_prefs.json";
 /// Keys the status endpoint exposes and `POST /api/prefs` accepts.
-pub const KEYS: [&str; 8] = [
+pub const KEYS: [&str; 9] = [
     "stt_lang",
     "ctx",
     "temp",
@@ -16,6 +16,7 @@ pub const KEYS: [&str; 8] = [
     "sys_enable",
     "sys_text",
     "ui_mode",
+    "batch",
 ];
 
 pub fn prefs_path(home: &Path) -> PathBuf {
@@ -25,7 +26,7 @@ pub fn prefs_path(home: &Path) -> PathBuf {
 fn defaults() -> Map<String, Value> {
     let v = json!({
         "ui_mode": "auto", "ctx": 131072, "temp": null, "num_predict": 2048,
-        "think": null, "sys_enable": false, "sys_text": "", "prefver": 2
+        "think": null, "sys_enable": false, "sys_text": "", "batch": false, "prefver": 2
     });
     v.as_object().cloned().unwrap_or_default()
 }

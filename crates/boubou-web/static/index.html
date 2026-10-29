@@ -419,6 +419,8 @@ dialog.sheet[open]{display:flex}
       <div class="f"><label for="p-think">Thinking</label>
         <select id="p-think"><option value="">default</option><option value="1">on</option><option value="0">off</option></select>
         <div class="note">Default lets the model decide; on or off sets the request field explicitly.</div></div>
+      <label class="chk"><input type="checkbox" id="p-batch">Batch task mode</label>
+      <div class="note">Off: a reply or finish ends the turn, as in an editor. On: the unattended task harness, with finish gates, the test guard and continue notes, for watching it work a task in the workdir.</div>
     </div>
     <div class="secpane" id="sec-engine">
       <label class="chk"><input type="checkbox" id="p-clouden">Use the cloud model (online only)</label>
@@ -1269,7 +1271,7 @@ $("p-save").onclick = () => {
                  num_predict: parseInt($("p-np").value, 10),
                  think: $("p-think").value === "" ? null : ($("p-think").value === "1"),
                  sys_enable: $("p-sysen").checked, sys_text: $("p-systext").value,
-                 stt_lang: $("p-stt").value, ui_mode: theme};
+                 stt_lang: $("p-stt").value, ui_mode: theme, batch: $("p-batch").checked};
   const cloudBody = {enabled: $("p-clouden").checked, base_url: $("p-cloudbase").value.trim(),
                      model: $("p-cloudmodel").value.trim(), api_key: $("p-cloudkey").value.trim()};
   Promise.all([post("/api/prefs", prefs), post("/api/cloud", cloudBody).then(r => r.json())]).then(([, cd]) => {
@@ -1294,6 +1296,7 @@ function loadPrefs(){
     $("p-sysen").checked = !!p.sys_enable;
     $("p-systext").value = p.sys_text || "";
     $("p-stt").value = p.stt_lang || voice.lang || "en";
+    $("p-batch").checked = !!p.batch;
     const th = document.querySelector('input[name="p-theme"][value="' + uiMode + '"]'); if (th) th.checked = true;
     thinkState = p.think === true ? true : (p.think === false ? false : null); updateThinkUI();
     cloud = d.cloud || cloud;

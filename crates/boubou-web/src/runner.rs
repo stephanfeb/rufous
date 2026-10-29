@@ -157,6 +157,11 @@ pub fn params_from_prefs(
         }
     }
     p.think = prefs.get("think").and_then(Value::as_bool);
+    // A chat turn is a standard agent turn, as in the editor: text or `finish` ends it and
+    // the batch gates stay out of the way. `batch: true` opts a session into Mingbird's
+    // unattended task run (finish gates, test guard, continue notes, child dispatch) for
+    // watching the harness work a task in the workdir.
+    p.interactive = prefs.get("batch").and_then(Value::as_bool) != Some(true);
     if prefs.get("sys_enable").and_then(Value::as_bool) == Some(true) {
         let f = home.join("system_override.txt");
         if f.is_file() {

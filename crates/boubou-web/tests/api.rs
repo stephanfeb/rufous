@@ -225,7 +225,8 @@ fn status_shape_with_unreachable_ollama() {
     assert_eq!(p["think"], Value::Null);
     assert_eq!(p["num_predict"], json!(2048));
     assert_eq!(p["ui_mode"], json!("auto"));
-    assert_eq!(p.as_object().map(|m| m.len()), Some(8)); // + stt_lang (step 7)
+    assert_eq!(p["batch"], json!(false));
+    assert_eq!(p.as_object().map(|m| m.len()), Some(9)); // + stt_lang (step 7), batch
 }
 
 #[test]
@@ -726,4 +727,30 @@ fn tool_results_and_compaction_reach_the_page() {
     assert!(got[1]["data"]
         .as_str()
         .is_some_and(|n| n.contains("compacted") && n.contains("40 → 12")));
+}
+
+#[test]
+fn a_chat_turn_is_interactive_unless_batch_mode_is_on() {
+    // The web UI is a chat, not a batch task run: the editor's turn semantics apply unless
+    // the user opts into the harness with the `batch` preference.
+    use boubou_web::runner::params_from_prefs;
+    let d = tempfile::tempdir().expect("tmp");
+    let p = params_from_prefs("m", d.path(), d.path(), &prefs::load(d.path())).expect("params");
+    assert!(p.interactive, "default");
+    let mut on = prefs::load(d.path());
+    on.insert("batch".into(), json!(true));
+    let p = params_from_prefs("m", d.path(), d.path(), &on).expect("params");
+    assert!(!p.interactive, "batch: true");
+    let mut off = prefs::load(d.path());
+    off.insert("batch".into(), json!(false));
+    assert!(params_from_prefs("m", d.path(), d.path(), &off).expect("params").interactive);
+
+    // The preference round-trips through the API and the status endpoint.
+    let (_, sp) = scripted(false, false);
+    let s = serve(sp);
+    assert_eq!(s.get("/api/status")["prefs"]["batch"], json!(false));
+    let (code, r) = s.post("/api/prefs", json!({"batch": true}));
+    assert_eq!(code, 200);
+    assert_eq!(r["prefs"]["batch"], json!(true));
+    assert_eq!(s.get("/api/status")["prefs"]["batch"], json!(true));
 }
