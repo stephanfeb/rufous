@@ -37,7 +37,12 @@ Agent Settings → External Agents → Add Agent → Add Custom Agent, or in `se
 
 Then start a new external agent thread from the Agent Panel and pick Boubou. The session's
 working directory is the project root Zed passes as `cwd`; Boubou's session files are written
-under `~/.ollama_agent/sessions/acp_*` as for a web chat.
+under `~/.ollama_agent/sessions/acp_*` as for a web chat. The live checkpoint goes there too
+(`acp_*.state.json`, with `acp_*.state.meta.json` for the time budget) rather than to the
+CLI's `<cwd>/.agent_state.json`: the project directory gets nothing of the harness, so the
+model cannot find its own history in a listing and your git status stays clean. The one
+file the loop still writes into the project is `todo.json` when the model uses the plan
+tool.
 
 ## What the editor sees
 

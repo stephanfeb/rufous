@@ -138,6 +138,10 @@ impl AgentFactory for ScriptedFactory {
         let mut a = Agent::new(params, backend, tools)
             .with_sink(setup.sink)
             .with_stop(setup.stop);
+        a.checkpoint = Some(boubou_core::agent::session::state_path(
+            &setup.sessions_dir,
+            &setup.session,
+        ));
         a.sessions_dir = setup.sessions_dir.clone();
         Ok(Box::new(Counting {
             inner: a,
@@ -297,6 +301,31 @@ async fn a_prompt_turn_streams_tool_calls_asks_permission_and_closes_with_the_su
         opened[1] > opened[0] + 1,
         "prior history plus the new user turn"
     );
+
+    // The editor's project holds no harness state (boubou-ll7): the live checkpoint sits
+    // beside the session files, and a listing of the cwd shows only the model's own work.
+    assert!(
+        !cwd.join(".agent_state.json").exists(),
+        "checkpoint must not be written into the editor's cwd"
+    );
+    let state = cwd
+        .join("home")
+        .join("sessions")
+        .join(format!("{}.state.json", ns.session_id.0));
+    assert!(state.is_file(), "missing {}", state.display());
+    let saved: Vec<Message> =
+        serde_json::from_str(&std::fs::read_to_string(&state).expect("read")).expect("json");
+    assert!(
+        saved.len() >= opened[1],
+        "the checkpoint holds the second turn"
+    );
+    let listing: Vec<String> = std::fs::read_dir(&cwd)
+        .expect("ls")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".agent_state"))
+        .collect();
+    assert!(listing.is_empty(), "{listing:?}");
 }
 
 #[tokio::test]

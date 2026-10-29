@@ -73,8 +73,20 @@ pub fn elapsed_meta_path(workdir: &Path) -> PathBuf {
     workdir.join(".agent_state.meta.json")
 }
 
+/// The sidecar that belongs to a checkpoint file: `<stem>.meta.json` beside it, so
+/// `.agent_state.json` keeps `.agent_state.meta.json` and a relocated
+/// `<name>.state.json` gets `<name>.state.meta.json`.
+pub fn elapsed_meta_for(checkpoint: &Path) -> PathBuf {
+    checkpoint.with_extension("meta.json")
+}
+
 pub fn load_elapsed(workdir: &Path) -> f64 {
-    std::fs::read_to_string(elapsed_meta_path(workdir))
+    load_elapsed_at(&elapsed_meta_path(workdir))
+}
+
+/// [`load_elapsed`] from an explicit sidecar path.
+pub fn load_elapsed_at(meta: &Path) -> f64 {
+    std::fs::read_to_string(meta)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("elapsed_sec")?.as_f64())
@@ -83,8 +95,16 @@ pub fn load_elapsed(workdir: &Path) -> f64 {
 }
 
 pub fn save_elapsed(workdir: &Path, sec: f64) {
+    save_elapsed_at(&elapsed_meta_path(workdir), sec);
+}
+
+/// [`save_elapsed`] to an explicit sidecar path.
+pub fn save_elapsed_at(meta: &Path, sec: f64) {
     let v = serde_json::json!({"elapsed_sec": (sec * 10.0).round() / 10.0});
-    if let Err(e) = atomic_write_json(&elapsed_meta_path(workdir), &v) {
+    if let Some(dir) = meta.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = atomic_write_json(meta, &v) {
         tracing::warn!("elapsed sidecar: {e}");
     }
 }

@@ -291,6 +291,12 @@ pub struct Agent<B, T> {
     pub transcript: Transcript,
     /// `~/.ollama_agent/sessions` unless relocated.
     pub sessions_dir: PathBuf,
+    /// Where the live checkpoint (and its elapsed-time sidecar) is written. `None` is the
+    /// CLI's `<workdir>/.agent_state.json`, which `boubou` resumes from after a kill.
+    /// An embedding whose workdir is the user's own project (ACP) sets
+    /// [`session::state_path`] so the model never reads the harness's history out of a
+    /// directory listing and the project's git status stays clean (boubou-ll7).
+    pub checkpoint: Option<PathBuf>,
     sink: Sink,
     /// User stop (web UI "stop" button): ends the run at the next check, saving the session.
     stop: Arc<AtomicBool>,
@@ -374,6 +380,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             face,
             transcript: Transcript::new(),
             sessions_dir: session::sessions_dir(&home),
+            checkpoint: None,
             sink: Box::new(|_| {}),
             stop: Arc::new(AtomicBool::new(false)),
             parallel: None,
@@ -454,6 +461,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             face,
             transcript,
             sessions_dir,
+            checkpoint,
             sink,
             stop,
             parallel,
@@ -464,6 +472,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let child = params.child_mode;
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
+        let ckpt_path = checkpoint
+            .clone()
+            .unwrap_or_else(|| session::checkpoint_path(workdir));
+        let elapsed_path = budget::elapsed_meta_for(&ckpt_path);
         let ctx_budget = f64::from(params.num_ctx);
         let fg_off = params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
 
@@ -636,7 +648,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             .max(0.0);
         let t0 = Instant::now();
         let prev_elapsed = if budget_total > 0.0 {
-            budget::load_elapsed(workdir)
+            budget::load_elapsed_at(&elapsed_path)
         } else {
             0.0
         };
@@ -948,7 +960,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             let mut turn = Message::assistant(content.clone());
             turn.tool_calls = tcs.clone();
             messages.push(turn);
-            session::write_checkpoint(workdir, &messages);
+            session::write_checkpoint_to(&ckpt_path, &messages);
 
             if tcs.is_empty() {
                 // ---- text-only turn ----
@@ -1817,7 +1829,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 // Time budget pacing (task mode only).
                 if budget_total > 0.0 && !qa {
                     let el = prev_elapsed + t0.elapsed().as_secs_f64();
-                    budget::save_elapsed(workdir, el);
+                    budget::save_elapsed_at(&elapsed_path, el);
                     if let Some(bn) = budget::budget_nudge(budget_total, el, &mut budget_fired) {
                         log!("[{i}] ⏱ budget nudge injected ({:.0}min used)", el / 60.0);
                         messages.push(Message::user(bn));

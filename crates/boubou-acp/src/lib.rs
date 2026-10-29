@@ -282,6 +282,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 cwd: cwd.clone(),
                                 model: model.clone(),
                                 sessions_dir: sessions_dir.clone(),
+                                session: name.clone(),
                                 stop: stop.clone(),
                                 sink: {
                                     let tx = tx.clone();

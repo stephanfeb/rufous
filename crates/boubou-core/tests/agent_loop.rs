@@ -1091,6 +1091,60 @@ fn injected_user_messages_keep_the_harness_prefix_invariant() {
 // ---- checkpoint and events ----
 
 #[test]
+fn checkpoint_relocates_out_of_the_workdir_with_its_elapsed_sidecar() {
+    // boubou-ll7: an embedding whose workdir is the user's project (ACP) keeps the live
+    // state beside the session files; nothing of the harness lands in the workdir.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().join("project");
+    std::fs::create_dir_all(&wd).expect("mkdir");
+    let sessions = d.path().join("home").join("sessions"); // not created: the loop must
+    let state = boubou_core::agent::session::state_path(&sessions, "acp_1029_094732");
+    let meta = boubou_core::guards::budget::elapsed_meta_for(&state);
+    assert_eq!(
+        meta.file_name().and_then(|n| n.to_str()),
+        Some("acp_1029_094732.state.meta.json")
+    );
+    assert_eq!(
+        boubou_core::guards::budget::elapsed_meta_for(
+            &elapsed_meta_path(&wd).with_file_name(".agent_state.json")
+        ),
+        elapsed_meta_path(&wd),
+        "the default checkpoint keeps its Mingbird sidecar name"
+    );
+    let calls = vec![
+        (
+            "edit_file",
+            json!({"path": "m08.py", "old": "a", "new": "b"}),
+            EDIT_OK,
+        ),
+        (
+            "run_bash",
+            json!({"command": "python test_suite.py"}),
+            "[exit 0]\n10 passed",
+        ),
+    ];
+    // A resumed clock is read from the sidecar beside the relocated checkpoint.
+    boubou_core::guards::budget::save_elapsed_at(&meta, 100.0);
+    let mut a = agent_for(&wd, &calls);
+    a.checkpoint = Some(state.clone());
+    a.params.budget_env_sec = Some(3600.0);
+    let msgs = a.run(start(TASK), None, None).expect("loop");
+    assert!(state.is_file(), "missing {}", state.display());
+    let saved: Vec<Message> =
+        serde_json::from_str(&std::fs::read_to_string(&state).expect("read")).expect("json");
+    assert!(saved.len() >= 3 && saved.len() <= msgs.len());
+    assert!(meta.is_file(), "elapsed sidecar beside the checkpoint");
+    assert!(boubou_core::guards::budget::load_elapsed_at(&meta) >= 100.0);
+    let left: Vec<String> = std::fs::read_dir(&wd)
+        .expect("ls")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".agent_state"))
+        .collect();
+    assert!(left.is_empty(), "harness files in the workdir: {left:?}");
+}
+
+#[test]
 fn checkpoint_written_and_events_emitted() {
     let d = tempfile::tempdir().expect("tmp");
     let calls = vec![(

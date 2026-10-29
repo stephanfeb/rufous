@@ -2,6 +2,10 @@
 //! Mingbird task resumes under Boubou and vice versa.
 //!
 //! - `<workdir>/.agent_state.json`: the live message list, rewritten atomically every turn.
+//!   An embedding whose workdir is the user's own project (the ACP server: the editor's
+//!   cwd) relocates it to `<sessions>/<name>.state.json` via [`Agent::checkpoint`] so the
+//!   model never finds the harness's history in a directory listing and the user's git
+//!   status stays clean (bead boubou-ll7).
 //! - `<sessions>/<name>.json`: the saved context (what the model sees).
 //! - `<sessions>/<name>.transcript.jsonl`: every message as it happened; compaction only
 //!   touches the model context, the GUI renders history from here.
@@ -26,29 +30,47 @@ pub fn checkpoint_path(workdir: &Path) -> PathBuf {
     workdir.join(".agent_state.json")
 }
 
+/// The relocated checkpoint for a named session: `<sessions>/<name>.state.json`, beside
+/// the session's other files. Its elapsed-time sidecar is `<name>.state.meta.json`
+/// ([`crate::guards::budget::elapsed_meta_for`]).
+pub fn state_path(sessions_dir: &Path, name: &str) -> PathBuf {
+    sessions_dir.join(format!("{name}.state.json"))
+}
+
 /// Write the checkpoint atomically (tmp + rename) so a hard kill never leaves half a JSON.
 pub fn write_checkpoint(workdir: &Path, messages: &[Message]) {
-    let p = checkpoint_path(workdir);
+    write_checkpoint_to(&checkpoint_path(workdir), messages);
+}
+
+/// [`write_checkpoint`] to an explicit path; the parent directory is created.
+pub fn write_checkpoint_to(p: &Path, messages: &[Message]) {
     let tmp = p.with_extension("json.tmp");
     let Ok(s) = serde_json::to_string(messages) else {
         return;
     };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     if std::fs::write(&tmp, s).is_ok() {
-        let _ = std::fs::rename(&tmp, &p);
+        let _ = std::fs::rename(&tmp, p);
     }
 }
 
 /// Load and sanitise a checkpoint. A corrupt file is renamed `.corrupt` and `None` returned.
 pub fn load_checkpoint(workdir: &Path) -> Option<Vec<Message>> {
-    let p = checkpoint_path(workdir);
-    let raw = std::fs::read_to_string(&p).ok()?;
+    load_checkpoint_from(&checkpoint_path(workdir))
+}
+
+/// [`load_checkpoint`] from an explicit path.
+pub fn load_checkpoint_from(p: &Path) -> Option<Vec<Message>> {
+    let raw = std::fs::read_to_string(p).ok()?;
     match serde_json::from_str::<Vec<Message>>(&raw) {
         Ok(mut msgs) => {
             super::history::sanitize_ckpt(&mut msgs);
             Some(msgs)
         }
         Err(_) => {
-            let _ = std::fs::rename(&p, p.with_extension("json.corrupt"));
+            let _ = std::fs::rename(p, p.with_extension("json.corrupt"));
             None
         }
     }

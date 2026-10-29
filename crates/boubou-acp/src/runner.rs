@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use boubou_core::agent::session;
 use boubou_core::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner};
 use boubou_core::config::Config;
 use boubou_core::ollama::Message;
@@ -99,6 +100,9 @@ pub struct TurnSetup {
     /// Where the loop saves this session's files; `session/load` reads them back from the
     /// same place, so the server hands it down rather than letting the loop pick its own.
     pub sessions_dir: PathBuf,
+    /// The Boubou session name (`acp_MMDD_HHMMSS`). The live checkpoint goes to
+    /// `<sessions_dir>/<session>.state.json`, not into the editor's project.
+    pub session: String,
     pub stop: Arc<AtomicBool>,
     pub sink: Box<dyn FnMut(AgentEvent) + Send + 'static>,
     pub confirmer: Box<dyn Confirmer>,
@@ -110,6 +114,7 @@ impl std::fmt::Debug for TurnSetup {
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("sessions_dir", &self.sessions_dir)
+            .field("session", &self.session)
             .finish_non_exhaustive()
     }
 }
@@ -134,6 +139,7 @@ impl AgentFactory for StandardFactory {
             .with_sink(setup.sink)
             .with_stop(setup.stop);
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), setup.confirmer);
+        agent.checkpoint = Some(session::state_path(&setup.sessions_dir, &setup.session));
         agent.sessions_dir = setup.sessions_dir;
         Ok(Box::new(agent))
     }
