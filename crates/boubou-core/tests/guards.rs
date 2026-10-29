@@ -760,3 +760,24 @@ fn a_verification_command_runs_a_check_rather_than_mentioning_one() {
         assert!(!is_verification_command(cmd), "{cmd}");
     }
 }
+
+#[test]
+fn the_follow_up_nudges_are_harness_notes_not_user_input() {
+    use boubou_core::guards::qa::{
+        is_harness_note, task_routing_text, FOLLOW_UP_DONE_NOTE, FOLLOW_UP_REPORT_NOTE,
+    };
+    for note in [FOLLOW_UP_DONE_NOTE, FOLLOW_UP_REPORT_NOTE] {
+        assert!(is_harness_note(note), "{note}");
+        let history = vec![
+            Message::system("sys"),
+            Message::user("Work through the task list."),
+            Message::assistant("Task 1.1 is done."),
+            Message::user("close that one please"),
+            Message::assistant(""),
+            Message::user(note),
+        ];
+        assert_eq!(task_routing_text(&history), "close that one please");
+        let h = intent_heuristic(&history, true);
+        assert_eq!(h.text, "close that one please", "{h:?}");
+    }
+}

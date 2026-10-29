@@ -15,7 +15,7 @@ pub const DISPATCH_NOTE_MARK: &str = "[parallel-dispatch]";
 /// Every user-role message the harness injects starts with one of these, so routing,
 /// Q&A detection and task re-injection can skip them. Invariant: any new injected
 /// message must start with a prefix from this list.
-pub const HARNESS_NOTE_PREFIXES: [&str; 8] = [
+pub const HARNESS_NOTE_PREFIXES: [&str; 10] = [
     "⚠️",
     "Continue:",
     "[blocked:",
@@ -24,7 +24,18 @@ pub const HARNESS_NOTE_PREFIXES: [&str; 8] = [
     "Hint:",
     "Continue the previous conversation",
     DISPATCH_NOTE_MARK,
+    FOLLOW_UP_DONE_NOTE,
+    FOLLOW_UP_REPORT_NOTE,
 ];
+
+/// Follow-up turn, model went quiet after acting: ask for the report, not for work.
+/// Listed above so the decider, the session replay and the web history skip it; before
+/// that (review 2026-10-29) it passed for the user's latest input.
+pub const FOLLOW_UP_DONE_NOTE: &str =
+    "If the user's instruction is done, say so in one line and stop. Otherwise make the next tool call.";
+/// Follow-up turn, acted on and reported: the turn ends here.
+pub const FOLLOW_UP_REPORT_NOTE: &str =
+    "Your reply reports the follow-up; the turn ends here. Do not repeat the output.";
 
 /// Marker of a compaction summary message (`history.rs`).
 pub const CONTEXT_SUMMARY_MARK: &str = "[Earlier context summary]";

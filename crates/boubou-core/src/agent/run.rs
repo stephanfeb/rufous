@@ -1053,9 +1053,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     if follow_up && acted_this_turn && !follow_up_nudged {
                         // The instruction may already be done; ask for the report, not for work.
                         follow_up_nudged = true;
-                        messages.push(Message::user(
-                            "If the user's instruction is done, say so in one line and stop. Otherwise make the next tool call.",
-                        ));
+                        messages.push(Message::user(qa::FOLLOW_UP_DONE_NOTE));
                         continue;
                     }
                     if empty_turns == 3 {
@@ -1103,9 +1101,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             // The follow-up was acted on and this text is the report.
                             casual_force = true;
                             log!("[{i}] follow-up acted on and reported; ending the turn");
-                            messages.push(Message::user(
-                                "Your reply reports the follow-up; the turn ends here. Do not repeat the output.",
-                            ));
+                            messages.push(Message::user(qa::FOLLOW_UP_REPORT_NOTE));
                         } else if talk_streak >= TALK_FORCE_END {
                             // The model is talking, not working: bound the loop instead of
                             // nagging until max_iterations.
