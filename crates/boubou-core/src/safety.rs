@@ -6,7 +6,7 @@
 //! |---|---|---|
 //! | 0 | child sandbox | sub-agents are default-deny with no escalation path (not yet ported) |
 //! | 1 | [`DANGER_CMD`], [`PS_HIGH_RISK`] | irreversible system damage: refused outright, no exit |
-//! | 2 | [`risk_classify`] | uninstall / environment mutation (ask when attended, deny unattended); recursive delete and `find -delete` only inside the workspace |
+//! | 2 | [`risk_classify`] | uninstall / environment mutation (ask when attended, deny unattended); recursive delete and `find -delete` only inside the workspace, judged after `~`/`$HOME` expansion and any `cd` earlier in the command; a target or `cd` the gate cannot evaluate is refused |
 //! | 3 | [`BASH_ESCAPE_PATTERNS`], [`safe_path`], [`SENSITIVE_PATTERNS`], [`SYSTEM_DIRS`] | boundary and sensitive access go to the [`Confirmer`] (attended: user decides; unattended: refused) |
 //! | 4 | `.mingbird_trash`, `.bak`, overwrite guard (in the executor) | damage that gets through rings 0–3 stays reversible |
 //!
@@ -475,17 +475,100 @@ fn is_within(child: &Path, base: &Path) -> bool {
 /// `_safe_path`: `(real_absolute, inside)`. Collapses `..`, follows symlinks, and treats
 /// `allow_dirs` as inside. A Windows drive path can never be inside a POSIX workspace.
 pub fn safe_path(workdir: &Path, path: &str, allow_dirs: &[PathBuf]) -> (PathBuf, bool) {
+    safe_path_from(workdir, workdir, path, allow_dirs)
+}
+
+/// [`safe_path`] for a `path` that is relative to `base` rather than to the workdir: the
+/// directory a shell command is in after a `cd`. Inside-ness is still judged against
+/// `workdir`.
+pub fn safe_path_from(
+    base: &Path,
+    workdir: &Path,
+    path: &str,
+    allow_dirs: &[PathBuf],
+) -> (PathBuf, bool) {
     if !cfg!(windows) && DRIVE_RE.is_match(path) {
         return (PathBuf::from(path), false);
     }
-    let base = resolve_path(workdir);
-    let real = resolve_path(&workdir.join(path));
-    let inside = is_within(&real, &base)
+    let wd = resolve_path(workdir);
+    let real = resolve_path(&base.join(path));
+    let inside = is_within(&real, &wd)
         || allow_dirs
             .iter()
             .any(|d| is_within(&real, &resolve_path(d)));
     (real, inside)
 }
+
+/// A shell path argument after home expansion: a definite path, or one the gate cannot
+/// evaluate (a variable other than the home ones, a substitution, `~user`).
+#[derive(Debug, PartialEq, Eq)]
+enum ShellPath {
+    Known(String),
+    Unknown,
+}
+
+fn home_string() -> Option<String> {
+    dirs::home_dir().map(|h| h.to_string_lossy().into_owned())
+}
+
+/// `~`, `~/x`, `$HOME/x`, `${HOME}/x`, `%USERPROFILE%\x` become the real home path; a
+/// plain path is returned as is. Before this, `rm -r ~/x` was judged as `<workdir>/~/x`,
+/// inside, and ran unprompted (review 2026-10-29; Mingbird has the same gap).
+fn expand_shell_path(t: &str) -> ShellPath {
+    let t = t.trim_matches(['"', '\'']);
+    if t == "~" || t.starts_with("~/") || t.starts_with("~\\") {
+        return match home_string() {
+            Some(h) => ShellPath::Known(format!("{h}{}", &t[1..])),
+            None => ShellPath::Unknown,
+        };
+    }
+    if t.starts_with('~') {
+        return ShellPath::Unknown; // ~user: another account's home
+    }
+    let low = t.to_lowercase();
+    for var in ["${home}", "$home", "${userprofile}", "$userprofile", "%userprofile%", "%home%"] {
+        if let Some(rest) = low.strip_prefix(var) {
+            if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
+                return match home_string() {
+                    Some(h) => ShellPath::Known(format!("{h}{}", &t[var.len()..])),
+                    None => ShellPath::Unknown,
+                };
+            }
+        }
+    }
+    if t.contains('$') || t.contains('`') || t.matches('%').count() >= 2 {
+        return ShellPath::Unknown;
+    }
+    ShellPath::Known(t.to_string())
+}
+
+/// The directory a command is in by byte `offset`, after any `cd`/`pushd` in the segments
+/// before it (`cd / && rm -r etc` deletes `/etc`, not `<workdir>/etc`). `None` when a `cd`
+/// went somewhere the gate cannot evaluate (`cd -`, `cd $VAR`).
+fn cwd_before(cmd: &str, offset: usize, workdir: &Path) -> Option<PathBuf> {
+    let mut cwd = workdir.to_path_buf();
+    for seg in cmd[..offset].split(['\n', ';', '&', '|']) {
+        let mut words = seg.split_whitespace();
+        let Some(prog) = words.next() else {
+            continue;
+        };
+        if !matches!(prog.to_lowercase().as_str(), "cd" | "pushd" | "chdir") {
+            continue;
+        }
+        let arg = words.find(|w| !(w.starts_with('-') && w.len() > 1) && !w.eq_ignore_ascii_case("/d"));
+        match arg {
+            None => cwd = dirs::home_dir()?,
+            Some("-") => return None,
+            Some(a) => match expand_shell_path(a) {
+                ShellPath::Known(p) => cwd = resolve_path(&cwd.join(p)),
+                ShellPath::Unknown => return None,
+            },
+        }
+    }
+    Some(cwd)
+}
+
+const UNKNOWN_CWD_MSG: &str = "[safety net: the command changes directory to a place the gate cannot evaluate (cd -, cd $VAR) before a recursive delete; refused. Delete with a path relative to the working directory instead.]";
 
 pub fn is_sensitive_path(path: &Path) -> bool {
     let p = path.to_string_lossy().to_lowercase().replace('/', "\\");
@@ -630,15 +713,27 @@ pub fn risk_classify(
             })
         };
     }
-    if RECURSE_DELETE_RE.is_match(cmd) {
+    if let Some(m) = RECURSE_DELETE_RE.find(cmd) {
         let targets = delete_targets(cmd);
         if targets.is_empty() {
             return Some(
                 "[safety net: could not work out a definite target for this recursive delete; refused. Give an explicit target path.]".into(),
             );
         }
+        let Some(base) = cwd_before(cmd, m.start(), workdir) else {
+            return Some(UNKNOWN_CWD_MSG.into());
+        };
         for t in targets {
-            let (_, inside) = safe_path(workdir, &t, &policy.allow_dirs);
+            let t = match expand_shell_path(&t) {
+                ShellPath::Known(p) => p,
+                ShellPath::Unknown => {
+                    return Some(format!(
+                        "[safety net: recursive-delete target '{}' depends on a variable or substitution the gate cannot evaluate; refused. Give an explicit path.]",
+                        head(&t, 60)
+                    ));
+                }
+            };
+            let (_, inside) = safe_path_from(&base, workdir, &t, &policy.allow_dirs);
             if !inside {
                 return Some(format!(
                     "[safety net: recursive-delete target '{}' is outside the working directory; refused. Recursive deletes inside the working directory are unrestricted; for files outside it use delete_file one at a time.]",
@@ -649,11 +744,23 @@ pub fn risk_classify(
     }
     if let Some(m) = FIND_DELETE_RE.captures(cmd) {
         let target = &m[1];
-        let (_, inside) = safe_path(workdir, target, &policy.allow_dirs);
+        let Some(base) = cwd_before(cmd, m.get(0).map_or(0, |w| w.start()), workdir) else {
+            return Some(UNKNOWN_CWD_MSG.into());
+        };
+        let target = match expand_shell_path(target) {
+            ShellPath::Known(p) => p,
+            ShellPath::Unknown => {
+                return Some(format!(
+                    "[safety net: the find -delete target '{}' depends on a variable or substitution the gate cannot evaluate; refused. Give an explicit path.]",
+                    head(target, 60)
+                ));
+            }
+        };
+        let (_, inside) = safe_path_from(&base, workdir, &target, &policy.allow_dirs);
         if !inside {
             return Some(format!(
                 "[safety net: the find -delete target '{}' is outside the working directory; refused. find -delete inside the working directory is unrestricted.]",
-                head(target, 60)
+                head(&target, 60)
             ));
         }
     }

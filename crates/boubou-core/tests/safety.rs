@@ -386,3 +386,53 @@ fn token_only_danger_words_are_caught_in_every_program_position() {
         assert_eq!(danger_hit(&cmd.to_lowercase()), None, "{cmd}");
     }
 }
+
+#[test]
+fn recursive_delete_resolves_home_variables_and_cd_before_judging() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::create_dir(d.path().join("sub")).expect("mkdir");
+    let p = SafetyPolicy::default();
+    // Review 2026-10-29: these resolved as `<workdir>/~/…` or ignored the cd, and ran.
+    for cmd in [
+        "rm -r ~/Documents",
+        "rm -rf ~/x",
+        "rm -r ~",
+        "rm -r $HOME/x",
+        "rm -r ${HOME}/x",
+        "rm -r \"$HOME/x\"",
+        "cd / && rm -r etc",
+        "cd .. && rm -r sub",
+        "cd /tmp; rm -rf build",
+        "cd ~ && rm -r sub",
+        "cd && rm -r sub",
+        "pushd / && rm -r etc",
+        "find ~/x -name '*.log' -delete",
+        "cd / && find etc -name x -delete",
+    ] {
+        let r = classify(cmd, d.path(), &p).expect(cmd);
+        assert!(r.contains("outside the working directory"), "{cmd}: {r}");
+    }
+    // A target or a cd the gate cannot evaluate is not a definite target.
+    for cmd in [
+        "rm -r $SOMEDIR/x",
+        "rm -r %TEMP%\\x",
+        "cd $X && rm -r y",
+        "cd - && rm -r y",
+        "find $D -name x -delete",
+    ] {
+        let r = classify(cmd, d.path(), &p).expect(cmd);
+        assert!(r.contains("cannot evaluate"), "{cmd}: {r}");
+    }
+    // Relative deletes inside the workdir, including after a cd into a subdirectory.
+    for cmd in [
+        "rm -r sub",
+        "cd sub && rm -r build",
+        "cd sub; rm -rf ./dist",
+        "rm -r ./sub",
+        "pushd sub && rm -r x",
+        "cd sub && cd .. && rm -r sub",
+        "cd sub && find . -name x -delete",
+    ] {
+        assert!(classify(cmd, d.path(), &p).is_none(), "{cmd}");
+    }
+}
