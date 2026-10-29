@@ -301,3 +301,38 @@ fn edit_to_tokens_py_inside_the_workdir_passes_the_gate() {
         .expect("blocked")
         .contains("sensitive pattern"));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_followed_by_dotdot_cannot_leave_the_workdir() {
+    use boubou_core::safety::{resolve_path, safe_path};
+    let d = tempfile::tempdir().expect("tmp");
+    let outside = tempfile::tempdir().expect("tmp");
+    std::os::unix::fs::symlink(outside.path(), d.path().join("link")).expect("symlink");
+    // The kernel resolves `link/../x` beside the link's *target*, not beside the link.
+    let (real, inside) = safe_path(d.path(), "link/../escaped.txt", &[]);
+    assert!(!inside, "resolved to {}", real.display());
+    let expected = resolve_path(outside.path())
+        .parent()
+        .expect("parent")
+        .join("escaped.txt");
+    assert_eq!(real, expected);
+    // A plain `..` with no link in the way still collapses and stays inside.
+    let (_, inside) = safe_path(d.path(), "sub/../notes.txt", &[]);
+    assert!(inside);
+    // A dangling link resolves to its target as written: outside.
+    std::os::unix::fs::symlink("/nonexistent/zzz", d.path().join("dangling")).expect("symlink");
+    let (real, inside) = safe_path(d.path(), "dangling/../x", &[]);
+    assert!(!inside, "resolved to {}", real.display());
+    // The gate refuses the write.
+    let mut gate = Gate::headless(SafetyPolicy::default());
+    let w = ToolInvocation::CreateFile {
+        path: "link/../escaped.txt".into(),
+        content: "x".into(),
+        replace: false,
+    };
+    assert!(gate
+        .check(&w, d.path())
+        .expect("blocked")
+        .contains("outside the working directory"));
+}

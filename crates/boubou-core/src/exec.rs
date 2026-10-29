@@ -295,7 +295,7 @@ impl Executor {
             }
             return Ok(inv);
         }
-        let inv = match ToolInvocation::parse_map(name, &map) {
+        let mut inv = match ToolInvocation::parse_map(name, &map) {
             Ok(inv) => inv,
             Err(Error::UnknownTool(_)) => return Err("[unknown tool]".to_string()),
             Err(Error::ToolArgs { reason, .. }) => {
@@ -309,6 +309,12 @@ impl Executor {
             }
             Err(e) => return Err(format!("[tool error: {e}]")),
         };
+        // The gate must judge the string that runs: a literal `\n` in the argument is a
+        // real newline by the time the shell sees it, and the token-only danger rules split
+        // on newlines.
+        if let ToolInvocation::RunBash { command } = &mut inv {
+            *command = unescape_command(command);
+        }
         if let Some(blocked) = self.gate.check(&inv, &self.workdir) {
             return Err(blocked);
         }
@@ -587,17 +593,12 @@ impl Executor {
 
     // ---- commands ----
 
+    /// `command` is already unescaped ([`unescape_command`] runs in `prepare`, before the
+    /// safety gate), so what the gate inspected is exactly what the shell gets.
     fn run_bash(&mut self, command: &str) -> String {
-        static NL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+n").expect("regex"));
-        static TAB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+t").expect("regex"));
-        static DQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\\+""#).expect("regex"));
-        static SQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+'").expect("regex"));
-        let cmd = NL.replace_all(command, "\n");
-        let cmd = TAB.replace_all(&cmd, "\t");
-        let cmd = DQ.replace_all(&cmd, "\"");
-        let cmd = SQ.replace_all(&cmd, "'").into_owned();
-        let snapped = bash_snapshot(&cmd, &self.workdir);
-        let run = run_command(&cmd, &self.workdir, self.bash_timeout);
+        let cmd: &str = command;
+        let snapped = bash_snapshot(cmd, &self.workdir);
+        let run = run_command(cmd, &self.workdir, self.bash_timeout);
         if run.timed_out {
             let secs = self.bash_timeout.as_secs();
             let note = format!("\n[timed out after {secs}s: the limit was reached and the process tree was terminated]");
@@ -619,7 +620,7 @@ impl Executor {
             static LINUX_PATH: LazyLock<Regex> = LazyLock::new(|| {
                 Regex::new(r"(^|\s)(cd|mkdir|ls|rm|cat|touch)\s+/").expect("regex")
             });
-            let linuxish = LINUX_PATH.captures(&cmd).is_some_and(|c| {
+            let linuxish = LINUX_PATH.captures(cmd).is_some_and(|c| {
                 let after = &cmd[c.get(0).map(|m| m.end()).unwrap_or(0)..];
                 !(after.starts_with("Users")
                     || after.starts_with("home")
@@ -866,6 +867,21 @@ pub fn auto_repair(path: &Path) -> bool {
     }
     let fixed = T.replace_all(&N.replace_all(&s, "\n"), "\t").into_owned();
     fixed != s && std::fs::write(path, fixed).is_ok()
+}
+
+/// Literal `\n`, `\t`, `\"` and `\'` sequences a model writes into a command become the
+/// real characters (Mingbird's `run_bash` unescape). Applied in `prepare` before the safety
+/// gate, so the gate judges the string that is executed: a literal `\n` would otherwise
+/// hide a second command from the token-only danger rules.
+pub fn unescape_command(command: &str) -> String {
+    static NL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+n").expect("regex"));
+    static TAB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+t").expect("regex"));
+    static DQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\\+""#).expect("regex"));
+    static SQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+'").expect("regex"));
+    let cmd = NL.replace_all(command, "\n");
+    let cmd = TAB.replace_all(&cmd, "\t");
+    let cmd = DQ.replace_all(&cmd, "\"");
+    SQ.replace_all(&cmd, "'").into_owned()
 }
 
 /// `_bash_snapshot`: `sed -i`, redirections, `cp`/`mv` and friends rewrite files behind

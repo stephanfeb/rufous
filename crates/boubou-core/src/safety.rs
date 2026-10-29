@@ -312,8 +312,14 @@ impl Confirmer for DenyAll {
     }
 }
 
-/// Lexically normalise, then canonicalise the longest existing prefix (Python
-/// `realpath` semantics: works for paths that do not exist yet).
+/// `os.path.realpath` semantics: walk the absolute path one component at a time, follow a
+/// symlink the moment it is met, and let `..` act on the *resolved* prefix. A `..` after a
+/// link therefore climbs out of the link's target, which is what the kernel does when the
+/// path is opened; collapsing `..` lexically first (the previous version) let
+/// `link/../x` pass as `<workdir>/x` while the write landed beside the link's target.
+/// Works for paths that do not exist yet: the missing tail is appended as written.
+/// Symlink chains are bounded at [`MAX_SYMLINK_HOPS`]; a dangling link resolves to its
+/// target path as written.
 pub fn resolve_path(p: &Path) -> PathBuf {
     let abs = if p.is_absolute() {
         p.to_path_buf()
@@ -322,32 +328,38 @@ pub fn resolve_path(p: &Path) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(p)
     };
-    let mut norm = PathBuf::new();
-    for c in abs.components() {
+    let mut out = PathBuf::new();
+    realpath_into(&mut out, &abs, 0);
+    out
+}
+
+const MAX_SYMLINK_HOPS: u32 = 40;
+
+fn realpath_into(out: &mut PathBuf, p: &Path, hops: u32) {
+    for c in p.components() {
         match c {
+            Component::Prefix(_) | Component::RootDir => out.push(c.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                norm.pop();
+                // `pop` on a bare root is a no-op, like realpath above `/`.
+                out.pop();
             }
-            other => norm.push(other.as_os_str()),
+            Component::Normal(n) => {
+                out.push(n);
+                if hops < MAX_SYMLINK_HOPS {
+                    if let Ok(target) = std::fs::read_link(&*out) {
+                        out.pop();
+                        if target.is_absolute() {
+                            out.clear();
+                        }
+                        // A relative target is relative to the link's directory, which is
+                        // `out` now; the target may itself hold links and `..`.
+                        realpath_into(out, &target, hops + 1);
+                    }
+                }
+            }
         }
     }
-    let mut existing = norm.clone();
-    let mut rest = Vec::new();
-    while !existing.exists() {
-        match existing.file_name() {
-            Some(n) => {
-                rest.push(n.to_os_string());
-                existing.pop();
-            }
-            None => break,
-        }
-    }
-    let mut out = existing.canonicalize().unwrap_or(existing);
-    for r in rest.iter().rev() {
-        out.push(r);
-    }
-    out
 }
 
 fn normcase(p: &Path) -> String {

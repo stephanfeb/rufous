@@ -381,3 +381,34 @@ fn enable_tools_receipts() {
     let r = e.run_tool("enable_tools", &json!({"tools": ["web_fetch"]}));
     assert!(r.contains("Nothing to enable"));
 }
+
+// ---- sandbox escape and gate ordering (review 2026-10-29) ----
+
+#[cfg(unix)]
+#[test]
+fn create_file_through_a_symlink_and_dotdot_is_refused() {
+    let (d, mut e) = ex();
+    let outside = tempfile::tempdir().expect("tmp");
+    std::os::unix::fs::symlink(outside.path(), d.path().join("link")).expect("symlink");
+    let r = create(&mut e, "link/../escaped.txt", "x");
+    assert!(r.contains("[safety gate"), "{r}");
+    assert!(!outside
+        .path()
+        .parent()
+        .expect("parent")
+        .join("escaped.txt")
+        .exists());
+}
+
+#[test]
+fn the_gate_sees_the_unescaped_command() {
+    let (_d, mut e) = ex();
+    // A literal backslash-n becomes a newline before the shell runs the command, so the
+    // danger rules must see a second command, not one line that starts with `echo`.
+    let r = e.run_tool("run_bash", &json!({"command": "echo hi\\nshutdown -h now"}));
+    assert!(r.contains("dangerous operation"), "{r}");
+    if cfg!(unix) {
+        let r = e.run_tool("run_bash", &json!({"command": "echo one\\necho two"}));
+        assert!(r.contains("one") && r.contains("two"), "{r}");
+    }
+}
