@@ -2348,3 +2348,94 @@ fn prune_keep_zero_is_the_default_and_disables_pruning() {
     let out = a.run(start(TASK), None, None).expect("loop");
     assert!(out.iter().all(|m| !m.content.starts_with("[earlier]")));
 }
+
+// ---- interactive (editor) semantics, review 2026-10-29 ----
+
+#[test]
+fn interactive_text_reply_ends_the_turn_without_a_harness_note() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.interactive = true;
+    let mut a = Agent::new(
+        params,
+        Responder {
+            n: 0,
+            f: |_| ChatResponse::text("The parser lives in src/parse.rs; I would start there."),
+        },
+        OkTools,
+    );
+    let out = a
+        .run(start("Refactor the parser and add tests"), None, None)
+        .expect("loop");
+    assert!(user_msgs(&out, "Continue: keep making").is_empty());
+    assert!(user_msgs(&out, "Your answer is already sufficient").is_empty());
+    assert!(user_msgs(&out, "replied in text").is_empty());
+    assert_eq!(
+        out.iter().filter(|m| m.role == Role::Assistant).count(),
+        1,
+        "{out:#?}"
+    );
+    assert!(
+        out.last().is_some_and(|m| m.role == Role::Assistant),
+        "the history ends on the reply, nothing appended for the next turn to see"
+    );
+}
+
+#[test]
+fn interactive_finish_is_accepted_without_gates() {
+    let d = tempfile::tempdir().expect("tmp");
+    // A bare finish with nothing delivered: gate 1 bounces it in task mode.
+    let mut a = agent_with(d.path(), &[], "", "");
+    a.params.interactive = true;
+    let out = a.run(start(TASK), None, None).expect("loop");
+    assert!(user_msgs(&out, "finish was rejected").is_empty(), "{out:#?}");
+    assert!(user_msgs(&out, "Pre-delivery check").is_empty());
+    assert_eq!(
+        out.iter()
+            .filter(|m| m.tool_calls.iter().any(|t| t.function.name == "finish"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn interactive_question_keeps_the_task_prompt_and_file_tools() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![(
+        "create_file",
+        json!({"path": "notes.md", "content": "x"}),
+        "[created notes.md]",
+    )];
+    let mut a = agent_for(d.path(), &calls);
+    a.params.interactive = true;
+    let out = a
+        .run(start("What is the next item to work on ?"), None, None)
+        .expect("loop");
+    assert_eq!(out[0].content, "sys", "no swap to the chat prompt");
+    assert!(
+        !out.iter().any(|m| m.role == Role::Tool && m.content.contains("asking a question")),
+        "{out:#?}"
+    );
+    assert!(out
+        .iter()
+        .any(|m| m.role == Role::Tool && m.content == "[created notes.md]"));
+}
+
+#[test]
+fn interactive_two_empty_replies_end_the_turn() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.interactive = true;
+    let mut a = Agent::new(
+        params,
+        Responder {
+            n: 0,
+            f: |_| ChatResponse::text(""),
+        },
+        OkTools,
+    );
+    let out = a.run(start("Say something"), None, None).expect("loop");
+    assert!(user_msgs(&out, "context has been reset").is_empty());
+    assert!(user_msgs(&out, "output empty text").is_empty());
+    assert_eq!(out.iter().filter(|m| m.role == Role::Assistant).count(), 2);
+}

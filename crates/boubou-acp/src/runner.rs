@@ -134,7 +134,9 @@ pub struct StandardFactory {
 
 impl AgentFactory for StandardFactory {
     fn new_turn(&self, setup: TurnSetup) -> boubou_core::Result<Box<dyn TurnRunner>> {
-        let params = RunParams::from_env(setup.model, setup.cwd)?;
+        let mut params = RunParams::from_env(setup.model, setup.cwd)?;
+        // The editor is interactive: a text reply or finish ends the turn, no batch gates.
+        params.interactive = true;
         let mut agent = Agent::standard(params, &self.cfg)?
             .with_sink(setup.sink)
             .with_stop(setup.stop);

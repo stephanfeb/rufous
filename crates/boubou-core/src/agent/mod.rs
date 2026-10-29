@@ -80,9 +80,18 @@ pub struct RunParams {
     /// `AGENT_PRUNE_KEEP`: tool results kept verbatim by recency pruning (5 is the measured
     /// setting, [`history::PRUNE_KEEP`]); 0, the default, leaves the ladder alone as Mingbird.
     pub prune_keep: usize,
-    /// Interactive chat (`boubou chat`, the web page): a plain text reply ends the turn
-    /// instead of drawing a "continue with tools" note.
+    /// Interactive chat (`boubou chat`): a plain text reply ends the turn instead of
+    /// drawing a "continue with tools" note. The finish gates and the Q&A route still apply.
     pub chat_mode: bool,
+    /// An editor session (the ACP server): standard agent-turn semantics instead of the
+    /// unattended batch harness. The turn ends when the model replies in text without a
+    /// tool call or calls `finish`; `finish` is accepted as is (no delivery, test, artefact,
+    /// plan or self-check gate: those exist for batch tasks and would run the user's own
+    /// test suite and bounce the turn); no "continue" notes; every turn takes the task
+    /// prompt and the full tool set (no Q&A route, so an instruction phrased as a question
+    /// can still write files); no parallel dispatch into the user's project. The safety
+    /// gate, the duplicate-call and failure ladders and compaction are unchanged.
+    pub interactive: bool,
     /// The model's profile (`profile.rs`): built-ins at construction, config overrides and
     /// the think/temperature defaults applied by [`Agent::standard`].
     pub profile: crate::profile::ModelProfile,
@@ -127,6 +136,7 @@ impl RunParams {
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
             prune_keep: env_parse("AGENT_PRUNE_KEEP")?.unwrap_or(0),
             chat_mode: false,
+            interactive: false,
             profile,
         })
     }
@@ -153,6 +163,7 @@ impl RunParams {
             sleep_scale: 1.0,
             prune_keep: 0,
             chat_mode: false,
+            interactive: false,
             profile,
         }
     }

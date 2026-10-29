@@ -58,6 +58,18 @@ tool.
 | a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny |
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
 
+## Turn semantics
+
+An editor turn is a standard agent turn, not a batch task run. The turn ends when the model
+replies in text without a tool call, or when it calls `finish`. `finish` is accepted as it
+is: the delivery, test, artefact, plan and self-check gates exist for unattended batch tasks,
+and in a project directory they would run your own test suite and bounce the turn into work
+you did not ask for. The loop's "continue with tools" notes are not sent, every turn takes the
+task prompt and the full tool set (a question can still read files, and an instruction
+phrased as a question can still write them), and nothing is dispatched to child processes.
+The safety gate, the duplicate-call and failure ladders, the idle-streak nudges and context
+compaction are unchanged. Two empty replies in a row end the turn.
+
 ## Resuming after a restart
 
 Boubou advertises `loadSession`. When the editor restarts the agent and reopens a thread, it

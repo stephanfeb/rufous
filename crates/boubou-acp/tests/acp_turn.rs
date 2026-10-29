@@ -124,7 +124,8 @@ impl TurnRunner for Counting {
 impl AgentFactory for ScriptedFactory {
     fn new_turn(&self, setup: TurnSetup) -> boubou_core::Result<Box<dyn TurnRunner>> {
         self.turns.fetch_add(1, Ordering::SeqCst);
-        let params = RunParams::plain(setup.model, &setup.cwd);
+        let mut params = RunParams::plain(setup.model, &setup.cwd);
+        params.interactive = true;
         let backend = Scripted {
             calls: self.script.clone(),
             i: 0,
@@ -545,12 +546,11 @@ async fn a_restarted_agent_loads_the_session_replays_it_and_continues() {
         vec![ToolCallStatus::Completed, ToolCallStatus::Completed]
     );
     // The replay carries the model's prose from the saved record: the scripted model says
-    // "done" alongside each finish, and the first finish was bounced by the pre-delivery
-    // gate, so it said it twice; with prose on record the finish summary is not repeated.
-    // The live second turn then closes with its summary, as the scripted backend streams
-    // no tokens.
+    // "done" alongside its finish, accepted first time (an editor turn has no finish
+    // gates); with prose on record the finish summary is not repeated. The live second
+    // turn then closes with its summary, as the scripted backend streams no tokens.
     let texts: Vec<&str> = seen.iter().filter_map(text_of).collect();
-    assert_eq!(texts, vec!["done", "done", "all done"]);
+    assert_eq!(texts, vec!["done", "all done"]);
 
     // The new turn ran on the loaded history, not on a fresh task prompt.
     let opened = opened_with.lock().expect("lock").clone();

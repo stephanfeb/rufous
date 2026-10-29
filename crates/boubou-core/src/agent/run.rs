@@ -491,7 +491,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             .unwrap_or_else(|| session::checkpoint_path(workdir));
         let elapsed_path = budget::elapsed_meta_for(&ckpt_path);
         let ctx_budget = f64::from(params.num_ctx);
-        let fg_off = params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
+        // An editor session (`RunParams::interactive`): standard agent-turn semantics, so
+        // every finish gate is off and the text-only ladders end the turn instead.
+        let interactive = params.interactive && !child;
+        let fg_off = interactive
+            || params.ablated("finish_gate")
+            || params.ablated("finish_gate_text_only");
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
@@ -609,6 +614,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let intent = decider.intent_of(&messages);
         if !child {
             log!("[decider] {}", intent.describe());
+            if interactive {
+                log!("[interactive] editor session: task route for every turn; a text reply or finish ends the turn; finish gates off");
+            }
             // Shadow and on modes leave a labelling trace per session (boubou-acy.3): the log
             // line alone reached no file on any surface. A run without a session name shares
             // one sidecar.
@@ -617,11 +625,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 session::append_decision(sessions_dir, name, &intent.record(decider.mode(), name));
             }
         }
-        let qa = !child && intent.intent == Intent::Question;
+        let qa = !child && !interactive && intent.intent == Intent::Question;
         // A follow-up (boubou-he2) runs the task loop but ends when the model has acted and
         // then reports: the task-mode "continue" notes would otherwise push it into the
         // next piece of work the user never asked for.
-        let follow_up = !child && intent.intent == Intent::FollowUp;
+        let follow_up = !child && !interactive && intent.intent == Intent::FollowUp;
         let mut acted_this_turn = false;
         let mut follow_up_nudged = false;
         // The system prompt follows the route, every turn. A continued session (the web UI
@@ -656,7 +664,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         };
         // Parallel dispatch hook (harness layer; Q&A, children and resumed runs skip it —
         // the hook itself re-checks the child, kill-switch, no-tool-message and receipt gates).
-        if !qa && !child {
+        if !qa && !child && !interactive {
             if let Some(hook) = parallel.as_ref() {
                 messages = hook.maybe_dispatch(messages, workdir, &mut |ev| match ev {
                     HookEvent::Log(l) => sink(AgentEvent::Log(l)),
@@ -1008,6 +1016,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         )));
                         continue;
                     }
+                    if interactive && empty_turns >= 2 {
+                        // One silent retry is enough in an editor; a context reset would
+                        // wipe the user's conversation.
+                        log!("[{i}] two empty replies in a row; the turn ends (editor session)");
+                        exhausted = false;
+                        break;
+                    }
                     if empty_turns >= 6 && empty_resets < 3 {
                         empty_resets += 1;
                         empty_turns = 0;
@@ -1052,6 +1067,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 } else {
                     empty_turns = 0;
                     len_truncated = false;
+                    if interactive {
+                        // The reply is the turn's answer: no note, no forced finish, nothing
+                        // added to the history the next turn will see.
+                        log!("[{i}] text reply ends the turn (editor session)");
+                        exhausted = false;
+                        break;
+                    }
                     talk_streak += 1;
                     let repeated = recent_texts.iter().any(|t| similar(t, &content, 0.75));
                     recent_texts.push(content.clone());
@@ -1480,6 +1502,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // verified deliverable; the todo is synced for it instead.
                     if !qa
                         && !child
+                        && !interactive
                         && !params.ablated("finish_gate_text_only")
                         && todo_gate_warns < 2
                     {
@@ -1522,7 +1545,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // the self-check, and probes_integrity2 t00/t04 showed the model answering
                     // the re-injected task in prose instead of calling finish again, so the
                     // dead-loop guard ended a run whose verified result was already on disk.
-                    if !qa && !child && !finish_reread_used {
+                    if !qa && !child && !interactive && !finish_reread_used {
                         finish_reread_used = true;
                         let orig = if integrity::verified_at_end(&cmd_records) {
                             log!("[{i}] pre-delivery check skipped: the last command was a passing check");
