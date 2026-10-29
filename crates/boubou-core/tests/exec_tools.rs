@@ -389,15 +389,13 @@ fn enable_tools_receipts() {
 fn create_file_through_a_symlink_and_dotdot_is_refused() {
     let (d, mut e) = ex();
     let outside = tempfile::tempdir().expect("tmp");
-    std::os::unix::fs::symlink(outside.path(), d.path().join("link")).expect("symlink");
+    let target = outside.path().join("target");
+    std::fs::create_dir(&target).expect("mkdir");
+    std::os::unix::fs::symlink(&target, d.path().join("link")).expect("symlink");
+    // `link/../escaped.txt` is `<outside>/escaped.txt` to the kernel.
     let r = create(&mut e, "link/../escaped.txt", "x");
     assert!(r.contains("[safety gate"), "{r}");
-    assert!(!outside
-        .path()
-        .parent()
-        .expect("parent")
-        .join("escaped.txt")
-        .exists());
+    assert!(!outside.path().join("escaped.txt").exists());
 }
 
 #[test]

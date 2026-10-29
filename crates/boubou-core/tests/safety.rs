@@ -308,14 +308,13 @@ fn a_symlink_followed_by_dotdot_cannot_leave_the_workdir() {
     use boubou_core::safety::{resolve_path, safe_path};
     let d = tempfile::tempdir().expect("tmp");
     let outside = tempfile::tempdir().expect("tmp");
-    std::os::unix::fs::symlink(outside.path(), d.path().join("link")).expect("symlink");
+    let target = outside.path().join("target");
+    std::fs::create_dir(&target).expect("mkdir");
+    std::os::unix::fs::symlink(&target, d.path().join("link")).expect("symlink");
     // The kernel resolves `link/../x` beside the link's *target*, not beside the link.
     let (real, inside) = safe_path(d.path(), "link/../escaped.txt", &[]);
     assert!(!inside, "resolved to {}", real.display());
-    let expected = resolve_path(outside.path())
-        .parent()
-        .expect("parent")
-        .join("escaped.txt");
+    let expected = resolve_path(outside.path()).join("escaped.txt");
     assert_eq!(real, expected);
     // A plain `..` with no link in the way still collapses and stays inside.
     let (_, inside) = safe_path(d.path(), "sub/../notes.txt", &[]);
@@ -335,4 +334,55 @@ fn a_symlink_followed_by_dotdot_cannot_leave_the_workdir() {
         .check(&w, d.path())
         .expect("blocked")
         .contains("outside the working directory"));
+}
+
+#[test]
+fn token_only_danger_words_are_caught_in_every_program_position() {
+    use boubou_core::safety::danger_hit;
+    // Review 2026-10-29: the "after a separator" rule let all of these through.
+    for cmd in [
+        "if true; then shutdown -h now; fi",
+        "sh -c 'shutdown -h now'",
+        "bash -c \"poweroff\"",
+        "nohup poweroff",
+        "/sbin/shutdown -h now",
+        "./shutdown",
+        "python -c \"import os; os.system('shutdown /s /t 0')\"",
+        "sudo\tshutdown -h now",
+        "sudo -u root shutdown -h now",
+        "env FOO=1 halt",
+        "FOO=1 halt",
+        "exec halt",
+        "timeout 5 shutdown",
+        "nice -n 5 poweroff",
+        "{ shutdown; }",
+        "$(poweroff)",
+        "echo x | xargs shutdown",
+        "cmd /c \"format c:\"",
+        "time shred -u secrets.txt",
+        "systemctl poweroff",
+        "while true; do halt; done",
+        "ls || sudo halt",
+    ] {
+        assert!(danger_hit(&cmd.to_lowercase()).is_some(), "{cmd}");
+    }
+    // Arguments, comments and file names are not programs.
+    for cmd in [
+        "echo the system was halted and shutdown was clean",
+        "git commit -m \"halt the retry loop\"",
+        "grep -n shutdown src/main.rs",
+        "./halt_check.sh",
+        "cat docs/shutdown.md",
+        "python format.py --check",
+        "cargo fmt && cargo test",
+        "echo done > shutdown.log",
+        "ls -la | grep format",
+        "# shutdown the server later",
+        "man shutdown",
+        "which poweroff",
+        "python -c \"print(format(total, '.2f'))\"",
+        "FORMAT=json ls",
+    ] {
+        assert_eq!(danger_hit(&cmd.to_lowercase()), None, "{cmd}");
+    }
 }

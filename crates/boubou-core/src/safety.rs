@@ -90,8 +90,13 @@ pub const DANGER_CMD: [&str; 46] = [
 /// `DANGER_CMD` entries that are also ordinary words. A plain substring test refused a
 /// `python -c "…"` CSV script because a comment read `# Format the result` (false_finish probe,
 /// 2026-10-28, eleven refusals in one trial); `halt`, `shutdown`, `dism`, `shred`, `srm` sit in
-/// prose the same way. These count only where a command starts: at the start of the string or
-/// after `;`, `&`, `|`, a newline, `(` or a backtick, optionally behind `sudo`. Everything else
+/// prose the same way. These count only in *program position*: the word that a shell segment
+/// actually runs, once leading `VAR=value` assignments, wrappers such as `sudo`, `nohup`,
+/// `exec`, `timeout 5`, `sh -c`, shell keywords such as `then`/`do`, a directory prefix
+/// (`/sbin/shutdown`) and surrounding quotes are stripped. Arguments (`echo shutdown done`,
+/// `git commit -m "halt the retry"`) and comments never count. An entry written with a
+/// trailing space (`format `, `shred `) needs an argument after the program, so
+/// `format(total, '.2f')` in a script stays clean while `format c:` does not. Everything else
 /// in the list (`rm -rf`, `of=/dev/`, `curl | bash`, …) stays a substring match.
 pub const DANGER_CMD_TOKEN_ONLY: [&str; 12] = [
     "format ",
@@ -108,27 +113,116 @@ pub const DANGER_CMD_TOKEN_ONLY: [&str; 12] = [
     "poweroff ",
 ];
 
+/// Words that run the program named after them. A token-only danger word that follows one
+/// of these (and the wrapper's own flags) is in program position. Interpreters are here for
+/// their `-c`/`-e` scripts; `systemctl` for `systemctl poweroff`.
+const COMMAND_WRAPPERS: [&str; 46] = [
+    "sudo", "doas", "su", "nohup", "exec", "time", "nice", "env", "command", "builtin",
+    "eval", "xargs", "setsid", "watch", "timeout", "chroot", "systemctl", "then", "do", "else",
+    "elif", "if", "while", "until", "!", "sh", "bash", "zsh", "dash", "ksh", "fish", "python",
+    "python3", "python2", "perl", "ruby", "node", "osascript", "cmd", "cmd.exe", "powershell",
+    "pwsh", "start", "call", "busybox", "run0",
+];
+
+/// Wrapper flags that consume the next word (`sudo -u root shutdown`, `nice -n 5 halt`).
+const WRAPPER_FLAGS_WITH_VALUE: [&str; 9] = [
+    "-u", "-g", "-n", "-s", "-k", "-p", "--user", "--group", "--signal",
+];
+
+/// Shell segment separators: whatever follows one of these starts a new command.
+const SEGMENT_SEPARATORS: [char; 9] = ['\n', ';', '&', '|', '(', ')', '{', '}', '`'];
+
 /// The `DANGER_CMD` entry a lower-cased command trips, if any.
 pub fn danger_hit(low: &str) -> Option<&'static str> {
     DANGER_CMD.iter().copied().find(|d| {
         if DANGER_CMD_TOKEN_ONLY.contains(d) {
-            starts_a_command(low, d)
+            runs_program(low, d)
         } else {
             low.contains(d)
         }
     })
 }
 
-/// Does `needle` begin one of the commands in `low` (see `DANGER_CMD_TOKEN_ONLY`)?
-fn starts_a_command(low: &str, needle: &str) -> bool {
-    low.split(['\n', ';', '&', '|', '(', '`'])
-        .map(str::trim_start)
-        .map(|seg| {
-            seg.strip_prefix("sudo ")
-                .map(str::trim_start)
-                .unwrap_or(seg)
-        })
-        .any(|seg| seg.starts_with(needle))
+/// Does some segment of `low` run the program `needle` names (see `DANGER_CMD_TOKEN_ONLY`)?
+fn runs_program(low: &str, needle: &str) -> bool {
+    let entry = needle.trim_end();
+    let first = entry.split_whitespace().next().unwrap_or(entry);
+    let multi_word = entry.contains(' ');
+    let needs_args = needle.ends_with(' ');
+    low.split(SEGMENT_SEPARATORS).any(|seg| {
+        let Some((program, rest)) = program_of(seg) else {
+            return false;
+        };
+        if program != first {
+            return false;
+        }
+        if multi_word {
+            format!("{program} {rest}").starts_with(entry)
+        } else if needs_args {
+            !rest.is_empty()
+        } else {
+            true
+        }
+    })
+}
+
+/// `VAR=value` (a shell assignment that precedes a command).
+fn is_assignment(w: &str) -> bool {
+    match w.split_once('=') {
+        Some((k, _)) => {
+            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// A word a wrapper consumes before the program: a flag, a `cmd /c` switch, a number
+/// (`timeout 5`), or an assignment (`env FOO=1`).
+fn is_wrapper_option(w: &str) -> bool {
+    w.starts_with('-')
+        || (w.starts_with('/') && w.len() <= 3)
+        || w.starts_with(|c: char| c.is_ascii_digit())
+        || is_assignment(w)
+}
+
+/// The program a segment runs as a bare, unquoted basename, and the rest of the segment
+/// after it; `None` for an empty segment or a comment.
+fn program_of(seg: &str) -> Option<(String, String)> {
+    let words: Vec<&str> = seg.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() && is_assignment(words[i]) {
+        i += 1;
+    }
+    loop {
+        let w = words.get(i)?;
+        if w.starts_with('#') {
+            return None;
+        }
+        let base = program_basename(w);
+        if COMMAND_WRAPPERS.contains(&base.as_str()) {
+            i += 1;
+            while let Some(a) = words.get(i) {
+                if a.starts_with('#') {
+                    return None;
+                }
+                if !is_wrapper_option(a) {
+                    break;
+                }
+                i += 1;
+                if WRAPPER_FLAGS_WITH_VALUE.contains(a) {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        return Some((base, words[i + 1..].join(" ")));
+    }
+}
+
+/// `'/sbin/shutdown'` → `shutdown`: quotes off, directory off.
+fn program_basename(w: &str) -> String {
+    let bare = w.trim_matches(|c| c == '\'' || c == '"');
+    bare.rsplit(['/', '\\']).next().unwrap_or(bare).to_string()
 }
 
 /// Ring 1: powershell is not blocked wholesale (too many legitimate queries), only these
