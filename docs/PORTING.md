@@ -48,6 +48,7 @@ Tk GUI with a Tauri shell around the existing web UI.
 | `agent_gui.py`, `ui_v4.py`, `ui_theme.py` (Tk) | dropped | replaced by Tauri shell |
 | `webui/server.py` (`/api/*`, SSE, `@@ASK@@` approval channel, `gui_prefs.json`, session rows, `kill_tree`) | `boubou-web/src/{api,state,runner,events,prefs}.rs` | ported, tested. axum on 127.0.0.1; the agent runs in-process on a thread, `AgentEvent`s map to the same SSE types (`tok`/`think`/`ask`/`dispatch`/`ctx`/`note`/`exit`) plus `tool_done` (tool result head, blocked flag) and a compaction `note`; `dispatch` carries the full `args`; `WebConfirmer` replaces the stdin round-trip (only the current `ask_id` is accepted); stop = a shared flag the loop and the Ollama stream both check (no process to kill). Cloud / OpenAI-compatible settings now select the engine through `Agent::standard`; `/api/status` reports `engine` and `voice`; `POST /api/voice` transcribes an uploaded WAV |
 | `webui/static/index.html` | `boubou-web/static/index.html` | Redesigned (post-v0.1.0): rail / conversation / inspector layout, run blocks built from `dispatch` + `tool_done` events, inline permission cards, dark-first palette from the Boubou mark; same `/api/*` contract plus `/logo.png`. `include_str!` into the binary; `BOUBOU_WEB_INDEX=<path>` serves the page from disk for UI work without a rebuild |
+| (none in Mingbird) | `boubou-acp` crate, `boubou acp` | new: Boubou as an ACP agent over stdio (see "Agent Client Protocol" below) |
 | Tk GUI (`agent_gui.py`) | `boubou-app/src/main.rs` | Tauri 2 shell: starts the web server on a free loopback port and opens a window on it. Voice comes from the page's mic button; `Info.plist` carries `NSMicrophoneUsageDescription` but is not wired into the bundle config yet |
 | `mcp_utils_server.py` | — | keep as a Python example, or rewrite as a tiny Rust MCP server |
 | `tests/` (33 files, 556 test functions) | `boubou-core/tests/` | in progress, see below |
@@ -521,6 +522,42 @@ longer pins a prompt. Children keep their sandbox prompt; a fresh run is untouch
 The misroute that exposed it ("Are there any good libp2p implementations in Dart ? I want to build
 a flutter application" → task on the hint `build`; d1 said question at p=0.52) is a decider-set
 case, not a heuristic patch.
+
+## Agent Client Protocol (2026-10-29, bead boubou-j5f)
+
+`crates/boubou-acp` makes Boubou an ACP agent: an editor spawns `boubou acp --model <tag>` and
+speaks JSON-RPC 2.0 over stdio (protocol v1, SDK `agent-client-protocol` pinned `=3.6.0`, weekly
+majors upstream). The CLI, web UI and core are untouched apart from the subcommand.
+
+Shape. `BoubouAcp` implements the SDK's `ConnectTo<Client>`, so the same component runs over
+`Stdio` in production and over an in-process `Channel` in tests. One Boubou session per ACP
+session (`session/new` → `acp_MMDD_HHMMSS`, cwd = the editor's cwd, history in memory and in
+the usual session files). `session/prompt` must not hold the SDK's dispatch loop, so the handler
+only takes the session state, starts the turn on an OS thread (the loop is synchronous) and
+spawns a connection task that drains one channel of `BridgeMsg`: loop events → `session/update`
+notifications, the gate's question → `session/request_permission` (the tool thread blocks on a
+reply channel; allow / allow for the rest of the turn / deny map onto the gate's verdicts, a
+`cancelled` outcome denies and raises the stop flag), and the loop's result → the
+`session/prompt` response (`end_turn`, `max_turn_requests`, `cancelled`). `session/cancel` sets
+the stop flag the loop and the Ollama stream already check.
+
+Mapping (`bridge.rs`, pure, unit-tested): text → `agent_message_chunk`, thinking →
+`agent_thought_chunk`; a tool call → `tool_call` (kind from the tool name: read/search/edit/
+delete/execute/fetch/think, status in_progress, raw input, file locations) and its result →
+`tool_call_update` (completed, or failed when blocked or a `[tool error`, output as content, a
+diff for create/edit/append); `todo.json` → `plan` after every `todo` call and at the finish;
+context usage → `usage_update`; compaction and errors → `notice`. `finish` is not shown as a
+tool call; its summary becomes the closing message only when the model wrote no prose after its
+last tool call (a bare finish already triggers the loop's wrap-up text). Harness log lines go to
+stderr through `tracing` (`RUST_LOG=boubou_acp=info` shows them); stdout is the protocol.
+
+Verified: 7 bridge unit tests; two end-to-end tests over an in-process channel with a scripted
+model (initialize, session/new, a two-tool turn with a denied permission, the summary as closing
+text, a second prompt continuing the history, and cancel → `cancelled` within a few calls); a
+live stdio run of `target/debug/boubou acp --model gemma4:e2b` driven by a scripted Python client
+(plan, `create_file`, streamed text, `end_turn` in 15 s, file on disk). Not yet: a real Zed turn
+(the user's next step), the ACP Test Compatibility Kit, `session/load`, session modes, the
+client's `fs`/`terminal` capabilities, `mcpServers` from `session/new` (Boubou keeps `mcp.json`).
 
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 

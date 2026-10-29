@@ -21,6 +21,7 @@ voice = ["boubou-web/voice", "boubou-voice/sherpa"]
 boubou-core.workspace = true
 boubou-web.workspace = true
 boubou-voice.workspace = true
+boubou-acp.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

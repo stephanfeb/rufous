@@ -43,8 +43,11 @@ decider (`"decider": {"mode": "shadow"}`, model `d1:latest` through Ollama's nat
 API) can shadow or take over the question-or-task decision; off by default. Voice input is behind the `voice` cargo feature
 (`cargo build --features voice`, sherpa-onnx linked statically): `boubou voice <wav>` and the
 web UI's mic button transcribe with the bundled sherpa-onnx models (English by default, Chinese also supported) from `~/.ollama_agent/stt/`
-or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. Next: voice model installer, Tauri
-bundling, the LRAB bench adapter.
+or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. `boubou acp --model <tag>` serves the
+[Agent Client Protocol](https://agentclientprotocol.com) over stdio, so an editor (Zed, JetBrains,
+Neovim) can run Boubou as its agent: streamed text and thoughts, tool calls with status and diffs,
+the plan, and the safety gate's questions as the editor's permission dialog (see
+[docs/acp.md](docs/acp.md)). Next: voice model installer, Tauri bundling, the LRAB bench adapter.
 See [docs/PORTING.md](docs/PORTING.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)
@@ -76,6 +79,7 @@ boubou skills [workdir]
 boubou tools --enable web_fetch  # print the schemas the model receives
 boubou run <model> <taskfile> <workdir> [--session NAME] [--new] [--append]
 boubou chat <model> <workdir>
+boubou acp --model <model>      # Agent Client Protocol over stdio, for an editor
 ```
 
 Environment variables are inherited from Mingbird: `OLLAMA_HOST`, `OLLAMA_BIN`, `AGENT_CTX`,

@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/boubou-core", "crates/boubou-voice", "crates/boubou-web", "crates/boubou-cli", "crates/boubou-app"]
+members = ["crates/boubou-core", "crates/boubou-voice", "crates/boubou-web", "crates/boubou-acp", "crates/boubou-cli", "crates/boubou-app"]
 # The Tauri shell is heavy to compile; build it explicitly with `cargo build -p boubou-app`.
-default-members = ["crates/boubou-core", "crates/boubou-voice", "crates/boubou-web", "crates/boubou-cli"]
+default-members = ["crates/boubou-core", "crates/boubou-voice", "crates/boubou-web", "crates/boubou-acp", "crates/boubou-cli"]
 
 [workspace.package]
 version = "0.2.0"
@@ -17,6 +17,7 @@ description = "Boubou: a local-model autonomous agent, the Rust successor to Min
 boubou-core = { path = "crates/boubou-core" }
 boubou-web = { path = "crates/boubou-web" }
 boubou-voice = { path = "crates/boubou-voice" }
+boubou-acp = { path = "crates/boubou-acp" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }

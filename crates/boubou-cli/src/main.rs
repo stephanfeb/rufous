@@ -90,6 +90,13 @@ enum Cmd {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Serve the Agent Client Protocol over stdio, for an editor (Zed, JetBrains, Neovim)
+    /// that spawns Boubou as its agent. stdout carries the protocol; logs go to stderr.
+    Acp {
+        /// Model tag (or a display name from `config.json` `models`); `BOUBOU_MODEL` otherwise.
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
     Serve {
         #[arg(long, default_value_t = 8765)]
@@ -215,6 +222,23 @@ fn main() -> Result<()> {
                 "  (enabled={}, child_model={:?}, hard_cap={})",
                 pc.enabled, pc.child_model, pc.hard_cap
             );
+        }
+        Cmd::Acp { model } => {
+            let key = match model.or_else(|| std::env::var("BOUBOU_MODEL").ok()) {
+                Some(m) if !m.trim().is_empty() => m,
+                _ => anyhow::bail!("boubou acp needs --model <tag> (or BOUBOU_MODEL)"),
+            };
+            let model = cfg.models.get(&key).cloned().unwrap_or(key);
+            if cfg.backend_openai().is_none()
+                && cfg.cloud_provider().is_none()
+                && !OllamaProc::from_config(&cfg).ensure(std::time::Duration::from_secs(25))
+            {
+                eprintln!("[boubou acp] could not start ollama; run `ollama serve` first");
+            }
+            let agent = boubou_acp::BoubouAcp::standard(cfg.clone(), agent_home(), model);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(agent.serve_stdio())
+                .map_err(|e| anyhow::anyhow!("acp: {e}"))?;
         }
         Cmd::Serve { port, workdir } => {
             let wd = match workdir {
