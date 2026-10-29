@@ -236,3 +236,68 @@ fn danger_commands_refused_outright_and_file_boundary_enforced() {
         .expect("blocked")
         .contains("sensitive pattern"));
 }
+
+// ---- token-shaped names (bead boubou-a09) ----
+
+#[test]
+fn token_rule_catches_credential_files_not_source_files_named_token() {
+    use boubou_core::safety::{is_sensitive_path, is_token_file};
+    for name in [
+        "token",
+        ".token",
+        "tokens.json",
+        "access_token.txt",
+        "api-token.yaml",
+        "refresh_token",
+        "TOKEN.ENV",
+    ] {
+        assert!(is_token_file(name), "{name} should be sensitive");
+        assert!(
+            is_sensitive_path(Path::new(&format!("/w/.config/app/{name}"))),
+            "{name}"
+        );
+    }
+    for name in [
+        "tokens.py",
+        "tokenizer.rs",
+        "token_store.dart",
+        "tokens.rs",
+        "test_tokens.py",
+        "token.go",
+        "tokenizer.json", // a model's tokenizer config, not a credential
+        "tokenomics.md",
+    ] {
+        assert!(!is_token_file(name), "{name} should be editable");
+        assert!(
+            !is_sensitive_path(Path::new(&format!("/w/cp02_pkg/textkit/{name}"))),
+            "{name}"
+        );
+    }
+    // The rest of the list is untouched.
+    assert!(is_sensitive_path(Path::new("/w/.ssh/id_rsa")));
+    assert!(is_sensitive_path(Path::new("/w/.env")));
+    assert!(is_sensitive_path(Path::new("/w/secrets/db.yaml")));
+}
+
+#[test]
+fn edit_to_tokens_py_inside_the_workdir_passes_the_gate() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::create_dir_all(d.path().join("textkit")).expect("mkdir");
+    std::fs::write(d.path().join("textkit/tokens.py"), "x = 1\n").expect("write");
+    let mut gate = Gate::new(SafetyPolicy::default(), Box::new(DenyAll));
+    let edit = ToolInvocation::EditFile {
+        path: "textkit/tokens.py".into(),
+        old: "x = 1".into(),
+        new: "x = 2".into(),
+    };
+    assert!(gate.check(&edit, d.path()).is_none());
+    let cred = ToolInvocation::CreateFile {
+        path: "config/api_token.json".into(),
+        content: "{}".into(),
+        replace: false,
+    };
+    assert!(gate
+        .check(&cred, d.path())
+        .expect("blocked")
+        .contains("sensitive pattern"));
+}

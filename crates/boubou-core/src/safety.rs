@@ -150,7 +150,7 @@ pub const PS_HIGH_RISK: [&str; 12] = [
 
 /// Ring 3: path fragments (matched against the lower-cased real path with `\` separators)
 /// that are always refused for writes and need confirmation for reads.
-pub const SENSITIVE_PATTERNS: [&str; 20] = [
+pub const SENSITIVE_PATTERNS: [&str; 19] = [
     ".ssh\\",
     ".aws\\",
     ".gnupg\\",
@@ -159,7 +159,6 @@ pub const SENSITIVE_PATTERNS: [&str; 20] = [
     "id_rsa",
     "id_ed25519",
     "credentials\\",
-    "\\token",
     "secrets",
     ".wav",
     "gui_prefs.json",
@@ -385,6 +384,35 @@ pub fn safe_path(workdir: &Path, path: &str, allow_dirs: &[PathBuf]) -> (PathBuf
 pub fn is_sensitive_path(path: &Path) -> bool {
     let p = path.to_string_lossy().to_lowercase().replace('/', "\\");
     SENSITIVE_PATTERNS.iter().any(|s| p.contains(s))
+        || path
+            .file_name()
+            .is_some_and(|f| is_token_file(&f.to_string_lossy()))
+}
+
+/// Extensions a stored credential comes in; source files are never one.
+const CREDENTIAL_EXTS: [&str; 12] = [
+    "", "json", "txt", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "key", "secret",
+];
+
+/// A credential file named after what it holds: `token`, `.token`, `tokens.json`,
+/// `access_token.txt`, `api-token.yaml`. Mingbird matched the substring `\token`, which
+/// also caught `tokens.py`, `tokenizer.rs` and `token_store.dart` and refused every write to
+/// them (bench cell CP-02 at 8k, 2026-10-29, bead boubou-a09); the model then wrote the
+/// file through `cat >` in a shell instead. Only the name's stem and extension decide now.
+pub fn is_token_file(name: &str) -> bool {
+    let name = name.to_lowercase();
+    let name = name.trim_start_matches('.');
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s, e),
+        None => (name, ""),
+    };
+    let stem_is_token = stem == "token"
+        || stem == "tokens"
+        || stem.ends_with("_token")
+        || stem.ends_with("-token")
+        || stem.ends_with("_tokens")
+        || stem.ends_with("-tokens");
+    stem_is_token && CREDENTIAL_EXTS.contains(&ext)
 }
 
 /// `_delete_targets`: path candidates in a recursive-delete command (verbs and flags skipped).
