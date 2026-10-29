@@ -96,6 +96,9 @@ impl<B: ChatBackend, T: ToolRunner> TurnRunner for Agent<B, T> {
 pub struct TurnSetup {
     pub cwd: PathBuf,
     pub model: String,
+    /// Where the loop saves this session's files; `session/load` reads them back from the
+    /// same place, so the server hands it down rather than letting the loop pick its own.
+    pub sessions_dir: PathBuf,
     pub stop: Arc<AtomicBool>,
     pub sink: Box<dyn FnMut(AgentEvent) + Send + 'static>,
     pub confirmer: Box<dyn Confirmer>,
@@ -106,6 +109,7 @@ impl std::fmt::Debug for TurnSetup {
         f.debug_struct("TurnSetup")
             .field("cwd", &self.cwd)
             .field("model", &self.model)
+            .field("sessions_dir", &self.sessions_dir)
             .finish_non_exhaustive()
     }
 }
@@ -130,6 +134,7 @@ impl AgentFactory for StandardFactory {
             .with_sink(setup.sink)
             .with_stop(setup.stop);
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), setup.confirmer);
+        agent.sessions_dir = setup.sessions_dir;
         Ok(Box::new(agent))
     }
 }

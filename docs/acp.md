@@ -53,9 +53,19 @@ under `~/.ollama_agent/sessions/acp_*` as for a web chat.
 | a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny |
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
 
+## Resuming after a restart
+
+Boubou advertises `loadSession`. When the editor restarts the agent and reopens a thread, it
+sends `session/load` with the thread's session id, which is the Boubou session name
+(`acp_MMDD_HHMMSS`). Boubou reads `~/.ollama_agent/sessions/<id>.json`, replays the history
+as `session/update` notifications (your turns, the agent's prose, each tool call with its
+result, the plan if there was one; the loop's own nudges and compaction summaries are not
+shown) and then continues the conversation from where it stopped. An unknown id is
+`session not found`; a thread whose Boubou session files were deleted cannot be reopened.
+
 ## Not yet
 
-`session/load` (resuming an earlier Boubou session), session modes, the client's `fs` and
-`terminal` capabilities (edits go straight to disk, not through editor buffers), and MCP
-servers passed in `session/new` (Boubou keeps its own `mcp.json`). The SDK ships weekly with
-frequent major versions; the dependency is pinned exactly and bumped on purpose.
+Session modes, the client's `fs` and `terminal` capabilities (edits go straight to disk, not
+through editor buffers), and MCP servers passed in `session/new` or `session/load` (Boubou
+keeps its own `mcp.json`). The SDK ships weekly with frequent major versions; the dependency
+is pinned exactly and bumped on purpose.

@@ -10,7 +10,9 @@
 //! - the plan (`todo.json`) → `plan` after every `todo` call and at the finish;
 //! - context usage → `usage_update`; compaction and errors → `notice`;
 //! - `finish` is not shown as a tool call: its summary becomes the closing message when
-//!   the model did not already state the outcome in prose after its last tool call.
+//!   the model did not already state the outcome in prose after its last tool call;
+//! - a saved history → the same vocabulary replayed for `session/load`
+//!   ([`replay_updates`]): user turns as `user_message_chunk`, harness notes dropped.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,7 @@ use agent_client_protocol::schema::v1::{
     ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use boubou_core::agent::AgentEvent;
+use boubou_core::ollama::{Message, Role};
 use boubou_core::todo::TodoItem;
 use serde_json::Value;
 
@@ -217,6 +220,116 @@ impl TurnBridge {
         self.plan_shown = true;
         vec![SessionUpdate::Plan(plan_from(&items))]
     }
+}
+
+/// A saved Boubou history as the `session/update` stream an editor would have seen, for
+/// `session/load`. System messages and harness notes (continue nudges, plan reminders,
+/// compaction summaries) are the loop's business and are not shown; the user's own turns
+/// become `user_message_chunk`; assistant prose, tool calls and their results map as in
+/// [`TurnBridge::on_event`], with ids `hist_N`; a call with no result on record is marked
+/// failed so the editor does not wait on it; `finish` shows its summary only where the model
+/// wrote no prose in the same message; the plan file in `cwd`, if any, closes the replay.
+pub fn replay_updates(messages: &[Message], cwd: &Path) -> Vec<SessionUpdate> {
+    let mut out: Vec<SessionUpdate> = Vec::new();
+    let mut open: VecDeque<Pending> = VecDeque::new();
+    let mut n = 0u64;
+    for m in messages {
+        match m.role {
+            Role::System => {}
+            Role::User => {
+                let text = m.content.trim();
+                if text.is_empty()
+                    || boubou_core::guards::qa::is_harness_note(text)
+                    || text.starts_with("[tool")
+                {
+                    continue;
+                }
+                out.push(SessionUpdate::UserMessageChunk(ContentChunk::new(
+                    text.to_string().into(),
+                )));
+            }
+            Role::Assistant => {
+                let prose = m.content.trim();
+                if !prose.is_empty() {
+                    out.push(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                        prose.to_string().into(),
+                    )));
+                }
+                for tc in &m.tool_calls {
+                    let name = tc.function.name.as_str();
+                    let args = &tc.function.arguments;
+                    if name == "finish" {
+                        let summary = args
+                            .get("summary")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .unwrap_or("");
+                        if prose.is_empty() && !summary.is_empty() {
+                            out.push(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                summary.to_string().into(),
+                            )));
+                        }
+                        continue;
+                    }
+                    n += 1;
+                    let id = ToolCallId::new(format!("hist_{n}"));
+                    let mut call = ToolCall::new(id.clone(), title_for(name, args))
+                        .name(name.to_string())
+                        .kind(kind_for(name))
+                        .status(ToolCallStatus::InProgress)
+                        .raw_input(args.clone());
+                    let locations = locations_for(name, args, cwd);
+                    if !locations.is_empty() {
+                        call = call.locations(locations);
+                    }
+                    open.push_back(Pending {
+                        id,
+                        name: name.to_string(),
+                        args: args.clone(),
+                    });
+                    out.push(SessionUpdate::ToolCall(call));
+                }
+            }
+            Role::Tool => {
+                let Some(p) = open.pop_front() else {
+                    continue;
+                };
+                let output = m.content.clone();
+                let failed = boubou_core::agent::run::is_tool_error(&output);
+                let mut content: Vec<ToolCallContent> = Vec::new();
+                if !failed {
+                    if let Some(diff) = diff_for(&p.name, &p.args, cwd) {
+                        content.push(ToolCallContent::Diff(diff));
+                    }
+                }
+                if !output.trim().is_empty() {
+                    content.push(ToolCallContent::from(output.clone()));
+                }
+                let fields = ToolCallUpdateFields::new()
+                    .status(if failed {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Completed
+                    })
+                    .content(content)
+                    .raw_output(Value::String(output));
+                out.push(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    p.id, fields,
+                )));
+            }
+        }
+    }
+    for p in open {
+        out.push(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            p.id,
+            ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
+        )));
+    }
+    let items = boubou_core::todo::load_todo(cwd);
+    if !items.is_empty() {
+        out.push(SessionUpdate::Plan(plan_from(&items)));
+    }
+    out
 }
 
 /// `todo.json` items → ACP plan entries.
@@ -581,5 +694,127 @@ mod tests {
         ];
         let t = prompt_text(&blocks);
         assert!(t.starts_with("Fix the bug\n\nAttached: main.rs (/w/src/main.rs)"));
+    }
+
+    fn history_call(name: &str, args: Value) -> LoopCall {
+        LoopCall {
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: args,
+            },
+        }
+    }
+
+    #[test]
+    fn a_saved_history_replays_as_the_update_stream_minus_the_harness() {
+        let d = tempfile::tempdir().expect("tmp");
+        let cwd = d.path();
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![
+            history_call("create_file", json!({"path": "a.txt", "content": "hi"})),
+            history_call("read_file", json!({"path": "b.txt"})),
+        ];
+        let mut fin = Message::assistant("");
+        fin.tool_calls = vec![history_call("finish", json!({"summary": "wrote a.txt"}))];
+        let history = vec![
+            Message::system("task prompt"),
+            Message::user("Set up the note"),
+            asst,
+            Message::tool("create_file", "[created a.txt]"),
+            Message::tool("read_file", "[tool error: not found: b.txt]"),
+            Message::user("⚠️ Plan progress reminder: sync the plan"),
+            Message::user("Your answer is already sufficient; call finish now."),
+            fin,
+            Message::tool("finish", "[TASK_COMPLETE] done"),
+            Message::user("And a second turn"),
+            Message::assistant("Here is prose, no finish needed."),
+        ];
+        let out = replay_updates(&history, cwd);
+        let kinds: Vec<&str> = out
+            .iter()
+            .map(|u| match u {
+                SessionUpdate::UserMessageChunk(_) => "user",
+                SessionUpdate::AgentMessageChunk(_) => "agent",
+                SessionUpdate::ToolCall(_) => "call",
+                SessionUpdate::ToolCallUpdate(_) => "update",
+                SessionUpdate::Plan(_) => "plan",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "call", "call", "update", "update", "agent", "user", "agent"],
+            "{out:#?}"
+        );
+        let SessionUpdate::ToolCall(c0) = &out[1] else {
+            panic!()
+        };
+        assert_eq!(c0.tool_call_id, ToolCallId::new("hist_1"));
+        assert_eq!(c0.title, "create file: a.txt");
+        assert_eq!(c0.kind, ToolKind::Edit);
+        let SessionUpdate::ToolCallUpdate(u0) = &out[3] else {
+            panic!()
+        };
+        assert_eq!(u0.tool_call_id, ToolCallId::new("hist_1"));
+        assert_eq!(u0.fields.status, Some(ToolCallStatus::Completed));
+        assert!(
+            u0.fields
+                .content
+                .as_ref()
+                .is_some_and(|c| matches!(c[0], ToolCallContent::Diff(_))),
+            "a create shows its diff"
+        );
+        let SessionUpdate::ToolCallUpdate(u1) = &out[4] else {
+            panic!()
+        };
+        assert_eq!(u1.tool_call_id, ToolCallId::new("hist_2"));
+        assert_eq!(u1.fields.status, Some(ToolCallStatus::Failed));
+        let texts: Vec<&str> = out
+            .iter()
+            .filter_map(|u| match u {
+                SessionUpdate::AgentMessageChunk(c) | SessionUpdate::UserMessageChunk(c) => {
+                    match &c.content {
+                        ContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Set up the note",
+                "wrote a.txt",
+                "And a second turn",
+                "Here is prose, no finish needed."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_without_a_result_is_marked_failed_and_the_plan_comes_last() {
+        let d = tempfile::tempdir().expect("tmp");
+        let cwd = d.path();
+        std::fs::write(
+            cwd.join("todo.json"),
+            r#"[{"item":"first","done":true},{"item":"second","done":false}]"#,
+        )
+        .expect("todo");
+        let mut asst = Message::assistant("Running it");
+        asst.tool_calls = vec![history_call("run_bash", json!({"command": "ls"}))];
+        let out = replay_updates(&[Message::user("go"), asst], cwd);
+        assert_eq!(out.len(), 5, "{out:#?}");
+        let SessionUpdate::ToolCallUpdate(u) = &out[3] else {
+            panic!("{out:#?}")
+        };
+        assert_eq!(u.fields.status, Some(ToolCallStatus::Failed));
+        assert!(u.fields.content.is_none());
+        let SessionUpdate::Plan(p) = &out[4] else {
+            panic!()
+        };
+        assert_eq!(p.entries.len(), 2);
+        assert_eq!(p.entries[0].status, PlanEntryStatus::Completed);
+        assert_eq!(p.entries[1].status, PlanEntryStatus::InProgress);
     }
 }

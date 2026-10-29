@@ -4,7 +4,8 @@
 //! Covers the bead's acceptance list minus the real editor: initialize, session/new, a
 //! prompt turn with streamed tool calls and statuses, a permission round trip through the
 //! safety gate's confirmer, the finish summary as the closing message, a second prompt on
-//! the same session (history kept), and session/cancel ending a turn.
+//! the same session (history kept), session/cancel ending a turn, and session/load in a
+//! second server over the same home replaying the history and continuing it.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,10 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PermissionOptionId,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, ToolCallStatus,
-    ToolKind,
+    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
+    PermissionOptionId, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
+    SessionUpdate, StopReason, ToolCallStatus, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Channel, Client, ConnectTo, Responder};
@@ -137,7 +138,7 @@ impl AgentFactory for ScriptedFactory {
         let mut a = Agent::new(params, backend, tools)
             .with_sink(setup.sink)
             .with_stop(setup.stop);
-        a.sessions_dir = setup.cwd.join("sessions");
+        a.sessions_dir = setup.sessions_dir.clone();
         Ok(Box::new(Counting {
             inner: a,
             opened_with: self.opened_with.clone(),
@@ -241,7 +242,7 @@ async fn a_prompt_turn_streams_tool_calls_asks_permission_and_closes_with_the_su
         init.agent_info.as_ref().map(|i| i.name.as_str()),
         Some("boubou")
     );
-    assert!(!init.agent_capabilities.load_session);
+    assert!(init.agent_capabilities.load_session);
     assert!(ns.session_id.0.starts_with("acp_"));
     assert_eq!(p1.stop_reason, StopReason::EndTurn);
     assert_eq!(p2.stop_reason, StopReason::EndTurn);
@@ -354,4 +355,176 @@ async fn cancel_ends_the_turn_with_the_cancelled_stop_reason() {
         (2..10).contains(&n),
         "the loop stopped soon after the cancel: {n} calls"
     );
+}
+
+/// A client that only records what it is told (the builder's handler types are not
+/// nameable, hence a macro). The test drives the requests from `connect_with`.
+macro_rules! recording_client {
+    ($seen:expr) => {{
+        let seen = $seen;
+        Client
+            .builder()
+            .name("test-editor")
+            .on_receive_notification(
+                async move |n: SessionNotification, _cx| {
+                    seen.lock().expect("lock").push(n.update);
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+    }};
+}
+
+#[tokio::test]
+async fn a_restarted_agent_loads_the_session_replays_it_and_continues() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let home = cwd.join("home");
+    let opened_with = Arc::new(Mutex::new(Vec::new()));
+    let factory = |script: Script| ScriptedFactory {
+        script,
+        delay: Duration::ZERO,
+        forever: false,
+        turns: Arc::new(AtomicUsize::new(0)),
+        opened_with: opened_with.clone(),
+    };
+
+    // First life of the agent: one turn, then the process "exits".
+    let first = BoubouAcp::with_factory(
+        home.clone(),
+        "scripted:1b".into(),
+        Arc::new(factory(vec![(
+            "create_file",
+            json!({"path": "a.txt", "content": "hello"}),
+        )])),
+    );
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen1 = Arc::new(Mutex::new(Vec::new()));
+    let client = recording_client!(seen1.clone()).connect_with(client_ch, {
+        let cwd = cwd.clone();
+        async move |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let ns = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            cx.send_request(PromptRequest::new(
+                ns.session_id.clone(),
+                vec!["Set up the scratch note".into()],
+            ))
+            .block_task()
+            .await?;
+            Ok(ns.session_id)
+        }
+    });
+    let (a, c) = tokio::join!(first.connect_to(agent_ch), client);
+    a.expect("agent side");
+    let session_id = c.expect("client side");
+    assert!(
+        home.join("sessions")
+            .join(format!("{}.json", session_id.0))
+            .is_file(),
+        "the turn saved the session under the server's home"
+    );
+
+    // Second life: a fresh server over the same home; the editor reopens the thread.
+    let second = BoubouAcp::with_factory(
+        home.clone(),
+        "scripted:1b".into(),
+        Arc::new(factory(vec![("read_file", json!({"path": "a.txt"}))])),
+    );
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen2 = Arc::new(Mutex::new(Vec::new()));
+    let client = recording_client!(seen2.clone()).connect_with(client_ch, {
+        let cwd = cwd.clone();
+        let sid = session_id.clone();
+        async move |cx| {
+            let init = cx
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let unknown = cx
+                .send_request(LoadSessionRequest::new(
+                    SessionId::new("acp_0101_000000"),
+                    cwd.clone(),
+                ))
+                .block_task()
+                .await
+                .is_err();
+            let bad_name = cx
+                .send_request(LoadSessionRequest::new(
+                    SessionId::new("../etc/passwd"),
+                    cwd.clone(),
+                ))
+                .block_task()
+                .await
+                .is_err();
+            cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
+                .block_task()
+                .await?;
+            let p = cx
+                .send_request(PromptRequest::new(sid.clone(), vec!["And again".into()]))
+                .block_task()
+                .await?;
+            Ok((init, unknown, bad_name, p))
+        }
+    });
+    let (a, c) = tokio::join!(second.connect_to(agent_ch), client);
+    a.expect("agent side");
+    let (init, unknown, bad_name, p) = c.expect("client side");
+    assert!(init.agent_capabilities.load_session);
+    assert!(unknown, "an unknown session id is an error");
+    assert!(bad_name, "a path-shaped session id is refused");
+    assert_eq!(p.stop_reason, StopReason::EndTurn);
+
+    let seen = seen2.lock().expect("lock");
+    // The replay is the only source of user chunks; the first turn's create_file comes back
+    // completed, then the new turn's read_file runs.
+    let users: Vec<&str> = seen
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::UserMessageChunk(c) => match &c.content {
+                ContentBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(users, vec!["Set up the scratch note"]);
+    let calls: Vec<_> = seen
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::ToolCall(tc) => Some(tc),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2, "{seen:#?}");
+    assert_eq!(calls[0].title, "create file: a.txt");
+    assert_eq!(calls[0].tool_call_id.0.as_ref(), "hist_1");
+    assert_eq!(calls[1].title, "read file: a.txt");
+    let statuses: Vec<_> = seen
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::ToolCallUpdate(t) => t.fields.status,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![ToolCallStatus::Completed, ToolCallStatus::Completed]
+    );
+    // The replay carries the model's prose from the saved record: the scripted model says
+    // "done" alongside each finish, and the first finish was bounced by the pre-delivery
+    // gate, so it said it twice; with prose on record the finish summary is not repeated.
+    // The live second turn then closes with its summary, as the scripted backend streams
+    // no tokens.
+    let texts: Vec<&str> = seen.iter().filter_map(text_of).collect();
+    assert_eq!(texts, vec!["done", "done", "all done"]);
+
+    // The new turn ran on the loaded history, not on a fresh task prompt.
+    let opened = opened_with.lock().expect("lock").clone();
+    assert_eq!(opened.len(), 2);
+    assert!(opened[1] > opened[0] + 1, "{opened:?}");
 }

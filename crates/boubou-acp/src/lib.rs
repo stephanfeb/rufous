@@ -8,8 +8,12 @@
 //! `session/request_permission` ([`runner::AcpConfirmer`]); `session/cancel` raises the
 //! loop's stop flag.
 //!
-//! Protocol v1 (stable). Not yet: `session/load`, session modes, the client's `fs` and
-//! `terminal` capabilities, MCP servers passed in `session/new` (Boubou keeps its own
+//! `session/load` reopens a session after an agent restart: the ACP session id is the Boubou
+//! session name, so the history is read back from the sessions directory and replayed to the
+//! editor as `session/update` notifications before the response ([`bridge::replay_updates`]).
+//!
+//! Protocol v1 (stable). Not yet: session modes, the client's `fs` and `terminal`
+//! capabilities, MCP servers passed in `session/new` and `session/load` (Boubou keeps its own
 //! `mcp.json`). stdout belongs to the protocol; diagnostics go to stderr via `tracing`.
 
 pub mod bridge;
@@ -22,9 +26,10 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, Implementation, InitializeRequest, InitializeResponse,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
-    SessionNotification, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
+    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification, ToolCallId,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{
     Agent as AcpAgent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder, Stdio,
@@ -33,7 +38,7 @@ use boubou_core::ollama::Message;
 use boubou_core::safety::Verdict;
 use tokio::sync::mpsc;
 
-use bridge::{kind_for, prompt_text, TurnBridge};
+use bridge::{kind_for, prompt_text, replay_updates, TurnBridge};
 use runner::{AcpConfirmer, AgentFactory, BridgeMsg, PermissionAsk, StandardFactory, TurnSetup};
 
 /// One ACP session: Boubou's conversation state between prompts.
@@ -52,7 +57,8 @@ type Sessions = Arc<Mutex<HashMap<SessionId, SessionState>>>;
 /// The ACP agent component. Implements [`ConnectTo<Client>`] so it runs over stdio
 /// ([`BoubouAcp::serve_stdio`]) or an in-process channel (tests).
 pub struct BoubouAcp {
-    /// Boubou's data directory (sessions live under it; `session/load` will read them).
+    /// Boubou's data directory: sessions are saved under `<home>/sessions` and `session/load`
+    /// reads them back from there.
     pub home: PathBuf,
     pub model: String,
     pub factory: Arc<dyn AgentFactory>,
@@ -92,11 +98,12 @@ impl BoubouAcp {
 impl ConnectTo<AcpClient> for BoubouAcp {
     async fn connect_to(self, client: impl ConnectTo<AcpAgent>) -> Result<(), Error> {
         let BoubouAcp {
-            home: _,
+            home,
             model,
             factory,
             sessions,
         } = self;
+        let sessions_dir = boubou_core::agent::session::sessions_dir(&home);
         AcpAgent
             .builder()
             .name("boubou")
@@ -107,7 +114,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                     tracing::info!(target: "boubou_acp", version = ?req.protocol_version, "initialize");
                     responder.respond(
                         InitializeResponse::new(req.protocol_version)
-                            .agent_capabilities(AgentCapabilities::new().load_session(false))
+                            .agent_capabilities(AgentCapabilities::new().load_session(true))
                             .agent_info(
                                 Implementation::new("boubou", boubou_core::VERSION).title("Boubou"),
                             ),
@@ -154,6 +161,88 @@ impl ConnectTo<AcpClient> for BoubouAcp {
             .on_receive_request(
                 {
                     let sessions = sessions.clone();
+                    let sessions_dir = sessions_dir.clone();
+                    async move |req: LoadSessionRequest,
+                                responder: Responder<LoadSessionResponse>,
+                                cx: ConnectionTo<AcpClient>| {
+                        if !req.cwd.is_absolute() {
+                            return responder.respond_with_error(
+                                Error::invalid_params().data(serde_json::json!({
+                                    "message": "cwd must be an absolute path"
+                                })),
+                            );
+                        }
+                        let name = req.session_id.0.to_string();
+                        if !is_session_name(&name) {
+                            return responder.respond_with_error(
+                                Error::invalid_params().data(serde_json::json!({
+                                    "message": "not a Boubou session id"
+                                })),
+                            );
+                        }
+                        if !req.mcp_servers.is_empty() {
+                            tracing::warn!(
+                                target: "boubou_acp",
+                                n = req.mcp_servers.len(),
+                                "session/load mcpServers ignored: Boubou uses its own mcp.json"
+                            );
+                        }
+                        let Some(messages) =
+                            boubou_core::agent::session::load_session(&sessions_dir, &name)
+                        else {
+                            return responder
+                                .respond_with_error(Error::session_not_found(req.session_id));
+                        };
+                        // A session this process already holds is reloaded from disk (the
+                        // saved copy is the end of its last turn) unless a turn is running.
+                        let stop = {
+                            let g = lock(&sessions);
+                            match g.get(&req.session_id) {
+                                Some(s) if s.busy => {
+                                    return responder.respond_with_error(
+                                        Error::invalid_request().data(serde_json::json!({
+                                            "message": "a prompt is running in this session"
+                                        })),
+                                    )
+                                }
+                                Some(s) => s.stop.clone(),
+                                None => Arc::new(AtomicBool::new(false)),
+                            }
+                        };
+                        let updates = replay_updates(&messages, &req.cwd);
+                        let replayed = updates.len();
+                        for upd in updates {
+                            if let Err(e) = cx.send_notification(SessionNotification::new(
+                                req.session_id.clone(),
+                                upd,
+                            )) {
+                                tracing::warn!(target: "boubou_acp", "session/update (replay): {e}");
+                            }
+                        }
+                        let st = SessionState {
+                            cwd: req.cwd.clone(),
+                            name,
+                            messages,
+                            stop,
+                            busy: false,
+                        };
+                        lock(&sessions).insert(req.session_id.clone(), st);
+                        tracing::info!(
+                            target: "boubou_acp",
+                            session = %req.session_id,
+                            cwd = %req.cwd.display(),
+                            replayed,
+                            "session/load"
+                        );
+                        responder.respond(LoadSessionResponse::new())
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let sessions = sessions.clone();
+                    let sessions_dir = sessions_dir.clone();
                     let factory = factory.clone();
                     let model = model.clone();
                     async move |req: PromptRequest,
@@ -192,6 +281,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                             TurnSetup {
                                 cwd: cwd.clone(),
                                 model: model.clone(),
+                                sessions_dir: sessions_dir.clone(),
                                 stop: stop.clone(),
                                 sink: {
                                     let tx = tx.clone();
@@ -256,6 +346,16 @@ impl ConnectTo<AcpClient> for BoubouAcp {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// A Boubou session name as `session/new` issues them (and as the web UI names chats): one
+/// path component of letters, digits, `_` and `-`. Anything else cannot name a file under
+/// the sessions directory and is refused before touching the disk.
+fn is_session_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Run one turn of the loop on its own thread; everything it has to say goes through `tx`,
