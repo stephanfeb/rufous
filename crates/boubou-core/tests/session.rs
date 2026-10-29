@@ -46,7 +46,7 @@ fn first_turn_compacted(dir: &Path) -> Vec<Message> {
     ];
     t.flush(dir, Some(S), &compacted);
     assert_eq!(lines(dir).len(), 7, "the summary is logged");
-    save_session(dir, Some(S), &compacted, None, &mut t);
+    save_session(dir, Some(S), &compacted, None, None, &mut t);
     assert_eq!(cursor(dir), Some(4));
     compacted
 }
@@ -67,7 +67,10 @@ fn a_continued_session_after_compaction_still_logs_the_new_user_turn() {
     // The model's reply lands after it, in order.
     ctx.push(Message::assistant("done with c"));
     fresh.flush(d.path(), Some(S), &ctx);
-    assert_eq!(lines(d.path()).last().map(|m| m.content.as_str()), Some("done with c"));
+    assert_eq!(
+        lines(d.path()).last().map(|m| m.content.as_str()),
+        Some("done with c")
+    );
 }
 
 #[test]

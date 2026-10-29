@@ -29,6 +29,11 @@ use crate::Error;
 
 /// Recycle bin inside the workspace. Kept as Mingbird's name so old workspaces stay readable.
 pub const TRASH_DIR: &str = ".mingbird_trash";
+/// Under a relocated harness directory: previous versions of edited files, mirrored by
+/// their path in the workdir (`backups/lib/a.py.bak`).
+pub const BACKUP_DIR: &str = "backups";
+/// Under a relocated harness directory: deleted files.
+pub const RELOCATED_TRASH_DIR: &str = "trash";
 pub const IMG_EXTS: [&str; 6] = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
 const IMG_MAX_BYTES: u64 = 20 * 1024 * 1024;
 const IMG_PER_TURN: usize = 4;
@@ -71,6 +76,12 @@ pub struct CrawlEntry {
 
 pub struct Executor {
     pub workdir: PathBuf,
+    /// Where the harness's own files go (`todo.json`, backups, trash, the image queue):
+    /// the workdir itself in Mingbird's layout, or a directory outside the project for an
+    /// editor session (`RunParams::harness_dir`). Relocated, the safety net stays but out
+    /// of sight: no `.bak` beside the file, no `.mingbird_trash/`, and tool results do not
+    /// name where the copies went.
+    pub harness_dir: PathBuf,
     pub gate: Gate,
     pub crawl_cfg: CrawlConfig,
     pub crawl: HashMap<String, CrawlEntry>,
@@ -110,8 +121,10 @@ impl Executor {
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("."));
+        let workdir: PathBuf = workdir.into();
         Self {
-            workdir: workdir.into(),
+            harness_dir: workdir.clone(),
+            workdir,
             gate: Gate::headless(policy),
             crawl_cfg: CrawlConfig::default(),
             crawl: HashMap::new(),
@@ -192,6 +205,16 @@ impl Executor {
         self.with_mcp(Arc::new(reg))
     }
 
+    /// Whether the harness files live outside the workdir.
+    fn relocated(&self) -> bool {
+        self.harness_dir != self.workdir
+    }
+
+    /// The backup tree when relocated; `None` means beside the file.
+    fn backup_root(&self) -> Option<PathBuf> {
+        self.relocated().then(|| self.harness_dir.join(BACKUP_DIR))
+    }
+
     /// Same-file key for the crawl guard (normalised, case-folded on Windows).
     pub fn crawl_key(&self, rel: &str) -> String {
         let p = resolve_path(&self.workdir.join(rel))
@@ -234,7 +257,7 @@ impl Executor {
             ToolInvocation::ListDir { path } => self.list_dir(&path),
             ToolInvocation::SearchFiles { path, pattern } => self.search_files(&path, &pattern),
             ToolInvocation::RunBash { command } => self.run_bash(&command),
-            ToolInvocation::Todo(args) => run_todo(&self.workdir, &args),
+            ToolInvocation::Todo(args) => run_todo(&self.harness_dir, &args),
             ToolInvocation::Skills { action, name } => self.skills(action, name.as_deref()),
             ToolInvocation::EnableTools { tools } => self.enable_tools(&tools),
             ToolInvocation::Finish { summary } => format!("[TASK_COMPLETE] {summary}"),
@@ -434,7 +457,7 @@ impl Executor {
     }
 
     fn pending_images_path(&self) -> PathBuf {
-        self.workdir.join(".hb_pending_images.json")
+        crate::agent::history::pending_images_path(&self.harness_dir)
     }
 
     fn read_image(&self, display: &str, real: &Path) -> String {
@@ -471,7 +494,10 @@ impl Executor {
             Ok(s) => s,
             Err(e) => return format!("[tool error: {e}]"),
         };
-        let _ = std::fs::copy(&p, bak_path(&p));
+        let _ = std::fs::copy(
+            &p,
+            backup_target(&p, &self.workdir, self.backup_root().as_deref()),
+        );
         let unescape = |t: &str| {
             t.replace("\\n", "\n")
                 .replace("\\t", "\t")
@@ -492,7 +518,11 @@ impl Executor {
         } else {
             "backed up"
         };
-        format!("[edited {path} ({tag}); .bak backup available]")
+        if self.relocated() {
+            format!("[edited {path} ({tag})]")
+        } else {
+            format!("[edited {path} ({tag}); .bak backup available]")
+        }
     }
 
     fn append_file(&mut self, path: &str, content: &str) -> String {
@@ -515,7 +545,11 @@ impl Executor {
         if !p.exists() {
             return format!("[not found: {path}]");
         }
-        let trash = self.workdir.join(TRASH_DIR);
+        let trash = if self.relocated() {
+            self.harness_dir.join(RELOCATED_TRASH_DIR)
+        } else {
+            self.workdir.join(TRASH_DIR)
+        };
         let base = p
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -525,7 +559,11 @@ impl Executor {
             .and_then(|_| std::fs::rename(&p, &dst))
             .is_ok()
         {
-            return format!("[deleted {path} → moved to {TRASH_DIR}/ (recoverable)]");
+            return if self.relocated() {
+                format!("[deleted {path} (recoverable)]")
+            } else {
+                format!("[deleted {path} → moved to {TRASH_DIR}/ (recoverable)]")
+            };
         }
         match std::fs::remove_file(&p) {
             Ok(()) => format!("[deleted {path}]"),
@@ -540,6 +578,7 @@ impl Executor {
                 let mut names: Vec<String> = rd
                     .flatten()
                     .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| !is_harness_name(n))
                     .collect();
                 names.sort();
                 names.join("\n")
@@ -597,7 +636,7 @@ impl Executor {
     /// safety gate), so what the gate inspected is exactly what the shell gets.
     fn run_bash(&mut self, command: &str) -> String {
         let cmd: &str = command;
-        let snapped = bash_snapshot(cmd, &self.workdir);
+        let snapped = bash_snapshot(cmd, &self.workdir, self.backup_root().as_deref());
         let run = run_command(cmd, &self.workdir, self.bash_timeout);
         if run.timed_out {
             let secs = self.bash_timeout.as_secs();
@@ -611,10 +650,14 @@ impl Executor {
         }
         let mut out = format_bash_out(run.code, &run.stdout, &run.stderr, self.slim_output);
         if !snapped.is_empty() {
-            out.push_str(&format!(
-                "\n[auto-backed up, can be rolled back: {} → same name with .bak]",
-                snapped.join(", ")
-            ));
+            if self.relocated() {
+                out.push_str(&format!("\n[auto-backed up: {}]", snapped.join(", ")));
+            } else {
+                out.push_str(&format!(
+                    "\n[auto-backed up, can be rolled back: {} → same name with .bak]",
+                    snapped.join(", ")
+                ));
+            }
         }
         if cfg!(windows) {
             static LINUX_PATH: LazyLock<Regex> = LazyLock::new(|| {
@@ -831,6 +874,36 @@ fn bak_path(p: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Where the backup of `p` goes: beside it (`<p>.bak`), or under `root` mirroring the
+/// path relative to `workdir` (the parent directories are created).
+fn backup_target(p: &Path, workdir: &Path, root: Option<&Path>) -> PathBuf {
+    let Some(root) = root else {
+        return bak_path(p);
+    };
+    let rel = match p.strip_prefix(workdir) {
+        Ok(r) => r.to_path_buf(),
+        Err(_) => p
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("file")),
+    };
+    let dst = bak_path(&root.join(rel));
+    if let Some(parent) = dst.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    dst
+}
+
+/// The harness's own files, kept out of `list_dir` so the model does not spend its turn on
+/// them (boubou-7s3: nine deletes of one `.bak` in a 47-call editor turn). Mingbird's
+/// layout still writes them into the workdir; they are simply not listed.
+pub fn is_harness_name(name: &str) -> bool {
+    name.ends_with(".bak")
+        || name == TRASH_DIR
+        || name.starts_with(".agent_state")
+        || name == ".hb_pending_images.json"
+}
+
 fn hhmmss() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -885,8 +958,9 @@ pub fn unescape_command(command: &str) -> String {
 }
 
 /// `_bash_snapshot`: `sed -i`, redirections, `cp`/`mv` and friends rewrite files behind
-/// the `.bak` net; back up every existing workspace file the command names first.
-pub fn bash_snapshot(cmd: &str, workdir: &Path) -> Vec<String> {
+/// the `.bak` net; back up every existing workspace file the command names first, beside
+/// the file or under `backup_root` (see [`Executor::harness_dir`]).
+pub fn bash_snapshot(cmd: &str, workdir: &Path, backup_root: Option<&Path>) -> Vec<String> {
     static TOK: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]{1,8}").expect("regex"));
     let low = format!(" {cmd} ");
@@ -922,7 +996,9 @@ pub fn bash_snapshot(cmd: &str, workdir: &Path) -> Vec<String> {
         if !rp.starts_with(&wd) || rp == wd || !rp.is_file() {
             continue;
         }
-        if std::fs::copy(&rp, bak_path(&rp)).is_ok() && !out.iter().any(|b| b == base) {
+        if std::fs::copy(&rp, backup_target(&rp, &wd, backup_root)).is_ok()
+            && !out.iter().any(|b| b == base)
+        {
             out.push(base.to_string());
         }
         if out.len() >= 20 {

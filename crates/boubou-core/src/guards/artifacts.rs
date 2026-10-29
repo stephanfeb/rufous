@@ -77,8 +77,8 @@ pub fn claimed_missing_files(summary: &str, workdir: &Path) -> Vec<String> {
 
 /// `_plan_named_missing`: files the model's own plan names that are not there.
 /// Checkboxes are not trusted; only the filesystem is.
-pub fn plan_named_missing(workdir: &Path) -> Vec<String> {
-    let t = load_todo(workdir);
+pub fn plan_named_missing(plan_dir: &Path, workdir: &Path) -> Vec<String> {
+    let t = load_todo(plan_dir);
     if t.is_empty() {
         return Vec::new();
     }

@@ -209,7 +209,9 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 None => Arc::new(AtomicBool::new(false)),
                             }
                         };
-                        let updates = replay_updates(&messages, &req.cwd);
+                        let plan_dir =
+                            boubou_core::agent::session::harness_dir(&sessions_dir, &name);
+                        let updates = replay_updates(&messages, &req.cwd, &plan_dir);
                         let replayed = updates.len();
                         for upd in updates {
                             if let Err(e) = cx.send_notification(SessionNotification::new(
@@ -274,6 +276,8 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                             Err(e) => return responder.respond_with_error(e),
                         };
                         let text = prompt_text(&req.prompt);
+                        let plan_dir =
+                            boubou_core::agent::session::harness_dir(&sessions_dir, &name);
                         let session_id = req.session_id.clone();
                         let (tx, rx) = mpsc::unbounded_channel::<BridgeMsg>();
                         spawn_turn(
@@ -302,7 +306,8 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                         cx.spawn(async move {
                             let cx = task_cx;
                             let outcome =
-                                drive_turn(&cx, session_id.clone(), cwd, rx, stop.clone()).await;
+                                drive_turn(&cx, session_id.clone(), cwd, plan_dir, rx, stop.clone())
+                                    .await;
                             let (result, bridge) = outcome;
                             let cancelled = stop.load(Ordering::SeqCst);
                             let mut g = lock(&sessions);
@@ -396,10 +401,11 @@ async fn drive_turn(
     cx: &ConnectionTo<AcpClient>,
     session_id: SessionId,
     cwd: PathBuf,
+    plan_dir: PathBuf,
     mut rx: mpsc::UnboundedReceiver<BridgeMsg>,
     stop: Arc<AtomicBool>,
 ) -> (boubou_core::Result<Vec<Message>>, TurnBridge) {
-    let mut bridge = TurnBridge::new(cwd);
+    let mut bridge = TurnBridge::new(cwd).with_plan_dir(plan_dir);
     let mut perm_n = 0u64;
     while let Some(msg) = rx.recv().await {
         match msg {

@@ -12,7 +12,10 @@
 //! - `<sessions>/<name>.meta.json`: merged metadata (`updated`, `task`, `status`, `msgs`,
 //!   `workdir`, plus whatever the GUI wrote, e.g. `title`).
 //!   Boubou adds `transcript_next`, the transcript cursor (see [`Transcript::flush`]).
-//! - `<sessions>/<name>.todo.json`: snapshot of the workdir plan, bound to the session.
+//! - `<sessions>/<name>.todo.json`: snapshot of the plan, bound to the session.
+//! - `<sessions>/<name>.files/`: the harness directory of a relocated session (ACP):
+//!   `todo.json`, `backups/` (previous versions of edited files, the CLI's `<file>.bak`),
+//!   `trash/` (deleted files, the CLI's `.mingbird_trash/`) and the image queue.
 //! - `<sessions>/<name>.decisions.jsonl`: one line per System One decision when the decider
 //!   is in `shadow` or `on` mode (Boubou addition, bead boubou-acy.3); the labelled-set
 //!   builder ingests these as `shadow:<name>` candidates.
@@ -39,6 +42,12 @@ pub fn checkpoint_path(workdir: &Path) -> PathBuf {
 /// ([`crate::guards::budget::elapsed_meta_for`]).
 pub fn state_path(sessions_dir: &Path, name: &str) -> PathBuf {
     sessions_dir.join(format!("{name}.state.json"))
+}
+
+/// The harness directory of a relocated session: `<sessions>/<name>.files/`
+/// ([`RunParams::harness_dir`](crate::agent::RunParams::harness_dir)).
+pub fn harness_dir(sessions_dir: &Path, name: &str) -> PathBuf {
+    sessions_dir.join(format!("{name}.files"))
 }
 
 /// Write the checkpoint atomically (tmp + rename) so a hard kill never leaves half a JSON.
@@ -186,7 +195,11 @@ impl Transcript {
 /// Append `msgs` as JSON lines; `true` when at least one line was written.
 fn append_lines<'a>(dir: &Path, p: &Path, msgs: impl Iterator<Item = &'a Message>) -> bool {
     let _ = std::fs::create_dir_all(dir);
-    let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(p) else {
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(p)
+    else {
         return false;
     };
     let mut wrote = false;
@@ -241,6 +254,7 @@ pub fn save_session(
     name: Option<&str>,
     msgs: &[Message],
     workdir: Option<&Path>,
+    plan_dir: Option<&Path>,
     transcript: &mut Transcript,
 ) {
     let Some(name) = name else {
@@ -251,7 +265,7 @@ pub fn save_session(
     let _ = atomic_write_json(&dir.join(format!("{name}.json")), msgs);
 
     let snap = dir.join(format!("{name}.todo.json"));
-    match workdir.map(todo_file) {
+    match plan_dir.map(todo_file) {
         Some(tj) if tj.exists() => {
             let _ = std::fs::copy(&tj, &snap);
         }

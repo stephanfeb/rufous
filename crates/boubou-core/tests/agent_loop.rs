@@ -2388,7 +2388,10 @@ fn interactive_finish_is_accepted_without_gates() {
     let mut a = agent_with(d.path(), &[], "", "");
     a.params.interactive = true;
     let out = a.run(start(TASK), None, None).expect("loop");
-    assert!(user_msgs(&out, "finish was rejected").is_empty(), "{out:#?}");
+    assert!(
+        user_msgs(&out, "finish was rejected").is_empty(),
+        "{out:#?}"
+    );
     assert!(user_msgs(&out, "Pre-delivery check").is_empty());
     assert_eq!(
         out.iter()
@@ -2413,7 +2416,8 @@ fn interactive_question_keeps_the_task_prompt_and_file_tools() {
         .expect("loop");
     assert_eq!(out[0].content, "sys", "no swap to the chat prompt");
     assert!(
-        !out.iter().any(|m| m.role == Role::Tool && m.content.contains("asking a question")),
+        !out.iter()
+            .any(|m| m.role == Role::Tool && m.content.contains("asking a question")),
         "{out:#?}"
     );
     assert!(out
@@ -2438,4 +2442,65 @@ fn interactive_two_empty_replies_end_the_turn() {
     assert!(user_msgs(&out, "context has been reset").is_empty());
     assert!(user_msgs(&out, "output empty text").is_empty());
     assert_eq!(out.iter().filter(|m| m.role == Role::Assistant).count(), 2);
+}
+
+// ---- harness files out of the project (boubou-7s3) ----
+
+#[test]
+fn a_relocated_harness_dir_takes_the_plan_and_the_session_snapshot_follows() {
+    use boubou_core::exec::Executor;
+    use boubou_core::safety::SafetyPolicy;
+    let d = tempfile::tempdir().expect("tmp");
+    let h = tempfile::tempdir().expect("tmp");
+    let sdir = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.interactive = true;
+    params.harness_dir = Some(h.path().to_path_buf());
+    let mut tools = Executor::with_policy(d.path(), SafetyPolicy::default());
+    tools.harness_dir = h.path().to_path_buf();
+    let mut a = Agent::new(
+        params,
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1 => ChatResponse::call(
+                    "",
+                    "todo",
+                    json!({"action": "create", "items": ["write a.txt"]}),
+                ),
+                2 => {
+                    ChatResponse::call("", "create_file", json!({"path": "a.txt", "content": "hi"}))
+                }
+                3 => ChatResponse::call(
+                    "",
+                    "edit_file",
+                    json!({"path": "a.txt", "old": "hi", "new": "ho"}),
+                ),
+                _ => ChatResponse::text("Done."),
+            },
+        },
+        tools,
+    );
+    a.sessions_dir = sdir.path().to_path_buf();
+    // As the ACP runner does: the checkpoint goes beside the session files too.
+    a.checkpoint = Some(sdir.path().join("s1.state.json"));
+    a.run(start("write a.txt"), Some("s1"), None).expect("loop");
+    assert!(!d.path().join("todo.json").exists(), "plan in the project");
+    assert!(
+        !d.path().join("a.txt.bak").exists(),
+        "backup in the project"
+    );
+    assert!(h.path().join("todo.json").exists());
+    assert!(h.path().join("backups/a.txt.bak").exists());
+    assert!(
+        sdir.path().join("s1.todo.json").exists(),
+        "session snapshot of the plan"
+    );
+    let left: Vec<String> = std::fs::read_dir(d.path())
+        .expect("ls")
+        .flatten()
+        .map(|x| x.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "m08.py")
+        .collect();
+    assert_eq!(left, vec!["a.txt".to_string()], "{left:?}");
 }

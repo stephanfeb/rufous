@@ -137,6 +137,8 @@ impl AgentFactory for StandardFactory {
         let mut params = RunParams::from_env(setup.model, setup.cwd)?;
         // The editor is interactive: a text reply or finish ends the turn, no batch gates.
         params.interactive = true;
+        // Plan, backups and trash go beside the session files, not into the project.
+        params.harness_dir = Some(session::harness_dir(&setup.sessions_dir, &setup.session));
         let mut agent = Agent::standard(params, &self.cfg)?
             .with_sink(setup.sink)
             .with_stop(setup.stop);

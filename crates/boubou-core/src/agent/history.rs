@@ -446,8 +446,9 @@ fn matching_chars(a: &[char], b: &[char]) -> usize {
 /// How many recent messages keep their images (`_IMG_KEEP_MSGS`).
 pub const IMG_KEEP_MSGS: usize = 2;
 
-pub fn pending_images_path(workdir: &Path) -> std::path::PathBuf {
-    workdir.join(".hb_pending_images.json")
+/// The image queue, in the harness directory (the workdir unless relocated).
+pub fn pending_images_path(harness_dir: &Path) -> std::path::PathBuf {
+    harness_dir.join(".hb_pending_images.json")
 }
 
 /// `_attach_pending_images`: strip images from older messages, then hang the queued images

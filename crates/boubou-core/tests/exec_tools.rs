@@ -410,3 +410,77 @@ fn the_gate_sees_the_unescaped_command() {
         assert!(r.contains("one") && r.contains("two"), "{r}");
     }
 }
+
+// ---- harness files out of the project (boubou-7s3) ----
+
+#[test]
+fn a_relocated_harness_dir_keeps_backups_trash_and_the_plan_out_of_the_workdir() {
+    let (d, mut e) = ex();
+    let h = tempfile::tempdir().expect("tmp");
+    e.harness_dir = h.path().to_path_buf();
+    create(&mut e, "lib/a.py", "x = 1\ny = 2\n");
+
+    let r = e.run_tool(
+        "edit_file",
+        &json!({"path": "lib/a.py", "old": "y = 2", "new": "y = 3"}),
+    );
+    assert!(
+        r.starts_with("[edited lib/a.py") && !r.contains(".bak"),
+        "{r}"
+    );
+    assert!(!d.path().join("lib/a.py.bak").exists());
+    assert_eq!(
+        std::fs::read_to_string(h.path().join("backups/lib/a.py.bak")).expect("bak"),
+        "x = 1\ny = 2\n"
+    );
+
+    let r = e.run_tool("run_bash", &json!({"command": "echo z > lib/a.py"}));
+    assert!(r.contains("auto-backed up") && !r.contains(".bak"), "{r}");
+    assert!(!d.path().join("lib/a.py.bak").exists());
+    assert_eq!(
+        std::fs::read_to_string(h.path().join("backups/lib/a.py.bak")).expect("bak"),
+        "x = 1\ny = 3\n"
+    );
+
+    let r = e.run_tool("delete_file", &json!({"path": "lib/a.py"}));
+    assert!(r.contains("recoverable") && !r.contains("trash"), "{r}");
+    assert!(!d.path().join(TRASH_DIR).exists());
+    assert_eq!(
+        std::fs::read_dir(h.path().join("trash"))
+            .expect("trash")
+            .count(),
+        1
+    );
+
+    e.run_tool("todo", &json!({"action": "create", "items": ["one"]}));
+    assert!(!d.path().join("todo.json").exists());
+    assert!(h.path().join("todo.json").exists());
+
+    let left: Vec<String> = std::fs::read_dir(d.path())
+        .expect("ls")
+        .flatten()
+        .map(|x| x.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec!["lib".to_string()], "{left:?}");
+}
+
+#[test]
+fn list_dir_hides_the_harness_files_in_the_workdir_layout() {
+    let (d, mut e) = ex();
+    create(&mut e, "a.py", "x = 1\n");
+    e.run_tool(
+        "edit_file",
+        &json!({"path": "a.py", "old": "1", "new": "2"}),
+    );
+    create(&mut e, "gone.txt", "bye");
+    e.run_tool("delete_file", &json!({"path": "gone.txt"}));
+    for f in [
+        ".agent_state.json",
+        ".agent_state.meta.json",
+        ".hb_pending_images.json",
+    ] {
+        std::fs::write(d.path().join(f), "{}").expect("write");
+    }
+    assert!(d.path().join("a.py.bak").exists() && d.path().join(TRASH_DIR).exists());
+    assert_eq!(e.run_tool("list_dir", &json!({"path": "."})), "a.py");
+}

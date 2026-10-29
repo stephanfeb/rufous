@@ -39,10 +39,13 @@ Then start a new external agent thread from the Agent Panel and pick Boubou. The
 working directory is the project root Zed passes as `cwd`; Boubou's session files are written
 under `~/.ollama_agent/sessions/acp_*` as for a web chat. The live checkpoint goes there too
 (`acp_*.state.json`, with `acp_*.state.meta.json` for the time budget) rather than to the
-CLI's `<cwd>/.agent_state.json`: the project directory gets nothing of the harness, so the
-model cannot find its own history in a listing and your git status stays clean. The one
-file the loop still writes into the project is `todo.json` when the model uses the plan
-tool.
+CLI's `<cwd>/.agent_state.json`, and so do the loop's working files: `acp_*.files/` holds
+`todo.json`, `backups/` (the previous version of every file an edit or a redirecting command
+touched, where the CLI leaves `<file>.bak` beside it), `trash/` (deleted files, the CLI's
+`.mingbird_trash/`) and the image queue. The project directory gets nothing of the harness,
+so the model cannot find its own history or safety net in a listing and your git status
+stays clean; tool results say a file was backed up but not where, and `list_dir` never shows
+harness files in any mode.
 
 ## What the editor sees
 

@@ -92,6 +92,12 @@ pub struct RunParams {
     /// can still write files); no parallel dispatch into the user's project. The safety
     /// gate, the duplicate-call and failure ladders and compaction are unchanged.
     pub interactive: bool,
+    /// Where the loop's own files go: `todo.json`, the backups edits leave behind, the
+    /// trash of deleted files and the image queue. `None` is the workdir itself (the CLI,
+    /// Mingbird's layout). An embedding whose workdir is the user's project sets
+    /// [`session::harness_dir`] so the project never shows the safety net: the model was
+    /// seen deleting one `.bak` nine times in a 47-call editor turn (boubou-7s3).
+    pub harness_dir: Option<PathBuf>,
     /// The model's profile (`profile.rs`): built-ins at construction, config overrides and
     /// the think/temperature defaults applied by [`Agent::standard`].
     pub profile: crate::profile::ModelProfile,
@@ -137,6 +143,7 @@ impl RunParams {
             prune_keep: env_parse("AGENT_PRUNE_KEEP")?.unwrap_or(0),
             chat_mode: false,
             interactive: false,
+            harness_dir: None,
             profile,
         })
     }
@@ -164,6 +171,7 @@ impl RunParams {
             prune_keep: 0,
             chat_mode: false,
             interactive: false,
+            harness_dir: None,
             profile,
         }
     }

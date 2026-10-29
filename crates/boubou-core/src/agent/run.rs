@@ -227,11 +227,11 @@ pub fn ws_note(workdir: &Path) -> String {
 }
 
 /// `_plan_note`: current plan as text for compaction re-injection; none in Q&A / no plan.
-fn plan_note(qa: bool, workdir: &Path) -> Option<String> {
+fn plan_note(qa: bool, plan_dir: &Path) -> Option<String> {
     if qa {
         return None;
     }
-    let t = load_todo(workdir);
+    let t = load_todo(plan_dir);
     if t.is_empty() {
         None
     } else {
@@ -360,6 +360,9 @@ impl Agent<DynBackend, Executor> {
         };
         let mut tools = Executor::new(params.workdir.clone()).with_configured_mcp();
         tools.slim_output = params.slim_output;
+        if let Some(h) = &params.harness_dir {
+            tools.harness_dir = h.clone();
+        }
         let pcfg = ParallelConfig::from_config(cfg).with_env(&env_snapshot());
         let child_mode = params.child_mode;
         let mut agent = Agent::new(params, backend, tools);
@@ -486,6 +489,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let child = params.child_mode;
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
+        // The harness's own files (plan, backups, trash, image queue): the workdir unless
+        // relocated out of the user's project (`RunParams::harness_dir`).
+        let hdir: &Path = params.harness_dir.as_deref().unwrap_or(workdir);
+        let bak_dir: PathBuf = if hdir == workdir {
+            workdir.to_path_buf()
+        } else {
+            hdir.join(crate::exec::BACKUP_DIR)
+        };
         let ckpt_path = checkpoint
             .clone()
             .unwrap_or_else(|| session::checkpoint_path(workdir));
@@ -494,9 +505,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // An editor session (`RunParams::interactive`): standard agent-turn semantics, so
         // every finish gate is off and the text-only ladders end the turn instead.
         let interactive = params.interactive && !child;
-        let fg_off = interactive
-            || params.ablated("finish_gate")
-            || params.ablated("finish_gate_text_only");
+        let fg_off =
+            interactive || params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
@@ -531,7 +541,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         }
         macro_rules! save {
             () => {
-                session::save_session(sessions_dir, session, &messages, Some(workdir), transcript);
+                session::save_session(
+                    sessions_dir,
+                    session,
+                    &messages,
+                    Some(workdir),
+                    Some(hdir),
+                    transcript,
+                );
                 if session.is_some() {
                     log!("[session saved: {}]", session.unwrap_or_default());
                 }
@@ -753,10 +770,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             };
             if let Some(level) = pre {
                 let (todo, files) = if level >= 2 {
-                    (
-                        plan_note(qa, workdir),
-                        Some(workdir_files_text(workdir, 30)),
-                    )
+                    (plan_note(qa, hdir), Some(workdir_files_text(workdir, 30)))
                 } else {
                     (None, None)
                 };
@@ -766,7 +780,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 compact_lvl = level;
                 log!("[{i}] pre-flight estimate {est:.0} tokens over the limit, compacted (L{level})");
             }
-            let n_img = attach_pending_images(&mut messages, workdir);
+            let n_img = attach_pending_images(&mut messages, hdir);
             if n_img > 0 {
                 log!("[{i}] 🖼 attached {n_img} image(s) (multimodal input)");
             }
@@ -813,7 +827,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         log!(
                             "[{i}] ⚠️ context-overflow error → forcing L3 compaction and retrying"
                         );
-                        let todo = plan_note(qa, workdir);
+                        let todo = plan_note(qa, hdir);
                         let files = Some(workdir_files_text(workdir, 30));
                         messages =
                             compact(backend, model, messages, 3, todo, files, transcript, sink);
@@ -852,7 +866,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         if compact_lvl < 3 {
                             let lvl = (compact_lvl + 1).min(3);
                             compact_lvl = lvl;
-                            let todo = plan_note(qa, workdir);
+                            let todo = plan_note(qa, hdir);
                             let files = Some(workdir_files_text(workdir, 30));
                             messages = compact(
                                 backend, model, messages, lvl, todo, files, transcript, sink,
@@ -908,7 +922,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 };
                 if let Some(level) = post {
                     let todo = if level >= 2 {
-                        plan_note(qa, workdir)
+                        plan_note(qa, hdir)
                     } else {
                         None
                     };
@@ -1036,7 +1050,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             head,
                             Message::user(format!(
                                 "{task0}\n\n⚠️ [system] Several consecutive empty outputs; the context has been reset. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{files}\nContinue from the first unfinished step and make progress with tools immediately. Do not output empty text.",
-                                load_todo_str(workdir)
+                                load_todo_str(hdir)
                             )),
                         ];
                         log!("[{i}] ⚠️ 6 consecutive empty turns, hard-resetting the context ({empty_resets}/3, {empty_total} empty turns in total)");
@@ -1153,7 +1167,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             head,
                             Message::user(format!(
                                 "{task0}\n\n⚠️ [system] The context has been reset: the tool {shown} is disabled, calling it again will not run, and it will no longer appear in your tool list. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{}\nSwitch to create_file now and write the output files to move the task forward.",
-                                load_todo_str(workdir),
+                                load_todo_str(hdir),
                                 workdir_files_text(workdir, 30)
                             )),
                         ];
@@ -1394,7 +1408,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 };
                                 let mut bak_hint = String::new();
                                 if h.contains("SyntaxError") || h.contains("IndentationError") {
-                                    if let Some(b) = first_py_bak(workdir) {
+                                    if let Some(b) = first_py_bak(&bak_dir) {
                                         bak_hint = format!("Syntax error detected. A backup is available to roll back: restore the matching .bak (e.g. copy {b} over the original), or rebuild the file.\n");
                                     }
                                 }
@@ -1473,7 +1487,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // maintain; their exit contract (artefacts + finish) is checked by the
                     // dispatcher, and a blocked child only burns its budget into a timeout.
                     if !qa && !child && !fg_off && plan_gate_warns < 2 {
-                        let p_missing: Vec<String> = artifacts::plan_named_missing(workdir)
+                        let p_missing: Vec<String> = artifacts::plan_named_missing(hdir, workdir)
                             .into_iter()
                             .filter(|f| !integrity::admits_failure_about(&summary, f))
                             .collect();
@@ -1502,15 +1516,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         && !params.ablated("finish_gate_text_only")
                         && todo_gate_warns < 2
                     {
-                        let (t_done, t_all) = todo_progress(&load_todo(workdir));
+                        let (t_done, t_all) = todo_progress(&load_todo(hdir));
                         if t_all > 0 && t_done < t_all && integrity::verified_at_end(&cmd_records) {
                             log!("[{i}] plan out of sync ({t_done}/{t_all}) but the last command was a passing check; plan synced, finish allowed");
                             todo_gate_warns = 2;
-                            let mut t = load_todo(workdir);
+                            let mut t = load_todo(hdir);
                             for item in &mut t {
                                 item.done = true;
                             }
-                            if let Err(e) = crate::todo::save_todo(workdir, &t) {
+                            if let Err(e) = crate::todo::save_todo(hdir, &t) {
                                 log!("[{i}] todo sync failed: {e}");
                             }
                         } else if t_all > 0
@@ -1528,7 +1542,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             messages.push(Message::user(format!(
                                 "⚠️ Your finish was rejected: the plan (todo) still has {} item(s) not marked done ({t_done}/{t_all}).\nCurrent plan:\n{}\nTick off the completed steps first: todo(action=update, index=step number); if everything is done, sync in one go: todo(action=update, all=true). If steps remain undone, carry on and finish afterwards. When you finish again, summarise the outcome for the user in two or three sentences in summary (what was done, what the artefacts are).",
                                 t_all - t_done,
-                                load_todo_str(workdir)
+                                load_todo_str(hdir)
                             )));
                             messages.push(Message::tool_output(
                                 "[finish deferred: sync the plan with actual progress (todo update) first, then finish.]",
@@ -1782,7 +1796,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             if pruned > 0 {
                                 save!();
                             }
-                            let planned = artifacts::plan_named_missing(workdir);
+                            let planned = artifacts::plan_named_missing(hdir, workdir);
                             let plan_hint = if planned.is_empty() {
                                 String::new()
                             } else {
@@ -1965,14 +1979,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
                 // Stale-plan reminder (never a block, twice at most).
                 if !qa && todo_nudge_warns < 2 && todo_stale >= TODO_STALE_NUDGE {
-                    let (t_done, t_all) = todo_progress(&load_todo(workdir));
+                    let (t_done, t_all) = todo_progress(&load_todo(hdir));
                     if t_all > 0 && t_done < t_all {
                         let stale = todo_stale;
                         todo_nudge_warns += 1;
                         todo_stale = 0;
                         messages.push(Message::user(format!(
                             "⚠️ Plan progress reminder: you have done several steps of real work but the plan is still at {t_done}/{t_all}. Sync after every step: todo(action=update, index=completed step number).\nCurrent plan:\n{}",
-                            load_todo_str(workdir)
+                            load_todo_str(hdir)
                         )));
                         log!("[{i}] 📌 stale-plan reminder ({t_done}/{t_all}, {stale} steps without an update)");
                     }
@@ -1996,8 +2010,8 @@ fn bullet(items: &[String]) -> String {
         .join("\n")
 }
 
-fn first_py_bak(workdir: &Path) -> Option<String> {
-    let mut baks: Vec<String> = std::fs::read_dir(workdir)
+fn first_py_bak(bak_dir: &Path) -> Option<String> {
+    let mut baks: Vec<String> = std::fs::read_dir(bak_dir)
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())

@@ -97,7 +97,7 @@ fn claim_input_fixture_mention() {
 #[test]
 fn plan_named_missing_checks_filesystem_not_checkboxes() {
     let d = tempfile::tempdir().expect("tmp");
-    assert!(plan_named_missing(d.path()).is_empty()); // no todo.json
+    assert!(plan_named_missing(d.path(), d.path()).is_empty()); // no todo.json
     save_todo(
         d.path(),
         &[
@@ -106,9 +106,9 @@ fn plan_named_missing_checks_filesystem_not_checkboxes() {
         ],
     )
     .expect("save");
-    assert_eq!(plan_named_missing(d.path()), vec!["report.md"]);
+    assert_eq!(plan_named_missing(d.path(), d.path()), vec!["report.md"]);
     touch(d.path(), "report.md");
-    assert!(plan_named_missing(d.path()).is_empty());
+    assert!(plan_named_missing(d.path(), d.path()).is_empty());
 
     let d2 = tempfile::tempdir().expect("tmp");
     save_todo(
@@ -119,7 +119,10 @@ fn plan_named_missing_checks_filesystem_not_checkboxes() {
         }],
     )
     .expect("save");
-    assert_eq!(plan_named_missing(d2.path()), vec!["change_log.md"]);
+    assert_eq!(
+        plan_named_missing(d2.path(), d2.path()),
+        vec!["change_log.md"]
+    );
 
     let d3 = tempfile::tempdir().expect("tmp");
     save_todo(
@@ -129,7 +132,7 @@ fn plan_named_missing_checks_filesystem_not_checkboxes() {
         )],
     )
     .expect("save");
-    assert!(plan_named_missing(d3.path()).is_empty());
+    assert!(plan_named_missing(d3.path(), d3.path()).is_empty());
 }
 
 // ---- _EditConvergenceGuard ----

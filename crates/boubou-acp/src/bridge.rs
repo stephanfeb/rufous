@@ -41,6 +41,8 @@ struct Pending {
 #[derive(Debug)]
 pub struct TurnBridge {
     cwd: PathBuf,
+    /// Where the loop keeps `todo.json` (the session's harness directory, or the cwd).
+    plan_dir: PathBuf,
     next_call: u64,
     pending: VecDeque<Pending>,
     /// Whether the model has written prose since its last tool call (then the finish
@@ -53,14 +55,22 @@ pub struct TurnBridge {
 
 impl TurnBridge {
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
+        let cwd: PathBuf = cwd.into();
         Self {
-            cwd: cwd.into(),
+            plan_dir: cwd.clone(),
+            cwd,
             next_call: 0,
             pending: VecDeque::new(),
             text_since_tool: false,
             plan_shown: false,
             max_iterations: false,
         }
+    }
+
+    /// Read the plan from `dir` instead of the cwd (`session::harness_dir`).
+    pub fn with_plan_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.plan_dir = dir.into();
+        self
     }
 
     /// The id of the tool call currently running (the subject of a permission request).
@@ -213,7 +223,7 @@ impl TurnBridge {
     /// The current `todo.json` as an ACP plan: done items completed, the first open item in
     /// progress, the rest pending. Nothing when there never was a plan.
     fn plan_update(&mut self) -> Vec<SessionUpdate> {
-        let items = boubou_core::todo::load_todo(&self.cwd);
+        let items = boubou_core::todo::load_todo(&self.plan_dir);
         if items.is_empty() && !self.plan_shown {
             return vec![];
         }
@@ -229,7 +239,7 @@ impl TurnBridge {
 /// [`TurnBridge::on_event`], with ids `hist_N`; a call with no result on record is marked
 /// failed so the editor does not wait on it; `finish` shows its summary only where the model
 /// wrote no prose in the same message; the plan file in `cwd`, if any, closes the replay.
-pub fn replay_updates(messages: &[Message], cwd: &Path) -> Vec<SessionUpdate> {
+pub fn replay_updates(messages: &[Message], cwd: &Path, plan_dir: &Path) -> Vec<SessionUpdate> {
     let mut out: Vec<SessionUpdate> = Vec::new();
     let mut open: VecDeque<Pending> = VecDeque::new();
     let mut n = 0u64;
@@ -325,7 +335,7 @@ pub fn replay_updates(messages: &[Message], cwd: &Path) -> Vec<SessionUpdate> {
             ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
         )));
     }
-    let items = boubou_core::todo::load_todo(cwd);
+    let items = boubou_core::todo::load_todo(plan_dir);
     if !items.is_empty() {
         out.push(SessionUpdate::Plan(plan_from(&items)));
     }
@@ -729,7 +739,7 @@ mod tests {
             Message::user("And a second turn"),
             Message::assistant("Here is prose, no finish needed."),
         ];
-        let out = replay_updates(&history, cwd);
+        let out = replay_updates(&history, cwd, cwd);
         let kinds: Vec<&str> = out
             .iter()
             .map(|u| match u {
@@ -793,6 +803,34 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_is_read_from_the_plan_dir_not_the_cwd() {
+        let cwd = tempfile::tempdir().expect("tmp");
+        let plan = tempfile::tempdir().expect("tmp");
+        std::fs::write(
+            plan.path().join("todo.json"),
+            r#"[{"item":"one","done":false}]"#,
+        )
+        .expect("todo");
+        let mut b = TurnBridge::new(cwd.path()).with_plan_dir(plan.path());
+        b.on_event(call("todo", json!({"action": "create", "items": ["one"]})));
+        let out = b.on_event(result(
+            "todo",
+            json!({"action": "create", "items": ["one"]}),
+            "[plan: 1 item]",
+            false,
+        ));
+        assert!(
+            out.iter().any(|u| matches!(u, SessionUpdate::Plan(_))),
+            "{out:#?}"
+        );
+        let out = replay_updates(&[Message::user("go")], cwd.path(), plan.path());
+        assert!(
+            matches!(out.last(), Some(SessionUpdate::Plan(_))),
+            "{out:#?}"
+        );
+    }
+
+    #[test]
     fn a_call_without_a_result_is_marked_failed_and_the_plan_comes_last() {
         let d = tempfile::tempdir().expect("tmp");
         let cwd = d.path();
@@ -803,7 +841,7 @@ mod tests {
         .expect("todo");
         let mut asst = Message::assistant("Running it");
         asst.tool_calls = vec![history_call("run_bash", json!({"command": "ls"}))];
-        let out = replay_updates(&[Message::user("go"), asst], cwd);
+        let out = replay_updates(&[Message::user("go"), asst], cwd, cwd);
         assert_eq!(out.len(), 5, "{out:#?}");
         let SessionUpdate::ToolCallUpdate(u) = &out[3] else {
             panic!("{out:#?}")
