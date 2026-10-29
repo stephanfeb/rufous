@@ -757,6 +757,42 @@ score.json files without `axes` fall back to their top-level `model` / `ctx`. Ra
 (lrab-extension-recommendations §5): thinking alone swung opencode's telecom score 0.30 → 0.99,
 so a sweep has to be recorded data, not a note in a chat.
 
+
+## Idle-streak bound (2026-10-29, bead boubou-9c5)
+
+Mechanism, shared. The repeat guards (same tool 5×, same arguments 4×, same web query 6×) never
+fire on a turn whose every call is different but none of them changes anything: acp_1029_104013
+turn 2 made 31 reads, listings and searches before answering a question; acp_1029_183843 turn 2
+("I think we already did that one. It can be closed.") did the asked-for `bd done` in three calls
+and then 44 more reads, `find`s and listings around two empty spec directories until cancelled.
+
+`guards/idle.rs`: an idle call is `read_file`, `list_dir`, `search_files`, the web tools, `todo`,
+any non-producing MCP tool, or `run_bash` with a read-only command; a file write, edit or delete,
+any other command, or `finish` resets the streak. Question route: nudge at 8, and from 12 every
+further non-finish call is refused (two refusals, then the turn ends as a text answer does).
+Task route: a nudge at 12 and at 24, nothing refused, so a long read of a codebase before the
+first edit still runs. Two consecutive `web_search` no-result outputs draw one note. The log
+line `[i] ⚠️ idle streak: N read-only calls …` is counted by `process_metrics.py` (`idle_notes`,
+`idle_streak_max`; `idle` column in the h2h summary). `is_read_only_command` now also accepts
+`2>/dev/null` / `2>&1`, `xargs <read-only>`, `bd show|list|ready|…` and `git status|log|diff|…`,
+and rejects `find … -delete|-exec`; the integrity gate's "mutates" verdict uses the same rule.
+
+Measurement, one controlled replay of today's two turns (`scratchpad/acp_replay.py`, a copy of
+the overshare checkout with its own beads database, qwen3.5:9b, decider off, new binary):
+
+| turn | live (old binary) | replay (new binary) |
+|---|---|---|
+| "What is the next item for us to work on ?" | 3 calls, answered | 12 calls, 97 s, answered (Q&A force) |
+| "I think we already did that one. It can be closed." | 3 calls did the close, then 44 reads; cancelled at 6 min | never closed it; implemented task 1.2 instead (4 create, 4 edit, 1 delete, 32 commands); 57 calls at the 10-min client timeout |
+
+Verdict: the bound works as specified (five loop tests) and fired once in the replay, but it is
+not the lever for this turn. The model was not idle, it was producing: a one-action follow-up ran
+as a full task because the loop treats `Intent::FollowUp` exactly like `Task` and task mode's
+notes after an empty or text turn push it on. That is bead boubou-he2. Two more findings from
+the replay: the question route let `cat > file` through (`run_bash` is allowed there and only the
+file tools are blocked; bead boubou-ldj), and `DEFAULT_NUM_CTX` 131072 means Zed loads qwen3.5:9b
+at 17 GB (bead boubou-0lg).
+
 ## Recency pruning before the ladder (2026-10-29, bead boubou-65d.6)
 
 Mingbird's compaction ladder is all-or-nothing on the old history: L1 clips every old tool

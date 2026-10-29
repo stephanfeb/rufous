@@ -56,6 +56,8 @@ EXIT = re.compile(r"\[exit (-?\d+)\]")
 #   [context compaction L2: 41 → 12 messages]   /   [上下文压缩 L2: 41 → 12 条消息]
 COMPACT = re.compile(r"^\[(?:context compaction|上下文压缩) L(\d)(?P<failed>[^\]]*?(?:failed|失败))?")
 PRUNE = re.compile(r"^\[context pruning: (\d+) older tool result")
+# Idle-streak guard (boubou-9c5): `[12] ⚠️ idle streak: 8 read-only calls … nudge 1` / `… refused (2)`
+IDLE = re.compile(r"^\[\d+\] ⚠️ idle streak: (\d+) read-only calls")
 BANNER = "===== TASK COMPLETE ====="
 FORCED_END = ("[wrap-up]", "[收尾]", "===== MAX ITERATIONS =====")
 # Files the task text names: `shortlist.md`, `clean_data.py`, `fig_arrhenius.png` …
@@ -92,7 +94,7 @@ def parse_transcript(text):
     m = {k: 0 for k, _ in GUARDS}
     m.update(tool_calls=0, failed_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
              compaction_max_level=0, prunes=0, pruned_results=0,
-             budget_nudges=0, forced_end=False, finish_accepted=False,
+             budget_nudges=0, idle_notes=0, idle_streak_max=0, forced_end=False, finish_accepted=False,
              corrector_calls=0, corrector_fixes=0, corrector_giveups=0)
     calls = []
     clean = _strip(text)
@@ -105,6 +107,10 @@ def parse_transcript(text):
             continue
         for a, _b in CTX.findall(line):
             m["peak_prompt_tokens"] = max(m["peak_prompt_tokens"], int(a))
+        idl = IDLE.match(line)
+        if idl:
+            m["idle_notes"] += 1
+            m["idle_streak_max"] = max(m["idle_streak_max"], int(idl.group(1)))
         pr = PRUNE.match(line)
         if pr:
             m["prunes"] += 1

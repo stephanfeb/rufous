@@ -129,23 +129,73 @@ const READ_ONLY_CMDS: [&str; 24] = [
     "cat", "ls", "head", "tail", "grep", "rg", "wc", "find", "echo", "printf", "pwd", "stat",
     "diff", "which", "type", "file", "du", "df", "tree", "sort", "uniq", "cut", "md5sum", "shasum",
 ];
+/// Read-only subcommands of tools that also mutate (`bd done`, `git commit` are not here).
+const READ_ONLY_SUBCOMMANDS: [(&str, &[&str]); 2] = [
+    (
+        "bd",
+        &[
+            "show", "list", "ready", "blocked", "stats", "search", "memories", "stale", "orphans",
+            "dep", "doctor",
+        ],
+    ),
+    (
+        "git",
+        &[
+            "status",
+            "log",
+            "diff",
+            "show",
+            "branch",
+            "blame",
+            "ls-files",
+            "rev-parse",
+            "describe",
+        ],
+    ),
+];
 
 /// A command that only reads: every `;`/`&&`/`|`-separated part starts with a read-only
-/// program and nothing is redirected to a file.
+/// program (or a read-only subcommand of `bd` / `git`, or `xargs` feeding one) and nothing
+/// is redirected to a file. Redirecting stderr to /dev/null or to stdout is not a write.
 pub fn is_read_only_command(command: &str) -> bool {
-    let c = command.trim();
+    let c = command
+        .replace("2>/dev/null", "")
+        .replace("2> /dev/null", "")
+        .replace("2>&1", "")
+        .replace(">/dev/null", "")
+        .replace("> /dev/null", "");
+    let c = c.trim();
     if c.is_empty() || c.contains('>') {
         return false;
     }
     c.split(['\n', ';', '|', '&'])
         .map(str::trim)
         .filter(|p| !p.is_empty())
-        .all(|p| {
-            let p = p.strip_prefix("sudo ").unwrap_or(p);
-            let prog = p.split_whitespace().next().unwrap_or("");
-            let prog = prog.rsplit('/').next().unwrap_or(prog);
-            READ_ONLY_CMDS.contains(&prog)
-        })
+        .all(read_only_part)
+}
+
+fn read_only_part(part: &str) -> bool {
+    let p = part.strip_prefix("sudo ").unwrap_or(part);
+    let mut words = p.split_whitespace();
+    let prog = words.next().unwrap_or("");
+    let prog = prog.rsplit('/').next().unwrap_or(prog);
+    if prog == "xargs" {
+        // `xargs grep -l x`: the program it feeds decides (flags such as -0 skipped).
+        let rest: Vec<&str> = words.skip_while(|w| w.starts_with('-')).collect();
+        return !rest.is_empty() && read_only_part(&rest.join(" "));
+    }
+    if READ_ONLY_CMDS.contains(&prog) {
+        // `find … -delete` / `-exec cmd` act; everything else find does is a read.
+        return prog != "find"
+            || !p
+                .split_whitespace()
+                .any(|w| matches!(w, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"));
+    }
+    if let Some((_, subs)) = READ_ONLY_SUBCOMMANDS.iter().find(|(t, _)| *t == prog) {
+        let sub = words.find(|w| !w.starts_with('-')).unwrap_or("");
+        return subs.contains(&sub);
+    }
+    false
 }
 
 /// The exit code a `run_bash` result reports (`[exit N]` first), else `None`.
@@ -537,6 +587,12 @@ mod tests {
             "grep -n paid data.csv | head",
             "sudo ls",
             "wc -l data.csv; cat result.txt",
+            "find openspec -name \"*.md\" 2>/dev/null | sort",
+            "find openspec -type f 2>/dev/null | xargs grep -l \"bitswap\"",
+            "ls lib 2>&1",
+            "bd show --current",
+            "bd list",
+            "git status --short && git log --oneline -3",
         ] {
             assert!(is_read_only_command(c), "{c}");
         }
@@ -547,6 +603,12 @@ mod tests {
             "rm x",
             "echo hi > f",
             "ls && python x.py",
+            "bd done 9h3",
+            "bd update x --status closed",
+            "git commit -m x",
+            "mkdir -p lib/content",
+            "find . -name x -delete",
+            "xargs rm",
             "",
         ] {
             assert!(!is_read_only_command(c), "{c}");

@@ -170,6 +170,14 @@ def test_pruning_lines_are_counted():
     assert (m["prunes"], m["pruned_results"], m["compactions"]) == (2, 4, 0)
 
 
+def test_idle_streak_lines_are_counted():
+    text = ("[9] ⚠️ idle streak: 8 read-only calls without progress, nudge 1\n"
+            "[14] ⚠️ idle streak: 12 read-only calls on a question, read_file refused (1)\n"
+            "[15] ⚠️ idle streak: 12 read-only calls on a question, list_dir refused (2)\n")
+    m = pm.parse_transcript(text)
+    assert (m["idle_notes"], m["idle_streak_max"]) == (3, 12)
+
+
 def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_THINK", raising=False)
     _cmd, env = lrab_h2h.boubou_cmd(str(tmp_path), "m")

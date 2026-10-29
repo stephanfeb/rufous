@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use boubou_core::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
 use boubou_core::agent::{Agent, AgentEvent, RunParams, ToolRunner};
 use boubou_core::guards::budget::{elapsed_meta_path, load_elapsed, save_elapsed};
+use boubou_core::guards::idle::{QA_IDLE_CAP, QA_IDLE_NUDGE};
 use boubou_core::ollama::{Message, Role};
 use serde_json::{json, Value};
 
@@ -1976,6 +1977,153 @@ fn a_question_may_run_a_command_but_not_write_a_file() {
             .starts_with("[blocked: the user is asking a question; create_file")),
         "create_file still blocked: {tools:#?}"
     );
+}
+
+// ---- idle-streak guard (bead boubou-9c5) ----
+
+/// A distinct read-only call per step: reads, listings, read-only commands, a plan update.
+fn idle_call(n: usize) -> ChatResponse {
+    match n % 4 {
+        0 => ChatResponse::call("", "read_file", json!({"path": format!("f{n}.md")})),
+        1 => ChatResponse::call("", "list_dir", json!({"path": format!("d{n}")})),
+        2 => ChatResponse::call(
+            "",
+            "run_bash",
+            json!({"command": format!("find specs -name '*{n}*' 2>/dev/null | sort")}),
+        ),
+        _ => ChatResponse::call("", "run_bash", json!({"command": format!("bd show x{n}")})),
+    }
+}
+
+#[test]
+fn a_question_turn_is_nudged_at_eight_reads_and_capped_at_twelve() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |n| {
+                if n <= 16 {
+                    idle_call(n)
+                } else {
+                    ChatResponse::text("The next item is overshare-2fp, the content cache.")
+                }
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(
+            vec![Message::user("What is the next item for us to work on ?")],
+            None,
+            None,
+        )
+        .expect("loop");
+    let nudges = user_msgs(&out, "read-only calls on this question");
+    assert_eq!(nudges.len(), 1, "one nudge at {}", QA_IDLE_NUDGE);
+    let ran = out
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content == "[ok]")
+        .count();
+    assert_eq!(ran, QA_IDLE_CAP, "reads executed before the cap");
+    let refused: Vec<&Message> = out
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content.starts_with("[blocked: 12 read-only calls"))
+        .collect();
+    assert_eq!(
+        refused.len(),
+        2,
+        "two refusals then the turn ends: {refused:#?}"
+    );
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+}
+
+#[test]
+fn a_task_turn_is_nudged_at_twelve_and_twenty_four_reads_but_never_refused() {
+    let d = tempfile::tempdir().expect("tmp");
+    let out = run_responder(d.path(), |n| {
+        if n <= 26 {
+            idle_call(n)
+        } else {
+            ChatResponse::call("done", "finish", json!({"summary": "closed overshare-9h3"}))
+        }
+    });
+    let nudges = user_msgs(&out, "calls only read");
+    assert_eq!(nudges.len(), 2, "{nudges:#?}");
+    assert!(nudges[0].content.contains("The last 12 calls"));
+    assert!(nudges[1].content.contains("The last 24 calls"));
+    assert!(nudges[0].content.contains("call finish now"));
+    assert!(out
+        .iter()
+        .all(|m| !(m.role == Role::Tool && m.content.starts_with("[blocked: "))));
+    let ran = out
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content == "[ok]")
+        .count();
+    assert_eq!(ran, 26, "every read ran");
+}
+
+#[test]
+fn a_write_or_a_real_command_resets_the_idle_streak() {
+    let d = tempfile::tempdir().expect("tmp");
+    let out = run_responder(d.path(), |n| match n {
+        9 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "lib/content/cache.dart", "content": "class Cache {}"}),
+        ),
+        18 => ChatResponse::call("", "run_bash", json!({"command": "bd done 9h3"})),
+        n if n <= 26 => idle_call(n),
+        _ => ChatResponse::call("done", "finish", json!({"summary": "done"})),
+    });
+    assert!(
+        user_msgs(&out, "calls only read").is_empty(),
+        "no run of 12 idle calls: {:#?}",
+        user_msgs(&out, "calls only read")
+    );
+}
+
+#[test]
+fn two_empty_web_searches_in_a_row_draw_one_note() {
+    struct NoResults;
+    impl ToolRunner for NoResults {
+        fn run_tool(&mut self, name: &str, args: &Value) -> String {
+            match name {
+                "finish" => "[TASK_COMPLETE] ok".into(),
+                "web_search" => format!(
+                    "[web_search: no relevant results for {:?} (0 hits). Rephrase the query with distinctive words, or web_fetch the site directly.]",
+                    args["query"]
+                ),
+                _ => "[ok]".into(),
+            }
+        }
+    }
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1..=3 => ChatResponse::call(
+                    "",
+                    "web_search",
+                    json!({"query": format!("bd ready overshare {n}")}),
+                ),
+                _ => ChatResponse::text("I could not find it on the web; run `bd ready` locally."),
+            },
+        },
+        NoResults,
+    );
+    let out = a
+        .run(
+            vec![Message::user("Which bead is ready next on the web ?")],
+            None,
+            None,
+        )
+        .expect("loop");
+    assert_eq!(user_msgs(&out, "Two web searches in a row").len(), 1);
 }
 
 // ---- recency pruning in the loop (bead boubou-65d.6) ----

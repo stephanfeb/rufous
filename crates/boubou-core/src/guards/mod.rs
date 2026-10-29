@@ -4,6 +4,7 @@
 pub mod artifacts;
 pub mod budget;
 pub mod edit;
+pub mod idle;
 pub mod integrity;
 pub mod leak;
 pub mod qa;

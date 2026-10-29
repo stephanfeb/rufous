@@ -33,6 +33,7 @@ use crate::decider::{DeciderMode, LayeredDecider};
 use crate::exec::Executor;
 use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
+use crate::guards::idle;
 use crate::guards::qa::Intent;
 use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
@@ -589,6 +590,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut todo_nudge_warns = 0;
         let mut todo_gate_warns = 0;
         const TODO_STALE_NUDGE: usize = 4;
+        // Idle-streak guard (guards/idle.rs, boubou-9c5): consecutive calls that read only.
+        let mut idle_streak: usize = 0;
+        let mut idle_notes: u32 = 0;
+        let mut qa_cap_blocks: u32 = 0;
+        let mut no_result_searches: u32 = 0;
 
         if child {
             log!(
@@ -1191,6 +1197,24 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     messages.push(Message::user(
                         "⚠️ The last call was judged a duplicate (identical to an earlier one); the result will not change. Do not retry it unchanged: check the current state with read_file/list_dir first, or move forward with a different approach.",
                     ));
+                    continue;
+                } else if qa && n != "finish" && idle_streak >= idle::QA_IDLE_CAP {
+                    // Idle cap on the question route (boubou-9c5): the reads have had their
+                    // chance; the answer is due. Two refusals, then the turn ends as a text
+                    // answer would.
+                    qa_cap_blocks += 1;
+                    if qa_cap_blocks >= 2 {
+                        casual_force = true;
+                    }
+                    let res = idle::qa_cap_result(&name, idle_streak);
+                    log!("[{i}] ⚠️ idle streak: {idle_streak} read-only calls on a question, {name} refused ({qa_cap_blocks})");
+                    sink(AgentEvent::ToolResult {
+                        name: name.clone(),
+                        args: args_v.clone(),
+                        output: res.clone(),
+                        blocked: true,
+                    });
+                    messages.push(Message::tool_output(res));
                     continue;
                 } else if qa && face::QA_BLOCKED.contains(&n) && casual_warns < 3 {
                     // Q&A guard: a question never needs files written. Commands are allowed
@@ -1803,6 +1827,40 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         "⚠️ {name} has been called {tool_streak} times in a row and is now disabled. Stop repeating it and get on with the real work (write files / run / call finish)."
                     )));
                     tool_streak = 1;
+                }
+                // Idle streak (boubou-9c5): reads, listings, searches, the plan tool and
+                // read-only commands; anything that changes the world resets it.
+                let idle = if is_mcp_tool(n) {
+                    !mcp_producing
+                } else {
+                    idle::is_idle_call(n, &args)
+                };
+                if idle {
+                    idle_streak += 1;
+                    let note = if qa {
+                        (idle_streak == idle::QA_IDLE_NUDGE).then(|| idle::qa_nudge(idle_streak))
+                    } else {
+                        (idle_streak == idle::TASK_IDLE_NUDGE
+                            || idle_streak == idle::TASK_IDLE_NUDGE_2)
+                            .then(|| idle::task_nudge(idle_streak))
+                    };
+                    if let Some(note) = note {
+                        idle_notes += 1;
+                        log!("[{i}] ⚠️ idle streak: {idle_streak} read-only calls without progress, nudge {idle_notes}");
+                        messages.push(Message::user(note));
+                    }
+                } else {
+                    idle_streak = 0;
+                }
+                // Two searches in a row with nothing relevant: the web is the wrong place.
+                if RESEARCH_ALL.contains(&n) && res.starts_with(idle::NO_RESULTS_MARK) {
+                    no_result_searches += 1;
+                    if no_result_searches == 2 {
+                        log!("[{i}] ⚠️ two web searches in a row found nothing");
+                        messages.push(Message::user(idle::NO_RESULTS_NOTE));
+                    }
+                } else if RESEARCH_ALL.contains(&n) {
+                    no_result_searches = 0;
                 }
                 // Research streak, fingerprint level: a new query is progress.
                 if RESEARCH_ALL.contains(&n) {
