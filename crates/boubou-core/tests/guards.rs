@@ -692,3 +692,71 @@ fn finish_prose_rescue_leaves_ordinary_prose_alone() {
     );
     assert_eq!(parse_finish_prose("Finish:"), None);
 }
+
+#[test]
+fn a_verification_command_runs_a_check_rather_than_mentioning_one() {
+    use boubou_core::guards::integrity::is_verification_command;
+    for cmd in [
+        "python check.py",
+        "python3 -m pytest -q",
+        "python3.12 -m unittest discover",
+        "pytest tests/",
+        "py.test",
+        "python tests/run_all.py",
+        "python verify_output.py",
+        "node test/index.js",
+        "bash ./run_tests.sh",
+        "./check.sh",
+        "./scripts/verify.sh --strict",
+        "cargo test --lib",
+        "cargo check",
+        "cargo clippy --all-targets",
+        "go test ./...",
+        "npm test",
+        "npm run lint",
+        "yarn test:unit",
+        "make check",
+        "dart analyze lib",
+        "flutter test",
+        "ruff check .",
+        "mypy src",
+        "tsc --noEmit",
+        "uv run pytest",
+        "poetry run pytest -x",
+        "npx jest",
+        "timeout 60 python -m pytest",
+        "FOO=1 python check.py",
+        "cd tests && python -m pytest -q",
+        "python -m pytest; echo done",
+    ] {
+        assert!(is_verification_command(cmd), "{cmd}");
+    }
+    // The old regex matched every one of these on the bare word.
+    for cmd in [
+        "cat test_parse.py",
+        "ls tests/",
+        "grep -n assert tests/x.py",
+        "git checkout -b fix",
+        "shasum -c checksums.txt",
+        "sed -n 1,20p test.py",
+        "echo \"tests pass\"",
+        "pip install pytest",
+        "touch test_x.py",
+        "rm check.py",
+        "cd tests && ls",
+        "python fetch.py",
+        "python -c \"print('check')\"",
+        "python -m http.server",
+        "cargo build --release",
+        "npm run build",
+        "npm install",
+        "ruff format .",
+        "tsc",
+        "ls -la",
+        "cat result.txt",
+        "git status --short",
+        "bd done 9h3",
+    ] {
+        assert!(!is_verification_command(cmd), "{cmd}");
+    }
+}

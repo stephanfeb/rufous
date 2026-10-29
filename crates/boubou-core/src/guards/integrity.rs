@@ -62,9 +62,65 @@ static VERIFIED_CLAIM: LazyLock<Regex> = LazyLock::new(|| {
     .expect("regex")
 });
 
-static VERIFICATION_CMD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(pytest|unittest|check|test|verify|validate|lint|nosetests)").expect("regex")
+/// A file name that reads as a test or check script (program or interpreter argument).
+static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:test[_.-]?[\w-]*|[\w-]*[_.-]tests?|tests?|check[\w-]*|[\w-]*[_.-]check|verify[\w-]*|validate[\w-]*|lint[\w-]*|run[_-]?tests?[\w-]*)(?:\.(?:py|js|ts|mjs|cjs|rb|pl|sh|bash|zsh|dart|php|ps1|bat|cmd|exe))?$",
+    )
+    .expect("regex")
 });
+
+/// Programs that verify by being run at all.
+const VERIFIER_PROGRAMS: &[&str] = &[
+    "pytest", "py.test", "nosetests", "nose2", "tox", "nox", "jest", "vitest", "mocha", "ava",
+    "rspec", "phpunit", "ctest", "gotestsum", "flake8", "pylint", "mypy", "pyright", "eslint",
+    "shellcheck",
+];
+/// Tools that verify under one of these subcommands (`cargo build` is not a check).
+const VERIFIER_SUBCOMMANDS: &[(&str, &[&str])] = &[
+    ("cargo", &["test", "check", "clippy", "nextest"]),
+    ("go", &["test", "vet"]),
+    ("npm", &["test", "t"]),
+    ("yarn", &["test"]),
+    ("pnpm", &["test"]),
+    ("bun", &["test"]),
+    ("deno", &["test", "lint", "check"]),
+    ("make", &["test", "check", "lint", "verify", "validate"]),
+    ("dart", &["test", "analyze"]),
+    ("flutter", &["test", "analyze"]),
+    ("mvn", &["test", "verify"]),
+    ("gradle", &["test", "check"]),
+    ("gradlew", &["test", "check"]),
+    ("dotnet", &["test"]),
+    ("swift", &["test"]),
+    ("mix", &["test"]),
+    ("rake", &["test", "spec"]),
+    ("ruff", &["check"]),
+];
+/// Package managers whose named script verifies: `npm run lint`, `yarn test:unit`.
+const SCRIPT_RUNNERS: &[&str] = &["npm", "yarn", "pnpm", "bun"];
+const VERIFY_SCRIPT_PREFIXES: &[&str] =
+    &["test", "lint", "check", "typecheck", "verify", "validate", "ci"];
+/// Interpreters: the script or module they run decides.
+const INTERPRETERS: &[&str] = &[
+    "python", "python3", "python2", "py", "node", "ruby", "perl", "sh", "bash", "zsh", "dart",
+    "php", "deno", "bun",
+];
+const PY_VERIFY_MODULES: &[&str] = &[
+    "pytest", "unittest", "nose", "nose2", "doctest", "mypy", "flake8", "pylint", "ruff", "tox",
+    "pyright",
+];
+/// Words that run the program after them, plus their option words.
+const RUN_WRAPPERS: &[&str] =
+    &["sudo", "env", "time", "timeout", "nice", "nohup", "npx", "bunx", "xvfb-run"];
+const RUN_PREFIX_PAIRS: &[(&str, &str)] = &[
+    ("uv", "run"),
+    ("poetry", "run"),
+    ("pipenv", "run"),
+    ("pdm", "run"),
+    ("hatch", "run"),
+    ("bundle", "exec"),
+];
 
 static EXIT_CODE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[exit (-?\d+)\]").expect("regex"));
@@ -208,7 +264,110 @@ pub fn exit_code_of(result: &str) -> Option<i32> {
 
 /// Does the command look like it verifies something (tests, checks, lint, `python check.py`)?
 pub fn is_verification_command(command: &str) -> bool {
-    VERIFICATION_CMD.is_match(command)
+    command.split(['\n', ';', '&', '|']).any(segment_verifies)
+}
+
+/// Does one shell segment *run* a check? The program in program position (after
+/// `VAR=x`, `sudo`, `timeout 5`, `uv run`, …) must be a test runner, a tool under a verifying
+/// subcommand, an interpreter given a test-named script or module, or a test-named script
+/// executed directly. A word alone proves nothing: the previous rule, `\b(test|check|…)`
+/// with no trailing boundary, took `cat test_parse.py` for a passed test and
+/// `git checkout -b fix` (exit 128) for a failed one (review 2026-10-29).
+fn segment_verifies(seg: &str) -> bool {
+    let words: Vec<&str> = seg
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c| c == '"' || c == '\''))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut i = 0;
+    while i < words.len() && words[i].contains('=') && !words[i].starts_with('-') {
+        i += 1;
+    }
+    loop {
+        let Some(w) = words.get(i) else {
+            return false;
+        };
+        let b = base_of(w);
+        if RUN_WRAPPERS.contains(&b.as_str()) {
+            i += 1;
+            while let Some(a) = words.get(i) {
+                if a.starts_with('-') || a.starts_with(|c: char| c.is_ascii_digit()) || a.contains('=') {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+        if let Some(a) = words.get(i + 1) {
+            if RUN_PREFIX_PAIRS.contains(&(b.as_str(), *a)) {
+                i += 2;
+                continue;
+            }
+        }
+        break;
+    }
+    let Some(prog) = words.get(i) else {
+        return false;
+    };
+    let base = base_of(prog);
+    let args = &words[i + 1..];
+    if VERIFIER_PROGRAMS.contains(&base.as_str()) {
+        return true;
+    }
+    if let Some((_, subs)) = VERIFIER_SUBCOMMANDS.iter().find(|(p, _)| *p == base) {
+        let sub = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
+        if subs.contains(&sub) {
+            return true;
+        }
+        if SCRIPT_RUNNERS.contains(&base.as_str()) {
+            let script = if sub == "run" || sub == "run-script" {
+                args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("")
+            } else {
+                sub
+            };
+            let script = script.to_lowercase();
+            return VERIFY_SCRIPT_PREFIXES.iter().any(|p| script.starts_with(p));
+        }
+    }
+    if base == "tsc" {
+        return args.iter().any(|a| a.eq_ignore_ascii_case("--noemit"));
+    }
+    if INTERPRETERS.contains(&base.as_str()) || base.starts_with("python") {
+        if let Some(k) = args.iter().position(|a| *a == "-m") {
+            return args
+                .get(k + 1)
+                .is_some_and(|m| PY_VERIFY_MODULES.contains(&m.to_lowercase().as_str()));
+        }
+        if args.iter().any(|a| *a == "-c" || *a == "-e") {
+            return false;
+        }
+        let script = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
+        return path_is_test_like(script);
+    }
+    path_is_test_like(prog)
+}
+
+/// Lower-cased file name of a program or script word.
+fn base_of(w: &str) -> String {
+    w.rsplit(['/', '\\']).next().unwrap_or(w).to_lowercase()
+}
+
+/// `check.py`, `test_x.py`, `run_tests.sh`, or any script under a `tests/` directory.
+fn path_is_test_like(p: &str) -> bool {
+    if p.is_empty() {
+        return false;
+    }
+    if TEST_FILE.is_match(&base_of(p)) {
+        return true;
+    }
+    let norm = p.replace('\\', "/");
+    norm.split('/').rev().skip(1).any(|d| {
+        matches!(
+            d.to_lowercase().as_str(),
+            "test" | "tests" | "spec" | "specs" | "__tests__"
+        )
+    })
 }
 
 /// Does the summary claim a verified outcome ("check.py printed OK", "all tests pass", …)?
