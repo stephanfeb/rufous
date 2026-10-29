@@ -12,11 +12,59 @@ Sources: candidates.json (collected from the user's sessions, LRAB prompts, prob
 the test corpora; labelled here by index) plus authored cases that over-sample the heuristic's
 0.5 defaults (short messages, long cue-free messages) and its known blind spots (questions that
 contain task verbs). `uncertain` marks cases where a reasonable labeller could disagree.
+
+Shadow sidecars (bead boubou-acy.3): with `decider.mode` shadow or on, the loop appends one
+line per decision to `<sessions>/<session>.decisions.jsonl`. `--shadow DIR` (default
+~/.ollama_agent/sessions) ingests them: each distinct text becomes a candidate keyed by a short
+hash of the text and written to shadow_candidates.json with the live heuristic and model
+verdicts; the ones labelled in `shadow_labels` below join intent_set.jsonl as
+source `shadow:<session>`, the rest are counted as awaiting a label.
 """
-import json, os
+import argparse, hashlib, glob, json, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 cands = json.load(open(os.path.join(HERE, "candidates.json"), encoding="utf-8"))
+
+# short text hash -> (label, uncertain); keys come from shadow_candidates.json
+shadow_labels = {
+}
+
+
+def shadow_key(text):
+    return hashlib.sha1(" ".join(text.split()).lower().encode("utf-8")).hexdigest()[:8]
+
+
+def load_shadow(sessions_dir):
+    """Distinct texts across every *.decisions.jsonl under sessions_dir, first sighting wins;
+    `n` counts repeats, `verdicts` the heuristic/model pairs seen."""
+    found = {}
+    for path in sorted(glob.glob(os.path.join(sessions_dir, "*.decisions.jsonl"))):
+        session = os.path.basename(path)[: -len(".decisions.jsonl")]
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                text = (r.get("text") or "").strip()
+                if not text:
+                    continue
+                k = shadow_key(text)
+                model = r.get("model") or {}
+                verdict = {"heuristic": (r.get("heuristic") or {}).get("intent"),
+                           "rule": (r.get("heuristic") or {}).get("rule"),
+                           "model": model.get("name"), "model_intent": model.get("intent"),
+                           "probability": model.get("probability"), "acted_on": r.get("acted_on")}
+                if k not in found:
+                    found[k] = {"key": k, "text": text, "has_progress": bool(r.get("has_progress")),
+                                "source": f"shadow:{session}", "ts": r.get("ts"), "n": 0, "verdicts": []}
+                found[k]["n"] += 1
+                if verdict not in found[k]["verdicts"]:
+                    found[k]["verdicts"].append(verdict)
+    return list(found.values())
 
 Q, T, F = "question", "task", "follow_up"
 # index in candidates.json -> (label, uncertain)
@@ -193,24 +241,52 @@ for t in ["Run ls -la and show me the output", "Execute python -m pytest -q", "R
 for t in ["thanks, that's all", "great work", "bye", "perfect", "lovely, thank you"]:
     a(t, Q, has_progress=True, group="smalltalk_progress")
 
-rows = []
-n = 0
-for i, c in enumerate(cands):
-    if i not in collected:
-        continue
-    label, unc = collected[i]
-    n += 1
-    rows.append({"id": f"c{i:03d}", "text": c["text"], "has_progress": progress_override.get(i, c["has_progress"]),
-                 "label": label, "uncertain": unc, "source": c["source"]})
-for j, c in enumerate(authored):
-    rows.append({"id": f"a{j:03d}", **c})
+def build(shadow_dir, out_dir, labels=None):
+    """Write intent_set.jsonl (and shadow_candidates.json when a shadow dir is given) into
+    out_dir; returns (rows, shadow_candidates, awaiting)."""
+    labels = shadow_labels if labels is None else labels
+    rows = []
+    n = 0
+    for i, c in enumerate(cands):
+        if i not in collected:
+            continue
+        label, unc = collected[i]
+        n += 1
+        rows.append({"id": f"c{i:03d}", "text": c["text"], "has_progress": progress_override.get(i, c["has_progress"]),
+                     "label": label, "uncertain": unc, "source": c["source"]})
+    for j, c in enumerate(authored):
+        rows.append({"id": f"a{j:03d}", **c})
+    shadow, awaiting = [], 0
+    if shadow_dir and os.path.isdir(shadow_dir):
+        shadow = load_shadow(shadow_dir)
+        for c in shadow:
+            if c["key"] in labels:
+                label, unc = labels[c["key"]]
+                rows.append({"id": f"s{c['key']}", "text": c["text"], "has_progress": c["has_progress"],
+                             "label": label, "uncertain": unc, "source": c["source"]})
+            else:
+                awaiting += 1
+        with open(os.path.join(out_dir, "shadow_candidates.json"), "w", encoding="utf-8") as f:
+            json.dump(shadow, f, ensure_ascii=False, indent=1)
+    out = os.path.join(out_dir, "intent_set.jsonl")
+    with open(out, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    import collections
+    print(f"{len(rows)} cases ({n} collected, {len(authored)} authored, {len(rows) - n - len(authored)} shadow) -> {out}")
+    print("labels:", dict(collections.Counter(r["label"] for r in rows)))
+    print("uncertain:", sum(r["uncertain"] for r in rows))
+    print("groups:", dict(collections.Counter(r["source"].split(":")[0] + (":" + r["source"].split(":")[1] if r["source"].startswith("authored") else "") for r in rows)))
+    if shadow:
+        print(f"shadow: {len(shadow)} distinct texts from {shadow_dir}, {awaiting} awaiting a label in shadow_labels "
+              f"(keys in {os.path.join(out_dir, 'shadow_candidates.json')})")
+    return rows, shadow, awaiting
 
-out = os.path.join(HERE, "intent_set.jsonl")
-with open(out, "w", encoding="utf-8") as f:
-    for r in rows:
-        f.write(json.dumps(r, ensure_ascii=False) + "\n")
-import collections
-print(f"{len(rows)} cases ({n} collected, {len(authored)} authored) -> {out}")
-print("labels:", dict(collections.Counter(r["label"] for r in rows)))
-print("uncertain:", sum(r["uncertain"] for r in rows))
-print("groups:", dict(collections.Counter(r["source"].split(":")[0] + (":" + r["source"].split(":")[1] if r["source"].startswith("authored") else "") for r in rows)))
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--shadow", default=os.path.join(os.path.expanduser("~"), ".ollama_agent", "sessions"),
+                    help="sessions dir holding *.decisions.jsonl; '' = skip")
+    ap.add_argument("--out", default=HERE, help="where intent_set.jsonl and shadow_candidates.json go")
+    args = ap.parse_args()
+    build(args.shadow, args.out)

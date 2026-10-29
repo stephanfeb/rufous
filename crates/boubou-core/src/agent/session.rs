@@ -12,6 +12,9 @@
 //! - `<sessions>/<name>.meta.json`: merged metadata (`updated`, `task`, `status`, `msgs`,
 //!   `workdir`, plus whatever the GUI wrote, e.g. `title`).
 //! - `<sessions>/<name>.todo.json`: snapshot of the workdir plan, bound to the session.
+//! - `<sessions>/<name>.decisions.jsonl`: one line per System One decision when the decider
+//!   is in `shadow` or `on` mode (Boubou addition, bead boubou-acy.3); the labelled-set
+//!   builder ingests these as `shadow:<name>` candidates.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -73,6 +76,24 @@ pub fn load_checkpoint_from(p: &Path) -> Option<Vec<Message>> {
             let _ = std::fs::rename(p, p.with_extension("json.corrupt"));
             None
         }
+    }
+}
+
+/// The decider sidecar of a session.
+pub fn decisions_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.decisions.jsonl"))
+}
+
+/// Append one decision record to the session's sidecar. Best effort: a failure to write the
+/// labelling trace must never touch the run.
+pub fn append_decision(dir: &Path, name: &str, record: &Value) {
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(decisions_path(dir, name))
+    {
+        let _ = writeln!(f, "{record}");
     }
 }
 

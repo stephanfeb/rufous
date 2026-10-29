@@ -176,6 +176,48 @@ pub struct IntentDecision {
 }
 
 impl IntentDecision {
+    /// One sidecar line (`<sessions>/<session>.decisions.jsonl`, bead boubou-acy.3): the
+    /// text and progress state the heuristic saw, both verdicts and what the loop acted on,
+    /// so shadow runs become labelling candidates without replaying transcripts.
+    pub fn record(&self, mode: DeciderMode, session: &str) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "ts": chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "session": session,
+            "mode": mode,
+            "text": self.heuristic.text,
+            "has_progress": self.heuristic.has_progress,
+            "heuristic": {
+                "intent": self.heuristic.intent.as_str(),
+                "rule": self.heuristic.rule,
+                "confidence": self.heuristic.confidence,
+            },
+            "model": serde_json::Value::Null,
+            "latency_ms": self.latency_ms,
+            "acted_on": self.intent.as_str(),
+            "acted_on_model": self.acted_on_model,
+        });
+        match &self.local {
+            LocalOutcome::NotAsked => {}
+            LocalOutcome::Answered {
+                model,
+                intent,
+                probability,
+                confidence,
+            } => {
+                v["model"] = serde_json::json!({
+                    "name": model,
+                    "intent": intent.as_str(),
+                    "probability": probability,
+                    "confidence": confidence,
+                });
+            }
+            LocalOutcome::Failed(e) => {
+                v["model_error"] = serde_json::Value::String(e.clone());
+            }
+        }
+        v
+    }
+
     /// One log line: `intent=question ← heuristic (trailing `?`, 1.00); d1: question 0.89 (290 ms)`.
     pub fn describe(&self) -> String {
         let mut s = format!(

@@ -526,6 +526,26 @@ disagreement rate accumulates; the next evaluation reruns `decider_eval.py` on t
 shadow-collected cases only. The one robust finding is the reversal rate: the model changes its
 mind on a rephrasing half as often as the keyword lists do.
 
+
+### Shadow decisions sidecar (2026-10-29, bead boubou-acy.3)
+
+Bug: shadow mode's only output was the `[decider]` log line, which no surface kept (CLI stderr,
+web log pane, ACP tracing at info under a default `warn` filter), so the 2026-10-29 morning of
+shadow mode produced zero traces and labels had to be rebuilt offline with `boubou decide`,
+losing the live `has_progress` state and the live model answer.
+
+Fix, mechanism: `IntentDecision::record()` serialises the decision and the loop appends it to
+`<sessions>/<session>.decisions.jsonl` (`session::append_decision`) whenever `decider.mode` is
+not `off`; a run without a session name shares `_unnamed.decisions.jsonl`. Fields: `ts`,
+`session`, `mode`, `text`, `has_progress`, `heuristic{intent,rule,confidence}`,
+`model{name,intent,probability,confidence}` or `model_error`, `latency_ms`, `acted_on`,
+`acted_on_model`. Off mode writes nothing, so every existing run is byte-identical.
+`bench/decider/build_intent_set.py` gained `--shadow DIR` (default `~/.ollama_agent/sessions`)
+and `--out`: distinct texts become `shadow_candidates.json` (first sighting, repeat count, every
+heuristic/model verdict pair seen), labelled ones (`shadow_labels`, keyed by an 8-hex hash of
+the normalised text) join `intent_set.jsonl` as `shadow:<session>`. `bench/test_decider_set.py`
+covers both. The committed 306-case set is unchanged.
+
 ## The system prompt follows the route (2026-10-29, bead boubou-c4b)
 
 Found in a web chat session (`chat_1029_070632`): the first turn was a question, so the loop swapped

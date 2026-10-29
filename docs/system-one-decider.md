@@ -214,8 +214,16 @@ Step 1 as shipped:
   Children never ask. `boubou doctor` probes the configured model with the 2026-10-28 chat
   sentence and prints the latency.
 
-Shadow mode is the labelled-set collector section 5 asks for: every run's transcript records
-the heuristic's verdict, its rule, and the model's verdict side by side. Adoption (`on`) waits on
+Shadow mode is the labelled-set collector section 5 asks for. In `shadow` and `on` the loop
+appends one JSON line per decision to `<sessions>/<session>.decisions.jsonl` (bead
+boubou-acy.3): timestamp, the text and `has_progress` the heuristic saw, the heuristic's
+intent/rule/confidence, the model's name/intent/probability/confidence and latency (or
+`model_error`), and `acted_on`. The log line alone reached no file on any surface (the CLI's
+stderr, the web log pane, ACP's tracing under a `warn` filter), so a morning of shadow mode
+left nothing to label. `bench/decider/build_intent_set.py --shadow DIR` turns the sidecars
+into `shadow_candidates.json` keyed by a short text hash; label them in `shadow_labels` and
+they join the set as `shadow:<session>`. Swap `decider.model` to compare decision models on
+the same sessions; the sidecar records which model answered. Adoption (`on`) waits on
 that comparison; the acceptance numbers in section 5 stand.
 
 ### Measurement, 29 October 2026

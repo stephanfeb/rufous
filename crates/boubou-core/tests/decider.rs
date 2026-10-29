@@ -86,12 +86,25 @@ fn run_with(mode: DeciderMode, d: &Path) -> Vec<Message> {
     let mut a = Agent::new(RunParams::plain("gemma4:12b", d), Talk, OkTools).with_decider(
         LayeredDecider::new(&cfg, Box::new(Always(Intent::Question, 0.93))),
     );
+    a.sessions_dir = d.join("sessions");
     a.run(
         vec![Message::system("sys"), Message::user(GUESS)],
-        None,
+        Some("chat_1029_120000"),
         None,
     )
     .expect("loop")
+}
+
+/// The decisions sidecar of the session `run_with` names.
+fn sidecar(d: &Path) -> Vec<Value> {
+    let p = d.join("sessions").join("chat_1029_120000.decisions.jsonl");
+    std::fs::read_to_string(p)
+        .map(|s| {
+            s.lines()
+                .map(|l| serde_json::from_str(l).expect("json line"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn user_msgs<'a>(msgs: &'a [Message], needle: &str) -> Vec<&'a Message> {
@@ -167,6 +180,10 @@ fn is_qa_is_the_heuristic_intent_being_question() {
 fn off_mode_runs_the_task_loop_exactly_as_before() {
     let d = tempfile::tempdir().expect("tmp");
     let out = run_with(DeciderMode::Off, d.path());
+    assert!(
+        sidecar(d.path()).is_empty(),
+        "off mode leaves no decisions sidecar"
+    );
     // Text-only replies in task mode draw the "continue with tools" note.
     assert!(!user_msgs(&out, "Continue:").is_empty());
     assert!(user_msgs(&out, "Your answer is already sufficient").is_empty());
@@ -178,6 +195,23 @@ fn shadow_mode_changes_nothing_but_records_the_model() {
     let out = run_with(DeciderMode::Shadow, d.path());
     assert!(!user_msgs(&out, "Continue:").is_empty());
     assert!(user_msgs(&out, "Your answer is already sufficient").is_empty());
+    // The decision is persisted beside the session files (boubou-acy.3): one line per turn
+    // with both verdicts, the live model answer and what the loop acted on.
+    let lines = sidecar(d.path());
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let r = &lines[0];
+    assert_eq!(r["session"], "chat_1029_120000");
+    assert_eq!(r["mode"], "shadow");
+    assert_eq!(r["text"], GUESS);
+    assert_eq!(r["has_progress"], false);
+    assert_eq!(r["heuristic"]["intent"], "task");
+    assert_eq!(r["heuristic"]["confidence"], 0.5);
+    assert_eq!(r["model"]["name"], "always");
+    assert_eq!(r["model"]["intent"], "question");
+    assert_eq!(r["model"]["probability"], 0.93);
+    assert_eq!(r["acted_on"], "task");
+    assert_eq!(r["acted_on_model"], false);
+    assert!(r["ts"].as_str().is_some_and(|t| t.len() >= 19));
     // The decision itself is visible through the decider.
     let cfg = DeciderConfig {
         mode: DeciderMode::Shadow,
@@ -200,6 +234,11 @@ fn shadow_mode_changes_nothing_but_records_the_model() {
 fn on_mode_routes_a_guessed_task_to_qa_when_the_model_says_question() {
     let d = tempfile::tempdir().expect("tmp");
     let out = run_with(DeciderMode::On, d.path());
+    let lines = sidecar(d.path());
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["mode"], "on");
+    assert_eq!(lines[0]["acted_on"], "question");
+    assert_eq!(lines[0]["acted_on_model"], true);
     assert!(user_msgs(&out, "Continue:").is_empty());
     assert!(!user_msgs(&out, "Your answer is already sufficient").is_empty());
     assert!(out[0].content.contains("chatting with the user"));

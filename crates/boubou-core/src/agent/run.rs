@@ -29,7 +29,7 @@ use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
 use super::{AgentEvent, RunParams};
-use crate::decider::LayeredDecider;
+use crate::decider::{DeciderMode, LayeredDecider};
 use crate::exec::Executor;
 use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
@@ -603,6 +603,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let intent = decider.intent_of(&messages);
         if !child {
             log!("[decider] {}", intent.describe());
+            // Shadow and on modes leave a labelling trace per session (boubou-acy.3): the log
+            // line alone reached no file on any surface. A run without a session name shares
+            // one sidecar.
+            if decider.mode() != DeciderMode::Off {
+                let name = session.unwrap_or("_unnamed");
+                session::append_decision(sessions_dir, name, &intent.record(decider.mode(), name));
+            }
         }
         let qa = !child && intent.intent == Intent::Question;
         // The system prompt follows the route, every turn. A continued session (the web UI
