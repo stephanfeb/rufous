@@ -428,3 +428,59 @@ fn pruning_shrinks_long_arguments_of_old_calls_and_keeps_facts_for_each_tool() {
         .content
         .starts_with("[earlier] read_file(b.txt) → BBBB"));
 }
+
+#[test]
+fn a_pruned_command_result_keeps_the_last_output_line_not_the_stderr_tag() {
+    let cases = [
+        (
+            "[exit 0]\nSTDOUT:\n...\n60 passed in 0.31s\nSTDERR:\n",
+            "[earlier] run_bash(python -m pytest -q) → [exit 0] … 60 passed in 0.31s",
+        ),
+        (
+            "[exit 1]\nSTDOUT:\n...\n1 failed, 59 passed\nSTDERR:\n",
+            "[earlier] run_bash(python -m pytest -q) → [exit 1] … 1 failed, 59 passed",
+        ),
+        (
+            "[exit 1]\nSTDOUT:\n\nSTDERR:\nTraceback (most recent call last):\n  File x\nValueError: bad",
+            "[earlier] run_bash(python -m pytest -q) → [exit 1] … ValueError: bad",
+        ),
+        (
+            "[exit 0]\nSTDOUT:\nok\nSTDERR:\nDeprecationWarning: x",
+            "[earlier] run_bash(python -m pytest -q) → [exit 0] … ok",
+        ),
+        (
+            "[exit 0]\nSTDOUT:\nwrote out.txt\nSTDERR:\n\n[auto-backed up: out.txt]",
+            "[earlier] run_bash(python -m pytest -q) → [exit 0] … wrote out.txt",
+        ),
+        (
+            "[exit 0]\nSTDOUT (tail):\n...\n60 passed\nSTDERR (tail):\n\n[very long command output was trimmed to its tail (summary/errors) to protect a tight context budget. For the full output run `command > out.txt 2>&1` with run_bash and read it in parts with read_file.]",
+            "[earlier] run_bash(python -m pytest -q) → [exit 0] … 60 passed",
+        ),
+        (
+            "[exit 0]\nSTDOUT:\n\nSTDERR:\n",
+            "[earlier] run_bash(python -m pytest -q) → [exit 0]",
+        ),
+    ];
+    for (result, want) in cases {
+        let mut msgs = vec![Message::system("sys"), Message::user("task")];
+        msgs.extend(call_pair(
+            0,
+            "run_bash",
+            json!({"command": "python -m pytest -q"}),
+            result,
+        ));
+        for i in 1..7 {
+            msgs.extend(call_pair(i, "list_dir", json!({"path": "."}), "f.txt"));
+        }
+        assert_eq!(prune_history(&mut msgs, 5), 2);
+        let first = msgs.iter().find(|m| m.role == Role::Tool).expect("tool");
+        assert_eq!(first.content, want, "for {result:?}");
+    }
+}
+
+#[test]
+fn pruning_with_keep_zero_is_off_and_does_not_panic() {
+    let mut msgs = history_with_pairs(3);
+    assert_eq!(prune_history(&mut msgs, 0), 0);
+    assert!(msgs.iter().all(|m| !m.content.starts_with(PRUNED_MARK)));
+}

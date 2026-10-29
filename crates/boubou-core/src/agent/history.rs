@@ -93,12 +93,59 @@ fn call_target(args: &Value) -> Option<String> {
     })
 }
 
+/// The `[exit N]\nSTDOUT:\n…\nSTDERR:\n…` shape of `format_bash_out`, split into the exit
+/// line and the two streams (the `(tail)` variant included). Lines the harness appends after
+/// the streams (`[auto-backed up: …]`, `[hint: …]`) are dropped from stderr.
+fn bash_sections(result: &str) -> Option<(&str, &str, &str)> {
+    let exit = result.lines().next()?.trim();
+    if !exit.starts_with("[exit ") {
+        return None;
+    }
+    let rest = &result[result.find('\n').map(|i| i + 1).unwrap_or(result.len())..];
+    let (out_tag, err_tag) = if rest.starts_with("STDOUT (tail):\n") {
+        ("STDOUT (tail):\n", "\nSTDERR (tail):\n")
+    } else {
+        ("STDOUT:\n", "\nSTDERR:\n")
+    };
+    let body = rest.strip_prefix(out_tag)?;
+    let (stdout, stderr) = match body.find(err_tag) {
+        Some(i) => (&body[..i], &body[i + err_tag.len()..]),
+        None => (body, ""),
+    };
+    let stderr = match stderr.find("\n[") {
+        Some(i) if stderr[i + 1..].trim_end().ends_with(']') => &stderr[..i],
+        _ => stderr,
+    };
+    let stderr = if stderr.trim_start().starts_with('[') && stderr.trim_end().ends_with(']') {
+        ""
+    } else {
+        stderr
+    };
+    Some((exit, stdout, stderr))
+}
+
 /// One line that keeps what a tool result established: the tool and its target, the
 /// result's first line and, when different, its last (a test runner's `60 passed, 0 failed`,
-/// a command's exit status, an edit's confirmation).
+/// a command's exit status, an edit's confirmation). A command result keeps its exit line
+/// and the last line of its output: stdout's, or stderr's when the command failed and wrote
+/// there. The old rule took the result's literal last line, which for a command with an
+/// empty stderr is the bare `STDERR:` tag, so a pruned `python -m pytest` read
+/// `[exit 0] … STDERR:` and the `60 passed` was gone (review 2026-10-29).
 fn fact_line(tool: &str, args: &Value, result: &str) -> String {
-    let head = first_line(result);
-    let tail = last_line(result);
+    let (head, tail) = match bash_sections(result) {
+        Some((exit, stdout, stderr)) => {
+            let failed = !exit.starts_with("[exit 0]");
+            let tail = if failed && !stderr.trim().is_empty() {
+                last_line(stderr)
+            } else if !stdout.trim().is_empty() {
+                last_line(stdout)
+            } else {
+                last_line(stderr)
+            };
+            (exit, tail)
+        }
+        None => (first_line(result), last_line(result)),
+    };
     let mut out = format!("{PRUNED_MARK} {tool}");
     if let Some(t) = call_target(args) {
         out.push_str(&format!("({t})"));
@@ -142,7 +189,9 @@ pub fn prune_history(messages: &mut [Message], keep: usize) -> usize {
         }
     }
     let tool_idx: Vec<usize> = (0..n).filter(|&i| messages[i].role == Role::Tool).collect();
-    if tool_idx.len() <= keep {
+    // `keep == 0` is "off" (`RunParams::prune_keep`), not "prune everything": the cutoff
+    // index below would otherwise run off the end.
+    if keep == 0 || tool_idx.len() <= keep {
         return 0;
     }
     let cutoff = tool_idx[tool_idx.len() - keep]; // first index that stays verbatim
