@@ -499,6 +499,29 @@ disagreement rate accumulates; the next evaluation reruns `decider_eval.py` on t
 shadow-collected cases only. The one robust finding is the reversal rate: the model changes its
 mind on a rephrasing half as often as the keyword lists do.
 
+## The system prompt follows the route (2026-10-29, bead boubou-c4b)
+
+Found in a web chat session (`chat_1029_070632`): the first turn was a question, so the loop swapped
+in `CHAT_SYSTEM`; the web runner continues a session by appending the new user turn to the saved
+history, and the task branch of the loop only computed tool categories. Every later task-routed
+turn in that session therefore ran under the chat instructions ("answer briefly, use tools only to
+look something up") with the task-mode guards and finish gates on top: a text answer, the continue
+note, a mid-answer `web_search`, a revised answer, three nudges, then gate 6 quoting a one-line
+chat message as the task brief. Mingbird has the same shape; the fix is for the user's sake, not
+for parity.
+
+Mechanism fix, shared code: `task_system()` builds the task prompt (triggered skills, `SYSTEM.md`,
+unattended line, profile note) for both `task_messages` (fresh run) and a per-turn rebuild in
+`run()` when the history already holds an assistant message and the route is task. Skills are
+matched on the opening task plus this turn's input so a prefilled skill stays and a new trigger can
+add one. The saved history's system message is replaced on the next turn, so a session file no
+longer pins a prompt. Children keep their sandbox prompt; a fresh run is untouched. Tests:
+`task_turn_after_a_question_gets_the_task_prompt_back`, `question_turn_after_a_task_gets_the_chat_prompt`.
+
+The misroute that exposed it ("Are there any good libp2p implementations in Dart ? I want to build
+a flutter application" → task on the hint `build`; d1 said question at p=0.52) is a decider-set
+case, not a heuristic patch.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08

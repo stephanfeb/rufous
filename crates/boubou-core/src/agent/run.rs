@@ -248,6 +248,40 @@ fn first_user_text(messages: &[Message]) -> String {
 
 type Sink = Box<dyn FnMut(AgentEvent) + Send>;
 
+/// The task system prompt for `task`: the skills its text triggers (capped by the
+/// profile), the workdir's `SYSTEM.md`, the unattended line and the profile note. Shared
+/// by [`Agent::task_messages`] (a fresh run) and the per-turn rebuild in [`Agent::run`]
+/// (a continued session), so the prompt is a function of this turn's route, never of what
+/// the previous turn happened to leave in the history.
+fn task_system(params: &RunParams, skill_dirs: &[PathBuf], sink: &mut Sink, task: &str) -> String {
+    let set = crate::skills::SkillSet::discover(skill_dirs);
+    let mut skills = Vec::new();
+    for s in set.for_task_capped(task, params.profile.max_prefill_skills) {
+        match s.load() {
+            Ok(body) => skills.push((s.name.clone(), body)),
+            Err(e) => sink(AgentEvent::Log(format!(
+                "[skill {} unreadable: {e}]",
+                s.name
+            ))),
+        }
+    }
+    if !skills.is_empty() {
+        let names: Vec<&str> = skills.iter().map(|(n, _)| n.as_str()).collect();
+        sink(AgentEvent::Log(format!(
+            "[skills in effect: {}]",
+            names.join(", ")
+        )));
+    }
+    let opts = prompt::PromptOptions {
+        workdir: Some(&params.workdir),
+        system_file: params.system_file.as_deref(),
+        unattended: params.unattended,
+        skills,
+        profile_note: params.profile.prompt_note.as_deref(),
+    };
+    prompt::system_prompt(&opts)
+}
+
 /// The loop plus everything it owns between runs: tool face, transcript cursor, backend.
 pub struct Agent<B, T> {
     pub params: RunParams,
@@ -390,8 +424,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
     }
 
     /// Build the opening message list for a fresh task. Skills whose triggers match the
-    /// task (or that autoload) and the workdir's `SYSTEM.md` enter the system prompt here;
-    /// a resumed session keeps the prompt it started with.
+    /// task (or that autoload) and the workdir's `SYSTEM.md` enter the system prompt here.
+    /// A continued session rebuilds the prompt per turn in [`Agent::run`] from the route.
     pub fn task_messages(&mut self, task: &str) -> Vec<Message> {
         if self.params.child_mode {
             // A dispatched child: the minimal prompt, no platform block.
@@ -400,35 +434,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 Message::user(task),
             ];
         }
-        let set = crate::skills::SkillSet::discover(&self.skill_dirs);
-        let mut skills = Vec::new();
-        for s in set.for_task_capped(task, self.params.profile.max_prefill_skills) {
-            match s.load() {
-                Ok(body) => skills.push((s.name.clone(), body)),
-                Err(e) => (self.sink)(AgentEvent::Log(format!(
-                    "[skill {} unreadable: {e}]",
-                    s.name
-                ))),
-            }
-        }
-        if !skills.is_empty() {
-            let names: Vec<&str> = skills.iter().map(|(n, _)| n.as_str()).collect();
-            (self.sink)(AgentEvent::Log(format!(
-                "[skills in effect: {}]",
-                names.join(", ")
-            )));
-        }
-        let opts = prompt::PromptOptions {
-            workdir: Some(&self.params.workdir),
-            system_file: self.params.system_file.as_deref(),
-            unattended: self.params.unattended,
-            skills,
-            profile_note: self.params.profile.prompt_note.as_deref(),
-        };
-        vec![
-            Message::system(prompt::system_prompt(&opts)),
-            Message::user(task),
-        ]
+        let sys = task_system(&self.params, &self.skill_dirs, &mut self.sink, task);
+        vec![Message::system(sys), Message::user(task)]
     }
 
     /// `agent_loop(model, messages, workdir, session, budget_sec)`. Returns the final
@@ -451,7 +458,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             stop,
             parallel,
             engine: _,
-            skill_dirs: _,
+            skill_dirs,
             decider,
         } = self;
         let child = params.child_mode;
@@ -573,6 +580,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             log!("[decider] {}", intent.describe());
         }
         let qa = !child && intent.intent == Intent::Question;
+        // The system prompt follows the route, every turn. A continued session (the web UI
+        // appends the new user turn to the saved history) otherwise keeps whatever the
+        // previous turn left: after a question that is the chat prompt, and a task turn
+        // would then run "answer briefly, use tools only to look something up" under the
+        // task-mode guards and finish gates (bead boubou-c4b). A fresh run already carries
+        // the task prompt from `task_messages`; children keep their sandbox prompt.
+        let continued = messages.iter().any(|m| m.role == Role::Assistant);
         let cats: Option<BTreeSet<String>> = if qa {
             let cs = prompt::chat_system(Some(workdir));
             let mut m = vec![Message::system(cs)];
@@ -580,6 +594,20 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             messages = m;
             None
         } else {
+            if !child && continued {
+                // Skills are matched on the opening task and on this turn's input, so a
+                // skill prefilled for the original brief stays and a new trigger can add one.
+                let skill_text = format!(
+                    "{}\n{}",
+                    first_user_text(&messages),
+                    qa::task_routing_text(&messages)
+                );
+                let sys = task_system(params, skill_dirs, sink, &skill_text);
+                let mut m = vec![Message::system(sys)];
+                m.extend(messages.into_iter().filter(|m| m.role != Role::System));
+                messages = m;
+                log!("[prompt] task prompt rebuilt for this turn of a continued session");
+            }
             Some(face::route_categories(&qa::task_routing_text(&messages)))
         };
         // Parallel dispatch hook (harness layer; Q&A, children and resumed runs skip it —

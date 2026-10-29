@@ -1761,3 +1761,85 @@ fn gemma4_profile_reads_a_trailing_finish_line_as_the_finish_call() {
         "the prose turn stayed prose"
     );
 }
+
+// ---- the system prompt follows the route, every turn (bead boubou-c4b) ----
+
+#[test]
+fn task_turn_after_a_question_gets_the_task_prompt_back() {
+    // Turn 1 is a question: the loop swaps in the chat prompt and the history keeps it,
+    // which is what the web UI saves and continues from.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |_| ChatResponse::text("A distributed hash table spreads keys over nodes."),
+        },
+        OkTools,
+    );
+    let mut hist = a
+        .run(
+            start("Can you tell me how a distributed hashtable works ?"),
+            None,
+            None,
+        )
+        .expect("loop");
+    assert!(hist[0].role == Role::System && hist[0].content.contains("chatting with the user"));
+
+    // Turn 2 is a task on the same history: the task prompt must be back, once, in front.
+    hist.push(Message::user(
+        "Write a three-bullet summary of that explanation for me",
+    ));
+    let mut b = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |_| {
+                ChatResponse::call(
+                    "- keys hash to nodes\n- lookups hop closer\n- replication for churn",
+                    "finish",
+                    json!({"summary": "Summarised the DHT explanation in three bullets in the reply text."}),
+                )
+            },
+        },
+        OkTools,
+    );
+    let out = b.run(hist, None, None).expect("loop");
+    let sys: Vec<&Message> = out.iter().filter(|m| m.role == Role::System).collect();
+    assert_eq!(sys.len(), 1, "exactly one system message");
+    assert!(
+        sys[0].content.contains("autonomous AI agent"),
+        "task prompt expected, got: {}",
+        &sys[0].content[..80.min(sys[0].content.len())]
+    );
+    assert!(!sys[0].content.contains("chatting with the user"));
+    assert!(
+        out.iter()
+            .any(|m| m.role == Role::User && m.content.contains("Can you tell me how")),
+        "history kept"
+    );
+    // The question turn before it ran under the chat prompt and said so: no task-mode nudges.
+    assert!(user_msgs(&out, "Continue: keep making").is_empty());
+}
+
+#[test]
+fn question_turn_after_a_task_gets_the_chat_prompt() {
+    // The inverse already worked; pin it so the two branches stay symmetric.
+    let d = tempfile::tempdir().expect("tmp");
+    let _ = std::fs::write(d.path().join("m08.py"), "def f():\n    return 1\n");
+    let mut hist = scripted(d.path(), &[]);
+    assert!(hist[0].role == Role::System && hist[0].content == "sys");
+    hist.push(Message::user("Are you confident about that ?"));
+    let mut b = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |_| ChatResponse::text("Yes: the test passed afterwards."),
+        },
+        OkTools,
+    );
+    let out = b.run(hist, None, None).expect("loop");
+    let sys: Vec<&Message> = out.iter().filter(|m| m.role == Role::System).collect();
+    assert_eq!(sys.len(), 1);
+    assert!(sys[0].content.contains("chatting with the user"));
+}
