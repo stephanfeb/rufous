@@ -147,8 +147,19 @@ const CAT_KEYWORDS: [(&str, &[&str]); 5] = [
 
 /// Tools that reach the network; hidden in offline mode.
 pub const ONLINE_TOOLS: [&str; 4] = ["web_search", "web_fetch", "web_search_multi", "batch_tools"];
-/// Q&A mode sees only read-only tools (`_chat_tool_defs`).
-pub const CHAT_TOOLS: [&str; 4] = ["read_file", "list_dir", "web_search", "web_fetch"];
+/// The question route's tools (`_chat_tool_defs`): the read-only set plus `run_bash`, because
+/// a question about the state of a repo, a backlog or a build is a command by nature
+/// (`git status`, `bd ready`, `flutter pub get`), and a model with no shell on a question turn
+/// invents one: web_search used as a shell, 8 times in one turn (bead boubou-o5a,
+/// 2026-10-29). The safety gate still vets every command; the file mutators stay blocked
+/// ([`QA_BLOCKED`]).
+pub const CHAT_TOOLS: [&str; 5] = [
+    "read_file",
+    "list_dir",
+    "web_search",
+    "web_fetch",
+    "run_bash",
+];
 /// `_RESEARCH_ALL`: research tools covered by the fingerprint-level streak guard.
 pub const RESEARCH_ALL: [&str; 3] = ["web_search", "web_fetch", "web_search_multi"];
 /// `_PRODUCTIVE`: tools that count as making progress (todo/research counters reset).
@@ -159,7 +170,7 @@ pub const PRODUCTIVE: [&str; 5] = [
     "finish",
     "run_bash",
 ];
-/// `_MUTATE`: tools the Q&A guard intercepts.
+/// `_MUTATE`: the tools that change the workspace (bookkeeping: what counts as a mutation).
 pub const MUTATE: [&str; 5] = [
     "create_file",
     "edit_file",
@@ -167,6 +178,9 @@ pub const MUTATE: [&str; 5] = [
     "delete_file",
     "run_bash",
 ];
+/// The tools the Q&A guard blocks on a question turn: the file mutators. `run_bash` is not
+/// among them (see [`CHAT_TOOLS`]); the safety gate is its guard.
+pub const QA_BLOCKED: [&str; 4] = ["create_file", "edit_file", "append_file", "delete_file"];
 /// `_PRODUCING_PREFIX`: an MCP tool whose name starts with one of these did real work.
 pub const PRODUCING_PREFIX: [&str; 12] = [
     "create_",
@@ -304,7 +318,7 @@ impl ToolFace {
             .collect()
     }
 
-    /// `_chat_tool_defs`: read-only tools for Q&A turns. Whatever is offered here is also
+    /// `_chat_tool_defs`: the question route's tools ([`CHAT_TOOLS`]). Whatever is offered here is also
     /// activated: the call-time gate refuses any tool missing from `active`, and a question
     /// turn that listed web_search but refused the call was how the model came to tell the
     /// user it "cannot browse" (web UI session of 2026-10-28).

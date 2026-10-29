@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 use super::chat::DynBackend;
 use super::chat::{ChatBackend, StreamPiece};
 use super::corrector::{self, Verdict};
-use super::face::{self, ToolFace, MUTATE, PRODUCTIVE, RESEARCH_ALL};
+use super::face::{self, ToolFace, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
     attach_pending_images, compact_history, dedupe_trailing_assistant, estimate_messages_tokens,
     similar, workdir_files_text,
@@ -1142,8 +1142,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         "⚠️ The last call was judged a duplicate (identical to an earlier one); the result will not change. Do not retry it unchanged: check the current state with read_file/list_dir first, or move forward with a different approach.",
                     ));
                     continue;
-                } else if qa && MUTATE.contains(&n) && casual_warns < 3 {
-                    // Q&A guard: a question never needs files written or commands run.
+                } else if qa && face::QA_BLOCKED.contains(&n) && casual_warns < 3 {
+                    // Q&A guard: a question never needs files written. Commands are allowed
+                    // (bead boubou-o5a): "what should we do next?" is `bd ready`, "does it
+                    // build?" is the build command; the safety gate vets them as always.
                     casual_warns += 1;
                     if casual_warns >= 2 {
                         casual_force = true;

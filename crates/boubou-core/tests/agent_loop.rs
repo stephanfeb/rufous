@@ -1843,3 +1843,50 @@ fn question_turn_after_a_task_gets_the_chat_prompt() {
     assert_eq!(sys.len(), 1);
     assert!(sys[0].content.contains("chatting with the user"));
 }
+
+#[test]
+fn a_question_may_run_a_command_but_not_write_a_file() {
+    // Bead boubou-o5a: "what should we do next?" is a `bd ready` away; with no shell on the
+    // question route the model used web_search as one. run_bash is offered and runs (the
+    // safety gate vets it); the file mutators stay blocked by the Q&A guard.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut b = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1 => ChatResponse::call("", "run_bash", json!({"command": "git status --short"})),
+                2 => ChatResponse::call(
+                    "",
+                    "create_file",
+                    json!({"path": "notes.txt", "content": "x"}),
+                ),
+                _ => ChatResponse::text("The tree is clean; nothing is pending."),
+            },
+        },
+        OkTools,
+    );
+    let out = b
+        .run(
+            vec![Message::user("What is the state of the repo ?")],
+            None,
+            None,
+        )
+        .expect("loop");
+    let sys: Vec<&Message> = out.iter().filter(|m| m.role == Role::System).collect();
+    assert!(
+        sys[0].content.contains("chatting with the user"),
+        "question route"
+    );
+    let tools: Vec<&Message> = out.iter().filter(|m| m.role == Role::Tool).collect();
+    assert!(
+        tools.iter().any(|m| m.content == "[ok]"),
+        "run_bash ran on the question turn: {tools:#?}"
+    );
+    assert!(
+        tools.iter().any(|m| m
+            .content
+            .starts_with("[blocked: the user is asking a question; create_file")),
+        "create_file still blocked: {tools:#?}"
+    );
+}

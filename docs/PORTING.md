@@ -555,9 +555,48 @@ Verified: 7 bridge unit tests; two end-to-end tests over an in-process channel w
 model (initialize, session/new, a two-tool turn with a denied permission, the summary as closing
 text, a second prompt continuing the history, and cancel → `cancelled` within a few calls); a
 live stdio run of `target/debug/boubou acp --model gemma4:e2b` driven by a scripted Python client
-(plan, `create_file`, streamed text, `end_turn` in 15 s, file on disk). Not yet: a real Zed turn
-(the user's next step), the ACP Test Compatibility Kit, `session/load`, session modes, the
-client's `fs`/`terminal` capabilities, `mcpServers` from `session/new` (Boubou keeps `mcp.json`).
+(plan, `create_file`, streamed text, `end_turn` in 15 s, file on disk). Not yet: the ACP Test
+Compatibility Kit, session modes, the client's `fs`/`terminal` capabilities, `mcpServers` from
+`session/new` (Boubou keeps `mcp.json`).
+
+Zed verified the same morning (qwen3.5:9b, a Flutter project): connects, streams, tool cards,
+permission dialogs. Restarting the agent then failed with Zed's "loading or resuming is not
+supported by this agent", because Zed reopens a thread with `session/load` (bead boubou-m64.1).
+Added: `loadSession` is advertised; the handler reads `<home>/sessions/<id>.json` (the ACP
+session id is the Boubou session name), replays the history through `bridge::replay_updates`
+(user turns as `user_message_chunk`, harness notes and system messages dropped, tool calls and
+results with `hist_N` ids, a dangling call marked failed, the finish summary where the model
+wrote no prose, the plan last) before responding, and restores the in-memory state with the
+request's `cwd`. `TurnSetup` now carries `sessions_dir` so the loop saves where the server
+reads. A session id that is not one path component of `[A-Za-z0-9_-]` is refused before any
+disk access.
+
+## The question route can run commands (2026-10-29, bead boubou-o5a)
+
+Mingbird's Q&A turn offers read_file, list_dir, web_search and web_fetch. A question about the
+state of a repo, a backlog or a build is a command by nature, and a model with no shell invents
+one: in acp_1029_104013 (qwen3.5:9b, Zed, a Flutter project) "What bead should we tackle next?"
+produced 36 tool calls and 79 messages, among them 3 calls to an invented `run_shell_command`,
+a raw `bd show …` emitted as a tool name, and 8 web searches used as a shell (`bd ready
+overshare`). The earlier "assess the current state of our project" turn had the same shape.
+Change: `run_bash` joins `face::CHAT_TOOLS`; the Q&A guard blocks `face::QA_BLOCKED` (the four
+file mutators) instead of `MUTATE`; the chat prompt names "a command that reports state" among
+the reasons to use a tool. The safety gate vets every command as before (under ACP that is the
+editor's permission dialog). Judged on user experience, not Mingbird parity.
+
+Measurement, one controlled replay of the exact question over `boubou acp` against the
+overshare checkout, qwen3.5:9b, before and after the change:
+
+| | before | after |
+|---|---|---|
+| tool calls | 19 | 5 |
+| web searches used as a shell | 8 | 0 |
+| wall time | 108 s | 28 s |
+| answer | "run `flutter pub get`, then task 1.1" (already done) | "overshare-9h3 is in progress; finish it first" (from `bd list` and `bd show`) |
+
+Open follow-ups from the same transcript: bound read-only calls on a question turn
+(boubou-9c5), refuse command-shaped web_search queries (boubou-i3r), qwen3.5:9b quirks for the
+profile note (boubou-1sm).
 
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
