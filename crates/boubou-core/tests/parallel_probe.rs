@@ -2,7 +2,9 @@
 //! readers; `/api/ps` parsing; the real memory reader on this machine.
 
 use boubou_core::ollama::{parse_ps, LoadedModel};
-use boubou_core::parallel::probe::{read_loaded_models, read_system_memory, GIB};
+use boubou_core::parallel::probe::{
+    available_from_vm_stat, read_loaded_models, read_system_memory, GIB,
+};
 use boubou_core::parallel::{
     estimate_child_cost, format_capacity_table, CapacityPlanner, ParallelConfig, ResourceProbe,
 };
@@ -147,8 +149,32 @@ fn unreachable_ollama_reads_none() {
 #[test]
 fn real_memory_reader_works_here() {
     let (total, avail) = read_system_memory().expect("memory reading");
+    eprintln!("memory: total={total} avail={avail}");
     assert!(
         total > 0.0 && avail > 0.0 && avail <= total,
         "total={total} avail={avail}"
     );
+}
+
+#[test]
+fn vm_stat_available_is_free_plus_inactive_pages() {
+    // The readings of 2026-10-29 with qwen3.5:9b resident, where sysinfo said 0.
+    let text = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+Pages free:                                17022.\n\
+Pages active:                             261894.\n\
+Pages inactive:                           255351.\n\
+Pages speculative:                          6554.\n\
+Pages throttled:                               0.\n\
+Pages wired down:                        1172275.\n\
+Pages purgeable:                           13107.\n\
+\"Translation faults\":                 123456789.\n\
+Pages stored in compressor:               900000.\n";
+    let avail = available_from_vm_stat(text).expect("parsed");
+    assert_eq!(avail, (17022.0 + 255351.0) * 16384.0);
+    assert!((avail / GIB - 4.15).abs() < 0.05, "{}", avail / GIB);
+    assert!(available_from_vm_stat("garbage").is_none());
+    assert!(available_from_vm_stat(
+        "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 10.\n"
+    )
+    .is_none());
 }

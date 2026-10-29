@@ -1,7 +1,8 @@
 //! Hardware probe (`parallel_probe.py`): on unified-memory machines the real budget is
 //! physical RAM.
 //!
-//! - memory: `sysinfo` (total / available bytes);
+//! - memory: `sysinfo` (total / available bytes); on macOS the available figure comes from
+//!   `vm_stat` first (psutil's formula, see [`read_system_memory`]);
 //! - loaded models: `GET /api/ps` → model / size / size_vram;
 //! - capacity: `usable = available × cap`, `budget = usable − reserve`,
 //!   `max_parallel = floor(budget / per_child_cost)`, then min with `hard_cap`;
@@ -26,12 +27,59 @@ pub fn parse_params_b(model: &str) -> Option<f64> {
 }
 
 /// `(total_bytes, available_bytes)` or `None` when the reading failed.
+///
+/// On macOS `sysinfo` computes available as free + inactive + purgeable **minus the
+/// compressor's pages**; with a 7 GB model resident the compressor outgrows the rest and the
+/// figure saturates to 0 (2026-10-29, 38 GB Mac, a 9B model loaded: sysinfo 0 B, `vm_stat`
+/// free 0.3 GB + inactive 3.9 GB; bead boubou-wh5). That told the capacity planner there was
+/// no room exactly when a model was loaded, which is when dispatch is asked. Mingbird reads
+/// psutil, whose macOS available is free + inactive, and the cap/reserve formula was tuned
+/// against that, so macOS reads `vm_stat` first and falls back to `sysinfo` only when the
+/// command fails. Other platforms use `sysinfo` as before.
 pub fn read_system_memory() -> Option<(f64, f64)> {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     let total = sys.total_memory() as f64;
-    let avail = sys.available_memory() as f64;
-    (total > 0.0).then_some((total, avail))
+    if total <= 0.0 {
+        return None;
+    }
+    let avail = vm_stat_available()
+        .filter(|a| *a > 0.0 && *a <= total)
+        .unwrap_or(sys.available_memory() as f64);
+    Some((total, avail))
+}
+
+/// macOS only: `vm_stat`'s free + inactive pages × page size, psutil's "available".
+fn vm_stat_available() -> Option<f64> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("vm_stat").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    available_from_vm_stat(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse `vm_stat` output: `Mach Virtual Memory Statistics: (page size of 16384 bytes)`,
+/// then `Pages free:` and `Pages inactive:` rows (trailing dots). Public for the tests.
+pub fn available_from_vm_stat(text: &str) -> Option<f64> {
+    let page = text
+        .lines()
+        .find_map(|l| {
+            let (_, rest) = l.split_once("page size of ")?;
+            rest.split_whitespace().next()?.parse::<f64>().ok()
+        })
+        .filter(|p| *p > 0.0)?;
+    let count = |key: &str| -> Option<f64> {
+        text.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            (k.trim() == key).then(|| v.trim().trim_end_matches('.').parse::<f64>().ok())?
+        })
+    };
+    let free = count("Pages free")?;
+    let inactive = count("Pages inactive")?;
+    Some((free + inactive) * page)
 }
 
 /// `read_loaded_models`: `/api/ps`. `None` = unreachable (capacity cannot be confirmed →
