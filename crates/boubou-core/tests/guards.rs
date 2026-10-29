@@ -6,7 +6,9 @@ use std::path::Path;
 use boubou_core::guards::artifacts::{claimed_missing_files, plan_named_missing};
 use boubou_core::guards::edit::EditConvergenceGuard;
 use boubou_core::guards::leak::{parse_finish_prose, try_parse_tool_calls};
-use boubou_core::guards::qa::{has_task_progress, is_qa, task_original_text};
+use boubou_core::guards::qa::{
+    has_task_progress, intent_heuristic, is_qa, task_original_text, Intent,
+};
 use boubou_core::guards::{
     estimate_tokens, format_bash_out, is_small_model, model_params_b, semantically_empty,
 };
@@ -561,6 +563,38 @@ fn is_qa_followup_fix_and_regressions() {
         ],
         true
     ));
+}
+
+#[test]
+fn a_sentence_or_two_after_progress_is_a_follow_up() {
+    // boubou-he2: 51 cue-free characters after real work steer that work; the same words
+    // before any work are a task by default, and a cue still wins.
+    let steer = "I think we already did that one. It can be closed.";
+    let h = intent_heuristic(
+        &[
+            Message::user("Work through the task list"),
+            a_tool("run_bash"),
+            Message::user(steer),
+        ],
+        true,
+    );
+    assert_eq!(h.intent, Intent::FollowUp, "{h:?}");
+    assert_eq!(h.confidence, 0.5);
+    assert_eq!(
+        intent_heuristic(&[Message::user(steer)], false).intent,
+        Intent::Task
+    );
+    let long = "I think we already did that one, the mDNS discovery, and the UDX transport one as well, so both can be closed now.";
+    assert_eq!(
+        intent_heuristic(&[Message::user(long)], true).intent,
+        Intent::Task,
+        "past the follow-up length the long-message default stands"
+    );
+    assert_eq!(
+        intent_heuristic(&[Message::user("now fix the import too")], true).intent,
+        Intent::Task,
+        "a task hint wins"
+    );
 }
 
 // ---- prefill budget of the todo schema (test_todo.py) ----

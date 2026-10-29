@@ -9,7 +9,7 @@ use boubou_core::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece
 use boubou_core::agent::{Agent, AgentEvent, RunParams, ToolRunner};
 use boubou_core::guards::budget::{elapsed_meta_path, load_elapsed, save_elapsed};
 use boubou_core::guards::idle::{QA_IDLE_CAP, QA_IDLE_NUDGE};
-use boubou_core::ollama::{Message, Role};
+use boubou_core::ollama::{FunctionCall, Message, Role, ToolCall};
 use serde_json::{json, Value};
 
 type Call = (&'static str, Value, &'static str);
@@ -1977,6 +1977,135 @@ fn a_question_may_run_a_command_but_not_write_a_file() {
             .starts_with("[blocked: the user is asking a question; create_file")),
         "create_file still blocked: {tools:#?}"
     );
+}
+
+// ---- follow-up turns end when acted on and reported (bead boubou-he2) ----
+
+/// A session with real work behind it, then a one-action steer.
+fn follow_up_history(steer: &str) -> Vec<Message> {
+    let mut call = Message::assistant("");
+    call.tool_calls = vec![ToolCall {
+        function: FunctionCall {
+            name: "run_bash".into(),
+            arguments: json!({"command": "flutter pub get"}),
+        },
+    }];
+    vec![
+        Message::system("sys"),
+        Message::user("Work through the openspec task list for this project."),
+        call,
+        Message::tool_output("[exit 0]\nGot dependencies."),
+        Message::assistant("Dependencies are in. Task 1.1 is done."),
+        Message::user(steer),
+    ]
+}
+
+#[test]
+fn a_follow_up_ends_once_acted_on_and_reported() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1 => ChatResponse::call("", "run_bash", json!({"command": "bd done 9h3"})),
+                2 => ChatResponse::text("Closed overshare-9h3 (mDNS peer discovery)."),
+                _ => ChatResponse::call("", "read_file", json!({"path": "tasks.md"})),
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(
+            follow_up_history("I think we already did that one. It can be closed."),
+            None,
+            None,
+        )
+        .expect("loop");
+    let ran = out
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content == "[ok]")
+        .count();
+    assert_eq!(ran, 1, "only the close ran: {out:#?}");
+    assert!(user_msgs(&out, "Continue").is_empty(), "no continue note");
+    assert_eq!(user_msgs(&out, "reports the follow-up").len(), 1);
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+    let sys: Vec<&Message> = out.iter().filter(|m| m.role == Role::System).collect();
+    assert!(
+        !sys[0].content.contains("chatting with the user"),
+        "a follow-up still runs under the task prompt"
+    );
+}
+
+#[test]
+fn a_follow_up_that_goes_quiet_is_asked_for_the_report_once() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1 => ChatResponse::call("", "run_bash", json!({"command": "bd done 9h3"})),
+                2 => ChatResponse::text(""),
+                _ => ChatResponse::text("Done: overshare-9h3 is closed."),
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(
+            follow_up_history("that one is done, close it please"),
+            None,
+            None,
+        )
+        .expect("loop");
+    assert_eq!(user_msgs(&out, "say so in one line").len(), 1);
+    assert!(user_msgs(&out, "do real work now").is_empty());
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+}
+
+#[test]
+fn a_follow_up_without_an_action_keeps_the_task_rules() {
+    // Text before any producing call is not a report: the continue note still applies.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut a = Agent::new(
+        RunParams::plain("gemma4:12b", d.path()),
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1 => ChatResponse::text("Sure, I will close it."),
+                2 => ChatResponse::call("", "run_bash", json!({"command": "bd done 9h3"})),
+                _ => ChatResponse::text("Closed."),
+            },
+        },
+        OkTools,
+    );
+    let out = a
+        .run(follow_up_history("close that one"), None, None)
+        .expect("loop");
+    assert_eq!(user_msgs(&out, "Continue").len(), 1, "{out:#?}");
+    assert!(out
+        .last()
+        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+}
+
+#[test]
+fn a_fresh_task_still_gets_the_continue_note_after_one_write() {
+    let d = tempfile::tempdir().expect("tmp");
+    let out = run_responder(d.path(), |n| match n {
+        1 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "big.txt", "content": "x"}),
+        ),
+        2 => ChatResponse::text("I have written the file."),
+        _ => ChatResponse::call("done", "finish", json!({"summary": "done"})),
+    });
+    assert!(!user_msgs(&out, "Continue").is_empty());
 }
 
 // ---- idle-streak guard (bead boubou-9c5) ----

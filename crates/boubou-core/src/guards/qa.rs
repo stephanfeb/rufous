@@ -192,8 +192,9 @@ pub fn has_task_progress(messages: &[Message]) -> bool {
         })
 }
 
-/// What the latest real user message is doing. Only `Question` changes the loop's path
-/// (the Q&A prompt and tool set); `Task` and `FollowUp` both run the task loop.
+/// What the latest real user message is doing. `Question` changes the loop's path (the Q&A
+/// prompt and tool set). `FollowUp` runs the task loop but ends it once the model has acted
+/// and then reports in text (bead boubou-he2); `Task` runs until `finish`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
     Question,
@@ -233,6 +234,9 @@ pub struct HeuristicIntent {
     pub has_progress: bool,
 }
 
+/// Longest cue-free message after progress that still reads as a follow-up (boubou-he2).
+pub const FOLLOWUP_MAX_CHARS: usize = 80;
+
 /// `_is_qa` as a classifier. Task words win, then question words or a trailing `?`, then
 /// "short and no action verb" is a question unless the conversation already has progress
 /// (then it is a follow-up instruction); anything longer with no cue defaults to a task.
@@ -266,6 +270,17 @@ pub fn intent_heuristic(messages: &[Message], has_progress: bool) -> HeuristicIn
         }
         if ends_with_question(t) {
             return verdict(Intent::Question, 1.0, "trailing `?`".to_string(), t);
+        }
+        // After real work, a cue-free message up to a sentence or two steers that work
+        // ("I think we already did that one. It can be closed.", 51 chars, bead boubou-he2);
+        // before any work only a short one reads as a greeting or question.
+        if has_progress && text::clen(t) <= FOLLOWUP_MAX_CHARS {
+            return verdict(
+                Intent::FollowUp,
+                0.5,
+                "default: short message after progress".to_string(),
+                t,
+            );
         }
         if text::clen(t) <= 40 {
             return if has_progress {

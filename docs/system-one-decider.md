@@ -201,6 +201,10 @@ Step 1 as shipped:
 - `guards/qa.rs`: `intent_heuristic()` returns `{intent, confidence, rule, text, has_progress}`;
   confidence is 1.0 on a rule hit (task hint, question hint, trailing `?`) and 0.5 on each
   default (short message with or without progress, long message with no cue, no message).
+  After progress the "short" default reaches `FOLLOWUP_MAX_CHARS` (80) rather than 40 (bead
+  boubou-he2; +2 follow-ups right, no task lost on the labelled set). `FollowUp` now has loop
+  behaviour of its own: the task loop runs, but once the model has acted and then reports in
+  text the turn ends instead of drawing the task-mode continue notes.
   `is_qa()` is a wrapper over it, so every existing test holds unchanged.
 - `decider.rs`: `DecisionBackend` trait (state + named questions → answers), `NullBackend`,
   `OllamaSystemOne`, and `LayeredDecider::intent_of(messages)` with three modes from

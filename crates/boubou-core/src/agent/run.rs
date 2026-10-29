@@ -618,6 +618,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             }
         }
         let qa = !child && intent.intent == Intent::Question;
+        // A follow-up (boubou-he2) runs the task loop but ends when the model has acted and
+        // then reports: the task-mode "continue" notes would otherwise push it into the
+        // next piece of work the user never asked for.
+        let follow_up = !child && intent.intent == Intent::FollowUp;
+        let mut acted_this_turn = false;
+        let mut follow_up_nudged = false;
         // The system prompt follows the route, every turn. A continued session (the web UI
         // appends the new user turn to the saved history) otherwise keeps whatever the
         // previous turn left: after a question that is the chat prompt, and a task turn
@@ -1029,6 +1035,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             "{empty_total} empty turns after 3 context resets"
                         )));
                     }
+                    if follow_up && acted_this_turn && !follow_up_nudged {
+                        // The instruction may already be done; ask for the report, not for work.
+                        follow_up_nudged = true;
+                        messages.push(Message::user(
+                            "If the user's instruction is done, say so in one line and stop. Otherwise make the next tool call.",
+                        ));
+                        continue;
+                    }
                     if empty_turns == 3 {
                         messages.push(Message::user(
                             "⚠️ You have output empty text repeatedly. Call a tool and do real work now: read_file to read, run_bash to run a command, create_file to write. Do not output empty text.",
@@ -1062,6 +1076,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             casual_force = true;
                             messages.push(Message::user(
                                 "Your answer is already sufficient; the user is asking a question, not setting a task. Call finish now to end this turn. Do not repeat the output.",
+                            ));
+                        } else if follow_up && acted_this_turn {
+                            // The follow-up was acted on and this text is the report.
+                            casual_force = true;
+                            log!("[{i}] follow-up acted on and reported; ending the turn");
+                            messages.push(Message::user(
+                                "Your reply reports the follow-up; the turn ends here. Do not repeat the output.",
                             ));
                         } else if talk_streak >= TALK_FORCE_END {
                             // The model is talking, not working: bound the loop instead of
@@ -1851,6 +1872,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                 } else {
                     idle_streak = 0;
+                    acted_this_turn = true;
                 }
                 // Two searches in a row with nothing relevant: the web is the wrong place.
                 if RESEARCH_ALL.contains(&n) && res.starts_with(idle::NO_RESULTS_MARK) {
