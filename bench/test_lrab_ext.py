@@ -168,3 +168,34 @@ def test_pruning_lines_are_counted():
             "[context pruning: 1 older tool results → fact lines, ~20500 → ~19000 tokens]\n")
     m = pm.parse_transcript(text)
     assert (m["prunes"], m["pruned_results"], m["compactions"]) == (2, 4, 0)
+
+
+def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_THINK", raising=False)
+    _cmd, env = lrab_h2h.boubou_cmd(str(tmp_path), "m")
+    assert "AGENT_THINK" not in env, "unset --think leaves the profile default"
+    assert lrab_h2h.boubou_cmd(str(tmp_path), "m", think="off")[1]["AGENT_THINK"] == "0"
+    assert lrab_h2h.boubou_cmd(str(tmp_path), "m", 16384, "on")[1]["AGENT_THINK"] == "1"
+    assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", None, None, None, set()) == "boubou_WF-01"
+    assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", 16384, "off", 2, {"model"}) \
+        == "boubou_WF-01_mqwen3.5-9b_c16k_toff_r2"
+    assert lrab_h2h.cell_axes("qwen3.5:9b", None, None) == {"model": "qwen3.5:9b", "ctx": int(os.environ.get("AGENT_CTX", "32768")), "think": "default"}
+    # Two models × think on/off at one ctx: the summary labels rows by model and think only.
+    for model, think, total in (("qwen3.5:9b", "on", 0.9), ("qwen3.5:9b", "off", 0.5),
+                                ("gemma4:12b", "on", 0.7), ("gemma4:12b", "off", 0.6)):
+        rid = lrab_h2h.cell_run_id("boubou", "WF-01", model, 16384, think, None, {"model"})
+        (tmp_path / rid).mkdir()
+        json.dump({"task_id": "WF-01", "agent": "boubou", "total": total, "wall_seconds": 60,
+                   "failure_mode": "completed", "axes": lrab_h2h.cell_axes(model, 16384, think),
+                   "process": {"tool_calls": 3, "peak_prompt_tokens": 100}},
+                  open(tmp_path / rid / "score.json", "w"))
+    text = lrab_h2h.summary(str(tmp_path))
+    assert text.startswith("axes: ctx=16k; varying: model, think")
+    assert "think=think" not in text
+    assert "| WF-01@qwen3.5:9b think=on | — | 0.90" in text
+    assert "| WF-01@gemma4:12b think=off | — | 0.60" in text
+    # A score.json from before axes were recorded still groups by its top-level ctx.
+    old = {"task_id": "CP-01", "agent": "boubou", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
+           "model": "qwen3.5:9b", "failure_mode": "completed", "process": {}}
+    assert lrab_h2h.axes_of(old) == {"model": "qwen3.5:9b", "ctx": 8192, "think": "default"}
+    assert lrab_h2h.row_key(old, ["ctx"]) == "CP-01@8k"

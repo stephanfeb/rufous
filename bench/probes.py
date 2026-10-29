@@ -142,8 +142,13 @@ def write_fixture(workdir, files):
             f.write(body)
 
 
+# Serving axes for the agent probes (`--ctx`, `--think`), set by main(); recorded in each
+# probe's summary so sweeps are data, not notes (bead boubou-65d.4).
+AXES = {"ctx": None, "think": None}
+
+
 def run_agent(workdir, model, timeout_s, budget_min):
-    cmd, env = lrab_h2h.boubou_cmd(workdir, model)
+    cmd, env = lrab_h2h.boubou_cmd(workdir, model, AXES["ctx"], AXES["think"])
     cmd += ["--new", "--time-budget", str(budget_min)]
     rc, out, err, wall, timed_out = lrab_h2h._run_phase(cmd, env, workdir, timeout_s)
     text = out + ("\n--- STDERR ---\n" + err if err else "")
@@ -468,7 +473,9 @@ def main():
                     help="trials per agent probe (default 10) / repeats per emission prompt (default 5)")
     ap.add_argument("--timeout-s", type=int, default=300, help="hard kill per agent trial")
     ap.add_argument("--budget-min", type=float, default=4, help="--time-budget passed to boubou run")
-    ap.add_argument("--think", choices=["on", "off"], default=None, help="emission: force think on/off")
+    ap.add_argument("--think", choices=["on", "off"], default=None,
+                    help="force think on/off (emission: the chat call; agent probes: AGENT_THINK)")
+    ap.add_argument("--ctx", type=int, default=None, help="AGENT_CTX for the agent probes")
     ap.add_argument("--results", default=os.path.join(lrab_h2h.BOUBOU_ROOT, "bench", "results", "probes"))
     ap.add_argument("--summary", action="store_true")
     ap.add_argument("--rescore", action="store_true",
@@ -482,8 +489,10 @@ def main():
         print(summary_table(a.results))
         return
     think = None if a.think is None else a.think == "on"
+    AXES.update(ctx=a.ctx, think=a.think)
     for probe in [p for p in a.probes.split(",") if p]:
-        out_dir = os.path.join(a.results, probe, model_tag(a.model) + (f"_think-{a.think}" if a.think else ""))
+        out_dir = os.path.join(a.results, probe, model_tag(a.model) + (f"_think-{a.think}" if a.think else "")
+                               + (f"_ctx{a.ctx // 1024}k" if a.ctx else ""))
         print(f"### probe {probe} model={a.model} start {time.strftime('%H:%M:%S')}", flush=True)
         if probe == "emission":
             s = run_emission(a.model, a.n or 5, out_dir, think)
@@ -491,6 +500,7 @@ def main():
             s = run_agent_probe(probe, a.model, a.n or 10, out_dir, a.timeout_s, a.budget_min)
         else:
             sys.exit(f"unknown probe {probe}")
+        s["axes"] = lrab_h2h.cell_axes(a.model, a.ctx, a.think)
         print(json.dumps({k: v for k, v in s.items() if k not in ("per_prompt", "schemas")},
                          ensure_ascii=False), flush=True)
     print("\nPROBES DONE\n" + summary_table(a.results), flush=True)

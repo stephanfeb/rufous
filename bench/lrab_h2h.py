@@ -14,6 +14,16 @@ Usage (the mingbird arm needs `requests` and `beautifulsoup4` in the interpreter
   python bench/lrab_h2h.py --summary            # table from an existing results dir
   python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --ctx 16384,32768,65536
                                                 # Boubou-side tiers (context pressure), AGENT_CTX sweep
+  python bench/lrab_h2h.py --model qwen3.5:9b,gemma4:12b --think on,off --ctx 16384
+                                                # serving sweep: every (model, think, ctx) cell is recorded
+Hidden scorer tests: bench/lrab_ext/hidden/<task_id>/overlay.json (WF-04, LH-03; gen_hidden.py)
+is copied into the workdir only after the agent has finished and scored with the same scorer;
+score.json gets hidden_score / hidden_details / total_hidden (total with the hidden checks in the
+final group), the summary shows `h=` next to the total. `--hidden ""` disables the overlay.
+
+Sweep axes (--model, --ctx, --think, each a comma list) are recorded in score.json["axes"] and in
+the run id (_m<tag>, _c16k, _t<on|off>, each only when that axis is swept); the summary labels rows
+task@<the axes that vary in the results dir> and prints the constant ones once.
 Every cell also gets process metrics (tool calls, peak prompt tokens, guard firings, integrity;
 see process_metrics.py) under score.json["process"], and the summary reports per-arm means with
 a bootstrap 95% CI over tasks when there is more than one replication.
@@ -30,6 +40,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +56,7 @@ MINGBIRD_ROOT = os.environ.get("MINGBIRD_ROOT") or os.path.join(
     os.path.dirname(BOUBOU_ROOT), "Mingbird-agent")
 LRAB = os.path.join(MINGBIRD_ROOT, "bench", "lrab")
 BENCH_HOME = os.path.expanduser("~/.mingbird_bench")   # same isolated home as the mingbird arm
+HIDDEN_DIR = os.path.join(BOUBOU_ROOT, "bench", "lrab_ext", "hidden")
 TIERS = ["tier1_retrieval", "tier2_synthesis", "tier3_workflow", "tier4_longhorizon"]
 
 
@@ -80,14 +92,30 @@ def prepare_workdir(task, workdir, task_root=LRAB):
         f.write(task["prompt"])
 
 
-def boubou_cmd(workdir, model, ctx=None):
+def think_env(think):
+    """`--think on|off` → AGENT_THINK value; None leaves the inherited environment alone."""
+    return {None: None, "on": "1", "off": "0"}[think]
+
+
+def axes_env(env, ctx=None, think=None):
+    """Apply the swept axes to a child environment (both arms read AGENT_CTX / AGENT_THINK)."""
+    if ctx:
+        env["AGENT_CTX"] = str(ctx)
+    if think_env(think) is not None:
+        env["AGENT_THINK"] = think_env(think)
+    return env
+
+
+def boubou_cmd(workdir, model, ctx=None, think=None):
     """Same contract and env as Mingbird's `_cmd_mingbird`; no --new so phase 2 of a
-    kill-resume run continues from .agent_state.json. `ctx` overrides AGENT_CTX for the cell."""
+    kill-resume run continues from .agent_state.json. `ctx` / `think` override AGENT_CTX /
+    AGENT_THINK for the cell."""
     env = dict(os.environ)
     env.pop("AGENT_STREAM", None)
     env["BOUBOU_HOME"] = BENCH_HOME
     env["MINGBIRD_HOME"] = BENCH_HOME
-    env["AGENT_CTX"] = str(ctx) if ctx else os.environ.get("AGENT_CTX", "32768")
+    env["AGENT_CTX"] = os.environ.get("AGENT_CTX", "32768")
+    axes_env(env, ctx, think)
     env["AGENT_SLIM_OUTPUT"] = os.environ.get("AGENT_SLIM_OUTPUT", "0")
     env["AGENT_UNATTENDED"] = "1"
     env.setdefault("PYTHONUTF8", "1")
@@ -147,9 +175,9 @@ def _run_phase(cmd, env, cwd, timeout_s):
         return -9, out or "", err or "", time.time() - t0, True
 
 
-def run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx=None):
+def run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx=None, think=None):
     """Returns (rc, stdout, stderr, wall, meta). meta mirrors run_bench's resume dict."""
-    cmd, env = boubou_cmd(workdir, model, ctx)
+    cmd, env = boubou_cmd(workdir, model, ctx, think)
     budget = timeout_min * 60
     if not kill_at_pct:
         rc, out, err, wall, timed_out = _run_phase(cmd, env, workdir, budget)
@@ -222,28 +250,75 @@ def classify(rc, wall, transcript, score, workdir):
     return "completed"
 
 
-def score_with_mingbird(task_path, workdir, judge):
+def mingbird_scorer():
+    """Mingbird's referee module, imported read-only."""
     # script_pass checks run `python …` through the shell in this process's environment; give
     # the scorer the same `python` shim the agent gets (CP-03 smoke 2026-10-29: exit 127, score 0
     # although the agent's own run of the same command had passed).
     ensure_python_on_path(os.environ)
-    sys.path.insert(0, os.path.join(LRAB, "scoring"))
-    from score_task import score_task   # Mingbird's referee, imported read-only
-    return score_task(task_path, workdir, judge=bool(judge), judge_model=judge or "ornith-1.5:35b")
+    if os.path.join(LRAB, "scoring") not in sys.path:
+        sys.path.insert(0, os.path.join(LRAB, "scoring"))
+    import score_task
+    return score_task
+
+
+def score_with_mingbird(task_path, workdir, judge):
+    return mingbird_scorer().score_task(task_path, workdir, judge=bool(judge),
+                                        judge_model=judge or "ornith-1.5:35b")
+
+
+def load_overlay(hidden_dir, task_id):
+    """The hidden overlay for a task, or None (no dir, or `--hidden ""`)."""
+    if not hidden_dir:
+        return None
+    p = os.path.join(hidden_dir, task_id, "overlay.json")
+    if not os.path.isfile(p):
+        return None
+    ov = json.load(open(p, encoding="utf-8"))
+    ov["_dir"] = os.path.dirname(p)
+    return ov
+
+
+def apply_hidden(score, task, workdir, overlay, scorer=None):
+    """After the run: copy the hidden files into the workdir and score the overlay's checks
+    with Mingbird's check kinds. Adds hidden_score, hidden_details and total_hidden (the
+    task's total with the hidden checks appended to the final group; milestones and the
+    deterministic weights as in score_task). The visible `total` is left as it is."""
+    if not overlay or not os.path.isdir(workdir):
+        return score
+    scorer = scorer or mingbird_scorer()
+    for name in overlay.get("files", []):
+        shutil.copy2(os.path.join(overlay["_dir"], name), workdir)
+    checks = overlay.get("checks", [])
+    hidden, details = scorer.score_group(workdir, checks)
+    score["hidden_score"] = round(hidden, 3)
+    score["hidden_details"] = details
+    final_all, _ = scorer.score_group(workdir, list(task.get("final_artifacts", [])) + checks)
+    w = scorer.WEIGHTS
+    ms = float(score.get("milestone_score", 0) or 0)
+    score["total_hidden"] = round((w["milestones"] * ms + w["final"] * final_all) / (w["milestones"] + w["final"]), 3)
+    return score
+
+
+def cell_axes(model, ctx, think):
+    """The serving axes of one cell, as recorded in score.json["axes"]."""
+    return {"model": model, "ctx": int(ctx) if ctx else int(os.environ.get("AGENT_CTX", "32768")),
+            "think": think or "default"}
 
 
 def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge,
-                   task_root=LRAB, ctx=None):
+                   task_root=LRAB, ctx=None, think=None, overlay=None):
     workdir = os.path.join(out_dir, "workdir")
     prepare_workdir(task, workdir, task_root)
-    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx)
+    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx, think)
     with open(os.path.join(out_dir, "transcript.txt"), "w", encoding="utf-8") as f:
         f.write(out)
         if err:
             f.write("\n--- STDERR ---\n" + err)
+    axes = cell_axes(model, ctx, think)
     base = {"task_id": task["id"], "agent": "boubou", "model": model,
             "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id,
-            "ctx": int(boubou_cmd(workdir, model, ctx)[1]["AGENT_CTX"])}
+            "ctx": axes["ctx"], "axes": axes}
     if meta and (meta.get("timed_out") or meta.get("phase2_timeout")):
         score = dict(base, failure_mode="timeout", resume=meta,
                      failure_note=f"agent exceeded {timeout_min} min wall budget")
@@ -252,6 +327,7 @@ def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at
         score = score_with_mingbird(task_path, workdir, judge)
         score.update(base)
         score["failure_mode"] = classify(rc, wall, out + err, score, workdir)
+        apply_hidden(score, task, workdir, overlay)
         if meta:
             score["resume"] = meta
     score["process"] = process_metrics.cell_metrics(out + err, task["prompt"], workdir)
@@ -261,8 +337,10 @@ def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at
 
 
 # -------------------------------------------------------------- mingbird arm
-def run_mingbird_arm(task_path, task, model, results, run_id, timeout_min, kill_at_pct, judge, log):
-    """Mingbird's own runner, unmodified. It writes <results>/<run_id>/score.json itself."""
+def run_mingbird_arm(task_path, task, model, results, run_id, timeout_min, kill_at_pct, judge, log,
+                     ctx=None, think=None):
+    """Mingbird's own runner, unmodified. It writes <results>/<run_id>/score.json itself; the
+    swept axes reach it through the same AGENT_CTX / AGENT_THINK variables its agent reads."""
     cmd = [sys.executable, os.path.join(LRAB, "runners", "run_bench.py"), "--agent", "mingbird",
            "--task", task_path, "--model", model, "--results", results,
            "--timeout-min", str(timeout_min), "--run-id", run_id]
@@ -270,7 +348,8 @@ def run_mingbird_arm(task_path, task, model, results, run_id, timeout_min, kill_
         cmd += ["--kill-at-pct", str(kill_at_pct)]
     if judge:
         cmd += ["--judge", judge]
-    subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=MINGBIRD_ROOT)
+    subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=MINGBIRD_ROOT,
+                   env=axes_env(dict(os.environ), ctx, think))
     sp = os.path.join(results, run_id, "score.json")
     if not os.path.exists(sp):
         return {}
@@ -301,9 +380,52 @@ def ctx_suffix(ctx):
     return f"_c{int(ctx) // 1024}k"
 
 
-def row_key(d):
-    """Summary row: the task, or task@ctx when the results sweep AGENT_CTX."""
-    return d["task_id"] + (f"@{int(d['ctx']) // 1024}k" if d.get("ctx_sweep") else "")
+def model_slug(model):
+    """A model tag as a run-id fragment: qwen3.5:9b-q4_K_M -> qwen3.5-9b-q4_K_M."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", model)
+
+
+def cell_run_id(arm, task_id, model, ctx, think, rep, swept):
+    """`<arm>_<task>` plus one suffix per swept axis (model when several models are listed,
+    ctx and think when given on the command line) and `_r<n>` for replications."""
+    rid = f"{arm}_{task_id}"
+    if "model" in swept:
+        rid += f"_m{model_slug(model)}"
+    if ctx:
+        rid += ctx_suffix(ctx)
+    if think:
+        rid += f"_t{think}"
+    if rep is not None:
+        rid += f"_r{rep}"
+    return rid
+
+
+AXES = ("model", "ctx", "think")
+
+
+def axes_of(d):
+    """A scored cell's axes, also for score.json written before axes were recorded."""
+    a = d.get("axes") or {}
+    return {"model": a.get("model", d.get("model")), "ctx": a.get("ctx", d.get("ctx")),
+            "think": a.get("think", "default")}
+
+
+def axis_value(axis, value):
+    """An axis value for display: ctx as 16k, the others as they are."""
+    return f"{int(value) // 1024}k" if axis == "ctx" and value else str(value)
+
+
+def axis_label(axis, value):
+    """A row-label fragment: `16k`, `qwen3.5:9b`, `think=off` (think needs its name to read)."""
+    return f"think={value}" if axis == "think" else axis_value(axis, value)
+
+
+def row_key(d, varying=()):
+    """Summary row: the task, with the axes that vary across the results dir after `@`
+    (`CP-01@16k`, `WF-01@qwen3.5:9b think=off 16k`)."""
+    a = axes_of(d)
+    tail = " ".join(axis_label(k, a[k]) for k in AXES if k in varying and a[k] is not None)
+    return d["task_id"] + (f"@{tail}" if tail else "")
 
 
 def cell(d):
@@ -311,7 +433,8 @@ def cell(d):
         return "—"
     if d.get("failure_mode") == "timeout":
         return "timeout"
-    return f"{d.get('total', 0):.2f} ({d.get('wall_seconds', 0):.0f}s, {d.get('failure_mode')})"
+    hidden = f" h={d['total_hidden']:.2f}" if "total_hidden" in d else ""
+    return f"{d.get('total', 0):.2f}{hidden} ({d.get('wall_seconds', 0):.0f}s, {d.get('failure_mode')})"
 
 
 def cell_total(d):
@@ -347,14 +470,20 @@ PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("c
 def summary(results):
     rows = {}
     scores = [json.load(open(sp, encoding="utf-8")) for sp in glob.glob(os.path.join(results, "*", "score.json"))]
-    # A results dir with more than one AGENT_CTX is a sweep: rows are task@ctx, not task.
-    sweep = len({d.get("ctx") for d in scores if d.get("ctx")}) > 1
+    # Axes with more than one value in this results dir label the rows; the rest are a sweep
+    # constant and are printed once.
+    values = {k: {str(axes_of(d)[k]) for d in scores if axes_of(d)[k] is not None} for k in AXES}
+    varying = [k for k in AXES if len(values[k]) > 1]
     for d in scores:
-        d["ctx_sweep"] = sweep
-        rows.setdefault(row_key(d), {}).setdefault(d["agent"], []).append(d)
+        rows.setdefault(row_key(d, varying), {}).setdefault(d["agent"], []).append(d)
     arms = ["mingbird", "boubou"]
     order = sorted(rows, key=lambda x: (not x.startswith("WF"), x))
-    lines = ["| task | mingbird | boubou |", "|---|---|---|"]
+    lines = []
+    constant = [f"{k}={axis_value(k, next(iter(values[k])))}" for k in AXES if len(values[k]) == 1]
+    if constant:
+        lines.append("axes: " + ", ".join(constant) + (f"; varying: {', '.join(varying)}" if varying else ""))
+        lines.append("")
+    lines += ["| task | mingbird | boubou |", "|---|---|---|"]
     per_task = {a: [] for a in arms}
     for tid in order:
         r = rows[tid]
@@ -372,6 +501,11 @@ def summary(results):
         reps = sum(len(rows[t].get(a, [])) for t in order)
         line = (f"\n{a}: tasks={len(v)} cells={reps} mean total={sum(means) / len(means):.3f} "
                 f"wall={sum(w for _, w in v) / 60:.0f} min")
+        hidden = [(d["total"], d["total_hidden"]) for t in order for d in rows[t].get(a, [])
+                  if "total_hidden" in d and d.get("failure_mode") != "timeout"]
+        if hidden:
+            line += (f"; hidden overlay on {len(hidden)} cells: visible {sum(x for x, _ in hidden) / len(hidden):.3f}"
+                     f" → hidden {sum(y for _, y in hidden) / len(hidden):.3f}")
         ci = bootstrap_ci(means)
         if ci and reps > len(v):
             line += f" 95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
@@ -413,14 +547,16 @@ def summary(results):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default="gemma4:e2b")
+    ap.add_argument("--model", default="gemma4:e2b", help="model tag, or a comma list to sweep")
     ap.add_argument("--arms", default="mingbird,boubou")
     ap.add_argument("--task-root", default=LRAB,
                     help="directory holding tasks/<tier>/*.json and fixtures/ (default: Mingbird's LRAB)")
     ap.add_argument("--tiers", default="",
                     help="comma list; default tiers 1-3 under LRAB, every tier under another root")
     ap.add_argument("--ctx", default="",
-                    help="comma list of AGENT_CTX values to sweep (boubou arm); run ids get _c16k etc.")
+                    help="comma list of AGENT_CTX values to sweep; run ids get _c16k etc.")
+    ap.add_argument("--think", default="",
+                    help="comma list of on,off to sweep AGENT_THINK (unset = the model profile's default)")
     ap.add_argument("--tasks", default="", help="comma list of task ids to restrict to")
     ap.add_argument("--heldout", action="store_true", help="use tasks_heldout instead of tasks")
     ap.add_argument("--results", default=os.path.join(BOUBOU_ROOT, "bench", "results", "lrab_h2h"))
@@ -430,6 +566,8 @@ def main():
     ap.add_argument("--reps", type=int, default=1,
                     help="replications per cell; cells run round-robin over (rep, task, arm) with the "
                          "arm order alternating per task so machine drift cannot follow one arm")
+    ap.add_argument("--hidden", default=HIDDEN_DIR,
+                    help='dir of hidden scorer overlays (<task_id>/overlay.json); "" disables')
     ap.add_argument("--summary", action="store_true", help="only print the table for --results")
     ap.add_argument("--dry-run", action="store_true", help="print the commands and exit")
     a = ap.parse_args()
@@ -449,51 +587,71 @@ def main():
     tiers = [t for t in a.tiers.split(",") if t] or (
         TIERS[:3] if os.path.realpath(task_root) == os.path.realpath(LRAB) else tiers_under(task_root, a.heldout))
     tasks = list_tasks(tiers, ids, a.heldout, task_root)
+    models = [m.strip() for m in a.model.split(",") if m.strip()]
     ctxs = [int(x) for x in a.ctx.split(",") if x] or [None]
+    thinks = [t.strip() for t in a.think.split(",") if t.strip()] or [None]
+    if any(t not in ("on", "off") for t in thinks if t):
+        sys.exit("--think takes on, off or on,off")
+    swept = {"model"} if len(models) > 1 else set()
     cells = []
     for rep in range(a.reps):
-        for ctx in ctxs:
-            for ti, (task_path, task) in enumerate(tasks):
-                arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
-                for arm in arm_order:
-                    cells.append((rep, ctx, task_path, task, arm))
-    for rep, ctx, task_path, task, arm in cells:
+        for model in models:
+            for think in thinks:
+                for ctx in ctxs:
+                    for ti, (task_path, task) in enumerate(tasks):
+                        arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
+                        for arm in arm_order:
+                            cells.append((rep, model, think, ctx, task_path, task, arm))
+    for rep, model, think, ctx, task_path, task, arm in cells:
         kill_at = a.kill_at_pct if a.kill_at_pct is not None else task.get("kill_at_pct")
         budget = a.timeout_min
-        run_id = f"{arm}_{task['id']}" + (ctx_suffix(ctx) if ctx else "") + (f"_r{rep}" if a.reps > 1 else "")
+        run_id = cell_run_id(arm, task["id"], model, ctx, think, rep if a.reps > 1 else None, swept)
         out_dir = os.path.join(a.results, run_id)
         if os.path.exists(os.path.join(out_dir, "score.json")):
             print(f"skip {run_id} (scored)", flush=True)
             continue
         if a.dry_run:
+            axes_txt = " ".join(f"{k}={v}" for k, v in cell_axes(model, ctx, think).items())
             if arm == "boubou":
-                cmd, env = boubou_cmd(os.path.join(out_dir, "workdir"), a.model, ctx)
-                print(run_id, f"AGENT_CTX={env['AGENT_CTX']}", cmd)
+                cmd, env = boubou_cmd(os.path.join(out_dir, "workdir"), model, ctx, think)
+                print(run_id, axes_txt, f"AGENT_THINK={env.get('AGENT_THINK', '(unset)')}", cmd)
             else:
-                print(run_id, "run_bench.py --agent mingbird --task", task_path)
+                print(run_id, axes_txt, "run_bench.py --agent mingbird --task", task_path)
             continue
         os.makedirs(out_dir, exist_ok=True)
-        print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m"
-              + (f" ctx={ctx}" if ctx else "") + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
+        print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m model={model}"
+              + (f" ctx={ctx}" if ctx else "") + (f" think={think}" if think else "")
+              + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
         t0 = time.time()
+        overlay = load_overlay(a.hidden, task["id"])
         if arm == "boubou":
-            sc = run_boubou_arm(task_path, task, a.model, out_dir, run_id, budget, kill_at, a.judge,
-                                task_root, ctx)
+            sc = run_boubou_arm(task_path, task, model, out_dir, run_id, budget, kill_at, a.judge,
+                                task_root, ctx, think, overlay)
         else:
             with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:
-                sc = run_mingbird_arm(task_path, task, a.model, a.results, run_id, budget, kill_at, a.judge, log)
-        if a.reps > 1 and sc:
-            sc["rep"] = rep
+                sc = run_mingbird_arm(task_path, task, model, a.results, run_id, budget, kill_at, a.judge, log,
+                                      ctx, think)
+            if sc and sc.get("failure_mode") != "timeout":
+                apply_hidden(sc, task, os.path.join(out_dir, "workdir"), overlay)
+        if sc:
+            # Axes are recorded for both arms (Mingbird's runner knows nothing of them).
+            sc["axes"] = cell_axes(model, ctx, think)
+            sc["ctx"] = sc["axes"]["ctx"]
+            if a.reps > 1:
+                sc["rep"] = rep
             with open(os.path.join(out_dir, "score.json"), "w", encoding="utf-8") as f:
                 json.dump(sc, f, ensure_ascii=False, indent=2)
         pm = sc.get("process", {})
         print(f"    {run_id}: total={sc.get('total')} ms={sc.get('milestone_score')} "
               f"fs={sc.get('final_score')} wall={sc.get('wall_seconds')} "
               f"mode={sc.get('failure_mode')} exit={sc.get('exit_code')} "
+              + (f"hidden={sc.get('total_hidden')} " if "total_hidden" in sc else "") +
               f"calls={pm.get('tool_calls')} peak={pm.get('peak_prompt_tokens')} "
               f"compact={pm.get('compactions')} "
               f"loop={pm.get('loop_interceptions')} refuse={pm.get('finish_refusals')} "
               f"integrity={pm.get('integrity')} ({time.time() - t0:.0f}s)", flush=True)
+    if a.dry_run:
+        return
     print("\nMATRIX DONE\n" + summary(a.results), flush=True)
 
 

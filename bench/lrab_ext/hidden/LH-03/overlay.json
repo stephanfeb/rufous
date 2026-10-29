@@ -1,0 +1,28 @@
+{
+  "task_id": "LH-03",
+  "files": [
+    "test_suite_hidden.py",
+    "check_spec.py"
+  ],
+  "checks": [
+    {
+      "artifact": "m01.py",
+      "check": "script_pass",
+      "params": {
+        "command": "python test_suite_hidden.py",
+        "expect_stdout": "20 passed, 0 failed",
+        "timeout_s": 60
+      }
+    },
+    {
+      "artifact": "test_suite.py",
+      "check": "script_pass",
+      "params": {
+        "command": "python check_spec.py",
+        "expect_stdout": "SPEC OK",
+        "timeout_s": 30
+      }
+    }
+  ],
+  "notes": "hidden scorer tests (bench/lrab_ext/gen_hidden.py, bead boubou-65d.10); copied into the workdir after the run, never visible to the agent"
+}
