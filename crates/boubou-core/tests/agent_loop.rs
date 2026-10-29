@@ -1088,6 +1088,39 @@ fn injected_user_messages_keep_the_harness_prefix_invariant() {
     assert!(offenders.is_empty(), "{offenders:?}");
 }
 
+// ---- malformed tool names ----
+
+#[test]
+fn a_leaked_template_fragment_as_a_tool_name_gets_the_invalid_name_correction() {
+    // boubou-1sm: the model emitted the raw text of a shell command plus a closing XML tag
+    // as the call's name. The note names the fault and where the command belongs, instead
+    // of the generic "not available" text, and the leaked text does not sprawl.
+    let d = tempfile::tempdir().expect("tmp");
+    let leaked = "bd show initial-filesharing-app-setup/1-1-dependencies\n</parameter";
+    let calls = vec![
+        (leaked, json!({}), "unused"),
+        edit(0, true),
+        (
+            "run_bash",
+            json!({"command": "python test_suite.py"}),
+            "[exit 0]\n10 passed",
+        ),
+    ];
+    let msgs = scripted(d.path(), &calls);
+    let note = msgs
+        .iter()
+        .find(|m| m.role == Role::Tool && m.content.starts_with("[invalid tool name"))
+        .map(|m| m.content.as_str())
+        .expect("the correction is the call's result");
+    assert!(note.contains("run_bash"), "{note}");
+    assert!(!note.contains("is not available"), "{note}");
+    assert!(!note.contains('\n'), "whitespace collapsed: {note}");
+    assert!(
+        msgs.iter().all(|m| !m.content.contains("[tool bd show")),
+        "no generic not-available text for the leaked name"
+    );
+}
+
 // ---- checkpoint and events ----
 
 #[test]

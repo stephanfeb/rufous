@@ -308,6 +308,33 @@ fn images_exempt_from_crawl_guard() {
 // ---- plumbing ----
 
 #[test]
+fn other_harnesses_shell_names_map_to_run_bash_and_leaked_names_are_malformed() {
+    use boubou_core::tools::{is_well_formed_tool_name, resolve_alias};
+    for n in [
+        "run_shell_command",
+        "run_command",
+        "execute_command",
+        "run_terminal_cmd",
+        "shell",
+        "bash",
+    ] {
+        assert_eq!(resolve_alias(n), "run_bash", "{n}");
+    }
+    assert_eq!(resolve_alias("run_bash"), "run_bash");
+    for ok in ["run_bash", "fs.read_file", "web-search", "Tool2"] {
+        assert!(is_well_formed_tool_name(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "bd show initial-filesharing-app-setup/1-1-dependencies\n</parameter",
+        "read file",
+        "<tool_call>",
+    ] {
+        assert!(!is_well_formed_tool_name(bad), "{bad:?}");
+    }
+}
+
+#[test]
 fn aliases_coercion_and_missing_args() {
     let (_d, mut e) = ex();
     assert!(e

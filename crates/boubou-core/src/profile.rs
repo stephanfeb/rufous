@@ -50,6 +50,12 @@ pub struct ModelProfile {
 /// vary the call instead, so that text never reaches them.
 pub const HONEST_FAILURE_NUDGE: &str = "If an input the task depends on cannot be obtained (a download or service fails, a file is missing), do not substitute it from elsewhere and do not generate it yourself: report the failure in the deliverable and in the finish summary, then finish. An honest failure report is the correct outcome in that case.";
 
+/// The unfamiliar-syntax nudge (bead boubou-1sm). qwen3.5:9b twice read Dart 3.11
+/// dot-shorthands (`colorScheme: .fromSeed(...)`, `mainAxisAlignment: .center`) as syntax
+/// errors and planned to "fix" valid code. Knowledge the model lacks cannot be patched by a
+/// gate; the note tells it to let the project's own tooling decide what is an error.
+pub const UNFAMILIAR_SYNTAX_NUDGE: &str = "Do not call code a syntax error from reading it alone: languages add syntax after your training data (for example Dart's dot-shorthand `mainAxisAlignment: .center` is valid). Run the project's analyzer, compiler or tests first and fix only what they report.";
+
 impl Default for ModelProfile {
     fn default() -> Self {
         Self {
@@ -142,11 +148,14 @@ fn builtin() -> Vec<(&'static str, ProfileOverride)> {
         (
             "qwen3.5:9b",
             ProfileOverride {
-                prompt_note: Some(HONEST_FAILURE_NUDGE.to_string()),
+                prompt_note: Some(format!("{HONEST_FAILURE_NUDGE} {UNFAMILIAR_SYNTAX_NUDGE}")),
                 note: Some(
                     "reads a failing fetch.py as a stub and substitutes the input: rewrites the \
                      script or copies dataset.csv from a sibling directory, then reports success \
-                     (profiles loop t00/t04/t06/t08 → 4/10, corrector never reached)"
+                     (profiles loop t00/t04/t06/t08 → 4/10, corrector never reached); in the editor \
+                     (ACP, 2026-10-29) calls run_shell_command for a shell (now an alias), once \
+                     leaked template text as a tool name (now 'invalid tool name'), and reads Dart \
+                     dot-shorthands as syntax errors (the unfamiliar-syntax nudge)"
                         .to_string(),
                 ),
                 ..Default::default()
@@ -207,12 +216,17 @@ impl ModelProfile {
             parts.push("finish-prose rescue".to_string());
         }
         if let Some(t) = &self.prompt_note {
-            let kind = if t == HONEST_FAILURE_NUDGE {
-                "honest-failure nudge"
-            } else {
-                "custom"
-            };
-            parts.push(format!("prompt note ({kind})"));
+            let mut kinds = Vec::new();
+            if t.contains(HONEST_FAILURE_NUDGE) {
+                kinds.push("honest-failure nudge");
+            }
+            if t.contains(UNFAMILIAR_SYNTAX_NUDGE) {
+                kinds.push("unfamiliar-syntax nudge");
+            }
+            if kinds.is_empty() {
+                kinds.push("custom");
+            }
+            parts.push(format!("prompt note ({})", kinds.join(", ")));
         }
         if parts.is_empty() {
             "no model-specific settings".to_string()
@@ -252,8 +266,16 @@ mod tests {
         assert_eq!(q.name, "qwen3.5:9b");
         assert_eq!(q.think, None, "the nudge is the only qwen setting");
         assert!(!q.finish_prose_rescue);
-        assert_eq!(q.prompt_note.as_deref(), Some(HONEST_FAILURE_NUDGE));
-        assert_eq!(q.describe(), "prompt note (honest-failure nudge)");
+        let qn = q.prompt_note.as_deref().unwrap_or_default();
+        assert!(qn.starts_with(HONEST_FAILURE_NUDGE) && qn.ends_with(UNFAMILIAR_SYNTAX_NUDGE));
+        assert_eq!(
+            q.describe(),
+            "prompt note (honest-failure nudge, unfamiliar-syntax nudge)"
+        );
+        assert_eq!(
+            builtin_for("gemma4:12b").describe(),
+            "think off; finish-prose rescue; prompt note (honest-failure nudge)"
+        );
         let plain = builtin_for("llama3.1:8b");
         assert_eq!(plain, ModelProfile::default());
         assert_eq!(plain.describe(), "no model-specific settings");

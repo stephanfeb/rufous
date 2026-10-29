@@ -40,7 +40,7 @@ pub const ADVANCED_TOOL_NAMES: [&str; 10] = [
 ];
 
 /// Industry-common names small models emit, mapped onto built-ins instead of rejected.
-pub const TOOL_ALIASES: [(&str, &str); 13] = [
+pub const TOOL_ALIASES: [(&str, &str); 17] = [
     ("write_file", "create_file"),
     ("save_file", "create_file"),
     ("read_text_file", "read_file"),
@@ -54,7 +54,25 @@ pub const TOOL_ALIASES: [(&str, &str); 13] = [
     ("delete", "delete_file"),
     ("bash", "run_bash"),
     ("shell", "run_bash"),
+    // Other harnesses' shell tools, which a model trained on their transcripts reaches
+    // for when it wants a shell (boubou-1sm: three `run_shell_command` calls in one turn).
+    ("run_shell_command", "run_bash"),
+    ("run_command", "run_bash"),
+    ("execute_command", "run_bash"),
+    ("run_terminal_cmd", "run_bash"),
 ];
+
+/// A tool name as a model should emit it: one identifier of letters, digits, `_`, `-` and
+/// `.` (MCP's `server.tool`), no whitespace or markup. A name that fails this is a
+/// chat-template leak (seen from a 9B model: the raw text `bd show …\n</parameter` as the
+/// call's name) and gets its own correction instead of the generic "not available" text.
+pub fn is_well_formed_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
 
 pub fn resolve_alias(name: &str) -> &str {
     TOOL_ALIASES

@@ -451,6 +451,32 @@ with a scratch agent home in shadow mode: d1:latest answers the 2026-10-28 chat 
 question at p=0.89 in about 0.3 s warm. Nothing is adopted yet; shadow transcripts are the
 labelled set the design's section 5 asks for before `on` is the default anywhere.
 
+
+### Editor-session quirks (2026-10-29, beads boubou-ll7 and boubou-1sm)
+
+Source: two ACP sessions in Zed on a Dart project with qwen3.5:9b, not a bench score. Changes,
+classified first:
+
+1. **Mechanism (ll7, bug).** The live checkpoint was `<cwd>/.agent_state.json`; under ACP the
+   cwd is the user's project, so the model found Boubou's own system prompt and history in a
+   `list_dir` and folded it into its assessment, and the file showed up in `git status`.
+   `Agent::checkpoint` relocates it (with the elapsed-time sidecar beside it); the ACP server
+   sets `<sessions>/<name>.state.json`. The CLI keeps the workdir path for kill-resume.
+2. **Mechanism, shared (1sm).** `run_shell_command`, `run_command`, `execute_command` and
+   `run_terminal_cmd` join the alias table (other harnesses' shell tools; a model trained on
+   their transcripts reaches for them). A tool name with whitespace or markup, a chat-template
+   fragment leaking into the call, now gets `[invalid tool name …]` naming the fault and where
+   the command belongs, instead of the generic "not available" text; the name is compacted in
+   notes and logs. Both are model-agnostic and cheap; neither has a measurement yet.
+3. **Profile (1sm).** `UNFAMILIAR_SYNTAX_NUDGE` is appended to qwen3.5:9b's prompt note: the
+   model read Dart 3.11 dot-shorthands as syntax errors and planned to "fix" valid code.
+   Missing knowledge cannot be gated; the note defers "is this an error" to the project's
+   tooling. Per tag, as with the honest-failure nudge; `"prompt_note": ""` switches both off.
+4. **Left open (9c5, i3r).** The read-only-call cap for question turns and the refusal of
+   command-shaped `web_search` queries were derived from one transcript whose root cause (no
+   shell on the question route) o5a fixed; the replay dropped from 19 calls to 5. Guards for a
+   symptom that no longer reproduces wait for a recurrence.
+
 ### Measurement (2026-10-29, bead boubou-acy.2)
 
 Tooling: `boubou decide [--file cases.jsonl] [--model d1:latest]` prints the heuristic verdict

@@ -39,7 +39,7 @@ use crate::ollama::{FunctionCall, Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
 use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
-use crate::tools::{is_mcp_tool, required_args, resolve_alias};
+use crate::tools::{is_mcp_tool, is_well_formed_tool_name, required_args, resolve_alias};
 use crate::{text, Error, Result};
 
 /// `_FAIL_MARKERS`: a tool result that means "the action did not happen". Safety-ring
@@ -199,6 +199,19 @@ impl ToolRunner for Executor {
     }
     fn child_terminated(&self) -> Option<String> {
         Executor::child_terminated(self)
+    }
+}
+
+/// A tool name as shown in refusal texts and log lines: whitespace collapsed, cut at 60
+/// characters, so a leaked template fragment used as a name cannot sprawl over the note.
+fn compact_tool_name(name: &str) -> String {
+    let flat = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut it = flat.chars();
+    let head: String = it.by_ref().take(60).collect();
+    if it.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
     }
 }
 
@@ -1069,9 +1082,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 let mut after_output: Option<String> = None;
                 let n = name.as_str();
 
-                if (face.is_disabled(n) || !face.is_active(n)) && !is_mcp_tool(n) {
+                let malformed = !is_well_formed_tool_name(n);
+                if malformed || ((face.is_disabled(n) || !face.is_active(n)) && !is_mcp_tool(n)) {
                     // A disabled/absent tool called again. The refusal itself feeds the
-                    // loop: strong note at 3, hard reset at 10.
+                    // loop: strong note at 3, hard reset at 10. A malformed name (template
+                    // text leaked into the call) takes the same path with its own text.
+                    let shown = compact_tool_name(&name);
                     let cnt = disabled_recall.entry(name.clone()).or_insert(0);
                     *cnt += 1;
                     let cnt = *cnt;
@@ -1084,24 +1100,26 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages = vec![
                             head,
                             Message::user(format!(
-                                "{task0}\n\n⚠️ [system] The context has been reset: the tool {name} is disabled, calling it again will not run, and it will no longer appear in your tool list. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{}\nSwitch to create_file now and write the output files to move the task forward.",
+                                "{task0}\n\n⚠️ [system] The context has been reset: the tool {shown} is disabled, calling it again will not run, and it will no longer appear in your tool list. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{}\nSwitch to create_file now and write the output files to move the task forward.",
                                 load_todo_str(workdir),
                                 workdir_files_text(workdir, 30)
                             )),
                         ];
                         disabled_recall.insert(name.clone(), 0);
-                        log!("[{i}] ⚠️ {name} called 10 times after being disabled, hard-resetting the context");
+                        log!("[{i}] ⚠️ {shown} called 10 times after being disabled, hard-resetting the context");
                         transcript.mark_compacted();
                         continue;
                     }
-                    res = if face.is_disabled(n) {
-                        format!("[tool {name} is disabled (repeated-call protection). Do not try to read the same content through another tool: write the output file with create_file, or call finish if you already have enough.]")
+                    res = if malformed {
+                        format!("[invalid tool name {shown:?}: it contains whitespace or markup, which is chat-template text that leaked into the call's name. The name must be exactly one entry from your tool list; a shell command belongs in the `command` argument of run_bash.]")
+                    } else if face.is_disabled(n) {
+                        format!("[tool {shown} is disabled (repeated-call protection). Do not try to read the same content through another tool: write the output file with create_file, or call finish if you already have enough.]")
                     } else {
-                        format!("[tool {name} is not available (not in the tool list assembled for this run: either its category was not loaded, or the name does not exist). Do not invent tool names: create_file for output files, edit_file/create_file to change files, read_file to read; the full list is in your tool definitions.]")
+                        format!("[tool {shown} is not available (not in the tool list assembled for this run: either its category was not loaded, or the name does not exist). Do not invent tool names: create_file for output files, edit_file/create_file to change files, read_file to read; the full list is in your tool definitions.]")
                     };
                     if cnt == 3 {
                         messages.push(Message::user(format!(
-                            "⚠️ The tool {name} is unavailable (disabled or not assembled) and you have tried it several times. Calling it again will not run and it will no longer appear in your tool list. Change action now: write output files with create_file; use read_file/list_dir to inspect what exists."
+                            "⚠️ The tool {shown} is unavailable (disabled or not assembled) and you have tried it several times. Calling it again will not run and it will no longer appear in your tool list. Change action now: write output files with create_file; use read_file/list_dir to inspect what exists."
                         )));
                     }
                 } else if let Some((_, missing)) =
