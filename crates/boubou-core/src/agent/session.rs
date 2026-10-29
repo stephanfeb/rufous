@@ -11,6 +11,7 @@
 //!   touches the model context, the GUI renders history from here.
 //! - `<sessions>/<name>.meta.json`: merged metadata (`updated`, `task`, `status`, `msgs`,
 //!   `workdir`, plus whatever the GUI wrote, e.g. `title`).
+//!   Boubou adds `transcript_next`, the transcript cursor (see [`Transcript::flush`]).
 //! - `<sessions>/<name>.todo.json`: snapshot of the workdir plan, bound to the session.
 //! - `<sessions>/<name>.decisions.jsonl`: one line per System One decision when the decider
 //!   is in `shadow` or `on` mode (Boubou addition, bead boubou-acy.3); the labelled-set
@@ -138,53 +139,83 @@ impl Transcript {
 
     /// `_transcript_flush`: append new messages; on a compaction-shortening also append the
     /// new summary (index 1); on any other shortening just realign the cursor.
+    ///
+    /// The cursor (`next`: how many leading context messages are on disk) is persisted to
+    /// the session meta as `transcript_next` whenever it moves, and a fresh `Transcript`
+    /// starts from it. It used to start from the transcript's line count, which is wrong
+    /// as soon as the context has ever been shortened: a continued session (the editor, the
+    /// web page and `--append` build a new `Transcript` per turn) then has a context
+    /// shorter than the transcript, the comparison read the new user turn as a shortening
+    /// and never logged it, nor any later turn's user message (review 2026-10-29).
+    /// Mingbird's `_transcript_flush` has the same flaw; its v3.1.4 fix for `--append`
+    /// counted lines and does not cover this case.
     pub fn flush(&mut self, dir: &Path, session: Option<&str>, messages: &[Message]) {
         let Some(session) = session else {
             return;
         };
         let p = dir.join(format!("{session}.transcript.jsonl"));
+        let n = messages.len();
         if self.session.as_deref() != Some(session) {
             self.session = Some(session.to_string());
-            // Cursor = lines already on disk, never len(messages): `--append` puts the new
-            // user message in the list before the loop starts and it must be written.
-            self.next = std::fs::read_to_string(&p)
-                .map(|s| s.lines().count())
-                .unwrap_or(0);
+            self.next = initial_cursor(dir, session, &p, n);
         }
-        let n = messages.len();
+        let before = self.next;
+        let mut wrote = false;
         match n.cmp(&self.next) {
             std::cmp::Ordering::Greater => {
-                let _ = std::fs::create_dir_all(dir);
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&p)
-                {
-                    for m in &messages[self.next..] {
-                        if let Ok(line) = serde_json::to_string(m) {
-                            let _ = writeln!(f, "{line}");
-                        }
-                    }
-                }
+                wrote = append_lines(dir, &p, messages[self.next..].iter());
                 self.next = n;
             }
-            std::cmp::Ordering::Less => {
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => {
+                // A compaction leaves a new summary at index 1 whatever the new length.
                 if self.compacted && n > 1 {
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .append(true)
-                        .create(true)
-                        .open(&p)
-                    {
-                        if let Ok(line) = serde_json::to_string(&messages[1]) {
-                            let _ = writeln!(f, "{line}");
-                        }
-                    }
+                    wrote = append_lines(dir, &p, std::iter::once(&messages[1]));
                 }
                 self.compacted = false;
                 self.next = n;
             }
-            std::cmp::Ordering::Equal => self.compacted = false,
         }
+        if wrote || self.next != before {
+            let mut upd = Map::new();
+            upd.insert("transcript_next".into(), Value::from(self.next));
+            merge_session_meta(dir, session, upd);
+        }
+    }
+}
+
+/// Append `msgs` as JSON lines; `true` when at least one line was written.
+fn append_lines<'a>(dir: &Path, p: &Path, msgs: impl Iterator<Item = &'a Message>) -> bool {
+    let _ = std::fs::create_dir_all(dir);
+    let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(p) else {
+        return false;
+    };
+    let mut wrote = false;
+    for m in msgs {
+        if let Ok(line) = serde_json::to_string(m) {
+            wrote |= writeln!(f, "{line}").is_ok();
+        }
+    }
+    wrote
+}
+
+/// Where a fresh [`Transcript`] starts for a session that already has files: the cursor
+/// the last flush persisted, bounded by the lines on disk (a transcript trimmed by hand).
+/// A meta without the key, written before the cursor was persisted, is read as a continued
+/// session when the context is the saved one (`msgs`) plus one turn; any other shape
+/// (a kill-resume from the checkpoint with a stale save) keeps the line count, which can
+/// only lose a turn, never duplicate a run.
+fn initial_cursor(dir: &Path, session: &str, transcript: &Path, n: usize) -> usize {
+    let lines = std::fs::read_to_string(transcript)
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+    let meta = load_session_meta(dir, session);
+    let get = |k: &str| meta.get(k).and_then(Value::as_u64).map(|v| v as usize);
+    match get("transcript_next") {
+        Some(c) => c.min(lines),
+        None => match get("msgs") {
+            Some(m) if m <= lines && n == m + 1 => m,
+            _ => lines,
+        },
     }
 }
 
