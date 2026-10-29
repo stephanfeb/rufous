@@ -77,6 +77,9 @@ pub struct RunParams {
     pub child_mode: bool,
     /// Multiplier on the loop's retry/back-off sleeps (`AGENT_SLEEP_SCALE`; tests use 0).
     pub sleep_scale: f32,
+    /// `AGENT_PRUNE_KEEP`: tool results kept verbatim by recency pruning (5 is the measured
+    /// setting, [`history::PRUNE_KEEP`]); 0, the default, leaves the ladder alone as Mingbird.
+    pub prune_keep: usize,
     /// Interactive chat (`boubou chat`, the web page): a plain text reply ends the turn
     /// instead of drawing a "continue with tools" note.
     pub chat_mode: bool,
@@ -122,6 +125,7 @@ impl RunParams {
             max_iterations: MAX_ITERATIONS,
             child_mode: std::env::var("AGENT_CHILD_SANDBOX").is_ok_and(|v| v == "1"),
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
+            prune_keep: env_parse("AGENT_PRUNE_KEEP")?.unwrap_or(0),
             chat_mode: false,
             profile,
         })
@@ -147,6 +151,7 @@ impl RunParams {
             max_iterations: MAX_ITERATIONS,
             child_mode: false,
             sleep_scale: 1.0,
+            prune_keep: 0,
             chat_mode: false,
             profile,
         }

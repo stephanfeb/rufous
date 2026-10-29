@@ -652,10 +652,13 @@ fixed and the suite green by +252 s; the remaining 15 minutes were 73 `run_bash`
 tests and re-reading files after each L2 wiped the history to 7 messages (37 → 7, 44 → 7), the
 model no longer knowing it had finished; the one finish at +1131 s was rejected because
 `fix_report.md` was never written. Wall time doubles to quadruples at 8k on the tasks that did
-finish. A side finding from the same cell: `edit_file` on `textkit/tokens.py` was refused by the
-safety gate because `SENSITIVE_PATTERNS` contains `\token`, which matches any path segment
-starting with "token"; the model wrote the file with `cat >` in `run_bash` instead (bead
-boubou-a09: over-broad and leaky at once).
+finish. A side finding from the same cell turned out to be half the cause: `edit_file` on
+`textkit/tokens.py` was refused by the safety gate because `SENSITIVE_PATTERNS` contained
+`\token`, which matched any path segment starting with "token"; the model wrote the file with
+`cat >` in `run_bash` instead (bead boubou-a09, fixed the same day: credential-shaped names
+only). Rerun with the fix, same window, pruning off: 1.00 in 245 s, 36 calls, 6 compactions
+(L2 twice) and the model still finished. So at 8k the ladder costs time and precision (CP-01's
+request ids) but the timeout was the gate bug compounded by compaction, not compaction alone.
 
 Consequence for boubou-65d.6: the 8k column is its baseline (score, wall, calls, compactions,
 peak), with 16k as the mild case. Recency pruning should keep the latest tool results verbatim
@@ -663,6 +666,59 @@ peak), with 16k as the mild case. Recency pruning should keep the latest tool re
 CP-02) so the loop neither loses the data it is about to use nor forgets that it has finished.
 At 32k and above there is nothing to improve on this tier with this model; a less disciplined
 model (gemma4:e2b reading files whole) is the second arm worth running.
+
+## Recency pruning before the ladder (2026-10-29, bead boubou-65d.6)
+
+Mingbird's compaction ladder is all-or-nothing on the old history: L1 clips every old tool
+output to 120 chars, L2/L3 replace everything but the tail with one model-written summary of
+at most 150 words. The 8k column of the context-pressure tier showed the two ways that loses
+work (above): the data the model is about to use is evicted (CP-01), and the knowledge that a
+step is already done is evicted with it (CP-02). `history::prune_history` runs first, from half
+the window (`PRUNE_AT` 0.50, on the pre-call estimate), deterministic and without a model
+call: the last `PRUNE_KEEP` = 5 tool results stay verbatim; every older result becomes one fact
+line, `[earlier] run_bash(python run_tests.py) → [exit 0] … 60 passed, 0 failed` (tool, target
+argument, first line of the result and, when different, its last line), and the assistant turn
+that made the call loses its thinking and any string argument over 160 chars (a `create_file`
+body, an `edit_file` old/new pair). The history keeps its shape, so every call still has its
+result and the request stays valid; only the bulk goes. Idempotent, so it runs on every
+pre-call check above the threshold at no cost. The ladder is unchanged and still applies above
+it on whatever the estimate says after pruning. `AGENT_PRUNE_KEEP` overrides the count, 0
+disables pruning (the bench's A/B). Logged as `[context pruning: N older tool results → fact
+lines, ~a → ~b tokens]`, counted by `process_metrics.py` as `prunes` / `pruned_results`.
+Tests: `tests/history.rs` (keep/collapse, idempotence, argument shrinking, parallel-dispatch
+names) and `tests/agent_loop.rs` (fires from 50% without the ladder; `prune_keep = 0` is a
+no-op). Not in Mingbird; the design follows "Less Context, Better Agents" (recency pruning of
+tool pairs) and the tier's own failure shapes.
+
+Measurement, qwen3.5:9b, one cell each, pruning on (`AGENT_PRUNE_KEEP=5`) against the
+baseline above (`bench/results/lrab_ctx_prune` vs `lrab_ctx`):
+
+| cell | baseline: score, wall, calls, compactions | pruning: score, wall, calls, compactions, results pruned |
+|---|---|---|
+| CP-01 @8k | 0.86, 351 s, 20, 3 | 0.86, 214 s, 19, 2, 11 |
+| CP-02 @8k | timeout, 110 calls, 25 | timeout, 109 calls, 16, 94 (both confounded by boubou-a09, rerun below) |
+| CP-03 @8k | 1.00, 501 s, 35, 9 | 1.00, 203 s, 24, 2, 18 |
+| CP-04 @8k | 1.00, 202 s, 19, 3 | 1.00, 203 s, 23, 3, 17 |
+| CP-01 @16k | 1.00, 179 s, 21, 1 | 1.00, 251 s, 30, 2, 0 |
+| CP-02 @16k | 1.00, 230 s, 37, 1 | 1.00, 355 s, 51, 0, 42 |
+| CP-03 @16k | 1.00, 123 s, 18, 0 | 0.43 (fix_note.md misplaced, as the baseline's 64k cell), 243 s, 27, 0, 15 |
+| CP-04 @16k | 1.00, 117 s, 16, 0 | 1.00, 100 s, 14, 0, 0 |
+| CP-02 @8k, gate fixed (boubou-a09) | 1.00, 245 s, 36, 6 | 0.81 (`fix_report.md` names one of three functions), 740 s, 68, 11, 54 |
+
+Reading. Mechanically it does what it says: at 16k a pass reclaims 1.7–3.9k tokens
+(`~8321 → ~4372`) and CP-02 ran with no ladder compaction at all. At 8k it reclaims almost
+nothing: 2.3k tokens of system prompt and tool schemas (28% of the window) plus the five
+verbatim results are the bulk, most passes free under 300 tokens, and L1 at 60% then clips the
+kept results to 120 chars anyway. Outcome: no score moved (CP-03 @16k is the placement miss
+seen without pruning too), compactions fell at 8k, wall time fell on two 8k cells and rose on
+three 16k cells where call counts also rose (30 vs 21, 51 vs 37, 27 vs 18). At n=1 that spread
+is within the model's own variance (the baseline's CP-02 ran 37, 39 and 44 calls at three
+windows), so nothing can be claimed either way; the gate-fixed CP-02 pair at 8k leans against
+pruning (the pruned arm lost track of where the task directory was, tried `../../fix_report.md`
+and absolute paths, and took three times as long). Verdict, as with the decider: the mechanism
+stays in, **off by default** (`prune_keep` 0), `AGENT_PRUNE_KEEP=5` turns it on; a `--reps 3`
+run of the 16k column is the measurement that would change the default. If the 8k case is
+to be won, the fixed overhead and the verbatim tail are the levers, not the old results.
 
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 

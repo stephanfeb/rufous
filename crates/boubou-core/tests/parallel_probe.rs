@@ -147,5 +147,8 @@ fn unreachable_ollama_reads_none() {
 #[test]
 fn real_memory_reader_works_here() {
     let (total, avail) = read_system_memory().expect("memory reading");
-    assert!(total > 0.0 && avail > 0.0 && avail <= total);
+    assert!(
+        total > 0.0 && avail > 0.0 && avail <= total,
+        "total={total} avail={avail}"
+    );
 }

@@ -339,6 +339,7 @@ def bootstrap_ci(task_means, n=2000, seed=0):
 
 
 PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("compact", "compactions"),
+                ("prune", "prunes"),
                 ("fail", "failed_calls"), ("loop", "loop_interceptions"), ("refuse", "finish_refusals"),
                 ("empty", "empty_resets"), ("integrity", "integrity"), ("corr", "corrector_calls")]
 

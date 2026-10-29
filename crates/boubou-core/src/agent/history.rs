@@ -1,4 +1,5 @@
-//! Context hygiene: `compact_history`, `_estimate_messages_tokens`, `_workdir_files_text`,
+//! Context hygiene: `prune_history` (recency pruning, no Mingbird counterpart),
+//! `compact_history`, `_estimate_messages_tokens`, `_workdir_files_text`,
 //! `_dedupe_trailing_assistant`, `sanitize_ckpt`, `_similar`, `_attach_pending_images`.
 
 use std::path::Path;
@@ -46,6 +47,154 @@ pub fn workdir_files_text(workdir: &Path, limit: usize) -> String {
     } else {
         names.join("\n")
     }
+}
+
+/// Recency pruning (bead boubou-65d.6): how many of the latest tool results stay verbatim
+/// when pruning is on (`AGENT_PRUNE_KEEP=5`). Off by default (`RunParams::prune_keep` 0):
+/// the first measurement (docs/PORTING.md, 2026-10-29) showed fewer compactions but no
+/// score or wall-time gain at n=1.
+pub const PRUNE_KEEP: usize = 5;
+/// Pre-call estimate fraction of the context at which pruning runs (below the ladder's L1 at 0.60).
+pub const PRUNE_AT: f64 = 0.50;
+/// Prefix of a pruned tool result; also the idempotence marker.
+pub const PRUNED_MARK: &str = "[earlier]";
+const PRUNE_ARG_MAX: usize = 160;
+const PRUNE_LINE_MAX: usize = 120;
+
+fn first_line(s: &str) -> &str {
+    s.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+}
+
+fn last_line(s: &str) -> &str {
+    s.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+}
+
+/// The argument that names what a call acted on, for the fact line.
+fn call_target(args: &Value) -> Option<String> {
+    [
+        "path", "command", "pattern", "query", "url", "action", "name",
+    ]
+    .iter()
+    .find_map(|k| args.get(k).and_then(Value::as_str))
+    .map(|v| {
+        let v = v.lines().next().unwrap_or(v).trim();
+        if text::clen(v) > 60 {
+            format!("{}…", text::head(v, 60))
+        } else {
+            v.to_string()
+        }
+    })
+}
+
+/// One line that keeps what a tool result established: the tool and its target, the
+/// result's first line and, when different, its last (a test runner's `60 passed, 0 failed`,
+/// a command's exit status, an edit's confirmation).
+fn fact_line(tool: &str, args: &Value, result: &str) -> String {
+    let head = first_line(result);
+    let tail = last_line(result);
+    let mut out = format!("{PRUNED_MARK} {tool}");
+    if let Some(t) = call_target(args) {
+        out.push_str(&format!("({t})"));
+    }
+    out.push_str(" → ");
+    out.push_str(text::head(head, PRUNE_LINE_MAX));
+    if tail != head && !tail.is_empty() {
+        out.push_str(" … ");
+        out.push_str(text::head(tail, PRUNE_LINE_MAX));
+    }
+    out
+}
+
+/// Recency pruning: the last `keep` tool results stay verbatim; every older tool result is
+/// replaced by its [`fact_line`], and the assistant turn that called it loses its thinking
+/// and any long string argument (a `create_file` body, an `edit_file` old/new pair). The
+/// history keeps its shape (every call still has its result), so the request stays valid
+/// and the model still sees *that* it did each step and what came of it; only the bulk
+/// goes. Idempotent: already-pruned results are skipped. Returns how many results were
+/// pruned by this call.
+pub fn prune_history(messages: &mut [Message], keep: usize) -> usize {
+    let n = messages.len();
+    // Index of the assistant turn that owns each tool message, and the call's position in it.
+    let mut owner: Vec<Option<(usize, usize)>> = vec![None; n];
+    let mut last_asst: Option<usize> = None;
+    let mut k = 0;
+    for i in 0..n {
+        match messages[i].role {
+            Role::Assistant if !messages[i].tool_calls.is_empty() => {
+                last_asst = Some(i);
+                k = 0;
+            }
+            Role::Assistant => last_asst = None,
+            Role::Tool => {
+                if let Some(a) = last_asst {
+                    owner[i] = Some((a, k));
+                    k += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let tool_idx: Vec<usize> = (0..n).filter(|&i| messages[i].role == Role::Tool).collect();
+    if tool_idx.len() <= keep {
+        return 0;
+    }
+    let cutoff = tool_idx[tool_idx.len() - keep]; // first index that stays verbatim
+    let mut pruned = 0;
+    for &i in tool_idx.iter().filter(|&&i| i < cutoff) {
+        if messages[i].content.starts_with(PRUNED_MARK) {
+            continue;
+        }
+        let (tool, args) = match owner[i] {
+            Some((a, k)) => {
+                let tc = messages[a].tool_calls.get(k);
+                (
+                    tc.map(|t| t.function.name.clone())
+                        .or_else(|| messages[i].tool_name.clone())
+                        .unwrap_or_else(|| "tool".to_string()),
+                    tc.map(|t| t.function.arguments.clone())
+                        .unwrap_or(Value::Null),
+                )
+            }
+            None => (
+                messages[i]
+                    .tool_name
+                    .clone()
+                    .unwrap_or_else(|| "tool".to_string()),
+                Value::Null,
+            ),
+        };
+        let line = fact_line(&tool, &args, &messages[i].content);
+        messages[i].content = line;
+        messages[i].images.clear();
+        pruned += 1;
+        if let Some((a, _)) = owner[i] {
+            let m = &mut messages[a];
+            m.thinking = None;
+            for tc in &mut m.tool_calls {
+                if let Some(obj) = tc.function.arguments.as_object_mut() {
+                    for v in obj.values_mut() {
+                        if let Some(s) = v.as_str() {
+                            let len = text::clen(s);
+                            if len > PRUNE_ARG_MAX {
+                                *v = Value::String(format!(
+                                    "{}… ({len} chars)",
+                                    text::head(s, PRUNE_ARG_MAX / 2)
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pruned
 }
 
 const SUMMARY_SYSTEM_L2: &str =

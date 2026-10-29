@@ -22,7 +22,7 @@ use super::corrector::{self, Verdict};
 use super::face::{self, ToolFace, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
     attach_pending_images, compact_history, dedupe_trailing_assistant, estimate_messages_tokens,
-    similar, workdir_files_text,
+    prune_history, similar, workdir_files_text, PRUNE_AT,
 };
 use super::openai::OpenAiBackend;
 use super::prompt;
@@ -675,8 +675,21 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
                 _ => face.active_defs(),
             };
-            // Pre-call estimate: compact before the server has to refuse.
-            let est = estimate_messages_tokens(&messages, &ct) as f64;
+            // Pre-call estimate: prune, then compact before the server has to refuse.
+            // Recency pruning (boubou-65d.6) runs first, from half the window: deterministic,
+            // keeps every step's outcome as a fact line, so the ladder has less to summarise
+            // and the model keeps knowing what it has already done.
+            let mut est = estimate_messages_tokens(&messages, &ct) as f64;
+            if params.prune_keep > 0 && est > ctx_budget * PRUNE_AT {
+                let pruned = prune_history(&mut messages, params.prune_keep);
+                if pruned > 0 {
+                    let was = est;
+                    est = estimate_messages_tokens(&messages, &ct) as f64;
+                    log!(
+                        "[context pruning: {pruned} older tool results → fact lines, ~{was:.0} → ~{est:.0} tokens]"
+                    );
+                }
+            }
             let pre = if est > ctx_budget * 0.90 && compact_lvl < 3 {
                 Some(3)
             } else if est > ctx_budget * 0.75 && compact_lvl < 2 {

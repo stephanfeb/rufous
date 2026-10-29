@@ -161,3 +161,10 @@ def test_compaction_lines_are_counted_for_both_arms():
     m = pm.parse_transcript(mingbird)
     assert (m["compactions"], m["compaction_max_level"]) == (2, 3)
     assert pm.parse_transcript("[3] ⚠️ context-overflow error → forcing L3 compaction and retrying\n")["compactions"] == 1
+
+
+def test_pruning_lines_are_counted():
+    text = ("[context pruning: 3 older tool results → fact lines, ~21000 → ~14000 tokens]\n"
+            "[context pruning: 1 older tool results → fact lines, ~20500 → ~19000 tokens]\n")
+    m = pm.parse_transcript(text)
+    assert (m["prunes"], m["pruned_results"], m["compactions"]) == (2, 4, 0)

@@ -1890,3 +1890,97 @@ fn a_question_may_run_a_command_but_not_write_a_file() {
         "create_file still blocked: {tools:#?}"
     );
 }
+
+// ---- recency pruning in the loop (bead boubou-65d.6) ----
+
+#[test]
+fn pruning_runs_from_half_the_window_before_the_ladder() {
+    // Twelve 6,000-char results against a 40k window: the pre-call estimate crosses 50%
+    // before the finish, pruning collapses the oldest results to fact lines, and the
+    // ladder (L1 at 60%) never has to fire.
+    let d = tempfile::tempdir().expect("tmp");
+    let results: Vec<String> = (0..12)
+        .map(|i| {
+            format!(
+                "head of file {i}\n{}\nlast line of file {i}",
+                "y".repeat(6000)
+            )
+        })
+        .collect();
+    let calls: Vec<Call> = (0..12)
+        .map(|i| {
+            (
+                "read_file",
+                json!({"path": format!("f{i}.txt")}),
+                Box::leak(results[i].clone().into_boxed_str()) as &'static str,
+            )
+        })
+        .collect();
+    let mut a = agent_for(d.path(), &calls);
+    a.params.num_ctx = 40_000;
+    a.params.prune_keep = boubou_core::agent::history::PRUNE_KEEP;
+    let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let sink = Arc::clone(&events);
+    let mut a = a.with_sink(move |e| sink.lock().expect("lock").push(e));
+    let out = a.run(start(TASK), None, None).expect("loop");
+    let logs: Vec<String> = events
+        .lock()
+        .expect("lock")
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Log(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        logs.iter().any(|l| l.starts_with("[context pruning:")),
+        "{logs:#?}"
+    );
+    assert!(
+        !logs.iter().any(|l| l.contains("context compaction")),
+        "pruning alone kept the estimate under L1: {logs:#?}"
+    );
+    let tools: Vec<&Message> = out
+        .iter()
+        .filter(|m| m.role == Role::Tool && !m.content.contains("TASK_COMPLETE"))
+        .collect();
+    let pruned: Vec<&&Message> = tools
+        .iter()
+        .filter(|m| m.content.starts_with("[earlier] read_file("))
+        .collect();
+    assert!(!pruned.is_empty());
+    assert!(
+        pruned[0].content.contains("head of file 0")
+            && pruned[0].content.contains("last line of file 0")
+    );
+    // (the loop's own output cap may shorten a 6,000-char result; a fact line never has 1,000 y's)
+    let last_read = tools
+        .iter()
+        .rev()
+        .find(|m| m.content.starts_with("head of file"))
+        .expect("a verbatim read result");
+    assert!(
+        last_read.content.contains(&"y".repeat(1000)),
+        "the latest result is verbatim"
+    );
+}
+
+#[test]
+fn prune_keep_zero_is_the_default_and_disables_pruning() {
+    let d = tempfile::tempdir().expect("tmp");
+    let results: Vec<String> = (0..12).map(|_| "y".repeat(6000)).collect();
+    let calls: Vec<Call> = (0..12)
+        .map(|i| {
+            (
+                "read_file",
+                json!({"path": format!("f{i}.txt")}),
+                Box::leak(results[i].clone().into_boxed_str()) as &'static str,
+            )
+        })
+        .collect();
+    let mut a = agent_for(d.path(), &calls);
+    a.params.num_ctx = 40_000;
+    assert_eq!(a.params.prune_keep, 0);
+    let out = a.run(start(TASK), None, None).expect("loop");
+    assert!(out.iter().all(|m| !m.content.starts_with("[earlier]")));
+}

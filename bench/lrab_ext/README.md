@@ -23,6 +23,8 @@ than read everything. Run at `AGENT_CTX` 8192 / 16384 / 32768 / 65536; the summa
 as `task@16k` etc. and the `compact` column counts compaction ladder steps. Baseline with
 qwen3.5:9b (2026-10-29, `docs/PORTING.md` "Context-pressure tier"): flat 1.0 at 16k and above
 with peaks of 6–13k tokens, so the ladder is only exercised at 8k (one timeout, one data loss).
+Recency pruning A/B (bead boubou-65d.6): `AGENT_PRUNE_KEEP=5 python bench/lrab_h2h.py …` against
+the default (off); the env passes through to every cell, use a separate `--results` dir per arm.
 
 | task | input | deliverable | pressure |
 |---|---|---|---|

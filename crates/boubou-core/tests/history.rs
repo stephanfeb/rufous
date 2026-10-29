@@ -3,7 +3,8 @@
 
 use boubou_core::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
 use boubou_core::agent::history::{
-    attach_pending_images, compact_history, dedupe_trailing_assistant, sanitize_ckpt, similar,
+    attach_pending_images, compact_history, dedupe_trailing_assistant, prune_history,
+    sanitize_ckpt, similar, PRUNED_MARK,
 };
 use boubou_core::ollama::{Message, Role};
 use serde_json::{json, Value};
@@ -249,4 +250,181 @@ fn message_json_is_lenient_on_nulls() {
     assert_eq!(m.thinking.as_deref(), Some("hm"));
     let s = serde_json::to_string(&Message::tool_output("r")).expect("json");
     assert_eq!(s, r#"{"role":"tool","content":"r"}"#);
+}
+
+// ---- recency pruning (bead boubou-65d.6) ----
+
+fn call_pair(i: usize, tool: &str, args: Value, result: &str) -> [Message; 2] {
+    let mut a = Message::assistant_call(tool, args);
+    a.content = format!("step {i}");
+    a.thinking = Some("long private reasoning".repeat(20));
+    [a, Message::tool_output(result)]
+}
+
+fn history_with_pairs(n: usize) -> Vec<Message> {
+    let mut msgs = vec![Message::system("sys"), Message::user("task")];
+    for i in 0..n {
+        let big = format!(
+            "line one of result {i}\n{}\n60 passed, 0 failed",
+            "x".repeat(2000)
+        );
+        msgs.extend(call_pair(
+            i,
+            "run_bash",
+            json!({"command": format!("python run_tests.py # {i}")}),
+            &big,
+        ));
+    }
+    msgs
+}
+
+#[test]
+fn pruning_keeps_the_last_k_results_verbatim_and_collapses_older_ones_to_facts() {
+    let mut msgs = history_with_pairs(8);
+    let before = msgs.len();
+    assert_eq!(prune_history(&mut msgs, 5), 3);
+    assert_eq!(
+        msgs.len(),
+        before,
+        "the shape stays: every call keeps its result"
+    );
+    let tools: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+    for (i, t) in tools.iter().enumerate().take(3) {
+        assert!(t.content.starts_with(PRUNED_MARK), "{i}: {}", t.content);
+        assert!(
+            t.content.contains("run_bash(python run_tests.py"),
+            "{}",
+            t.content
+        );
+        assert!(t.content.contains("line one of result"), "{}", t.content);
+        assert!(
+            t.content.contains("60 passed, 0 failed"),
+            "the last line survives: {}",
+            t.content
+        );
+        assert!(t.content.len() < 400);
+    }
+    for t in &tools[3..] {
+        assert!(
+            t.content.contains(&"x".repeat(2000)),
+            "recent results are verbatim"
+        );
+    }
+    // The owning assistant turns lost their thinking, the recent ones kept it.
+    let assts: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Assistant).collect();
+    assert!(assts[..3].iter().all(|a| a.thinking.is_none()));
+    assert!(assts[3..].iter().all(|a| a.thinking.is_some()));
+    assert!(
+        assts.iter().all(|a| a.content.starts_with("step ")),
+        "prose stays"
+    );
+}
+
+#[test]
+fn pruning_is_idempotent_and_leaves_short_histories_alone() {
+    let mut msgs = history_with_pairs(5);
+    assert_eq!(prune_history(&mut msgs, 5), 0);
+    let mut msgs = history_with_pairs(9);
+    assert_eq!(prune_history(&mut msgs, 5), 4);
+    let snapshot = msgs.clone();
+    assert_eq!(prune_history(&mut msgs, 5), 0);
+    assert_eq!(msgs, snapshot);
+    // One more pair later: exactly one more result is pruned, the facts already made stay.
+    msgs.extend(call_pair(9, "list_dir", json!({"path": "."}), "a.py\nb.py"));
+    assert_eq!(prune_history(&mut msgs, 5), 1);
+    assert_eq!(
+        msgs.iter()
+            .filter(|m| m.content.starts_with(PRUNED_MARK))
+            .count(),
+        5
+    );
+}
+
+#[test]
+fn pruning_shrinks_long_arguments_of_old_calls_and_keeps_facts_for_each_tool() {
+    let mut msgs = vec![Message::system("sys"), Message::user("task")];
+    let body = "def f():\n    return 1\n".repeat(50);
+    msgs.extend(call_pair(
+        0,
+        "create_file",
+        json!({"path": "report.md", "content": body}),
+        "[created report.md (1200 bytes)]",
+    ));
+    msgs.extend(call_pair(
+        1,
+        "edit_file",
+        json!({"path": "m.py", "old": "a".repeat(500), "new": "b".repeat(500)}),
+        "[edited m.py (backed up); .bak backup available]",
+    ));
+    msgs.extend(call_pair(
+        2,
+        "search_files",
+        json!({"path": ".", "pattern": "def tier"}),
+        "pricing.py:1425: def tier_for_volume",
+    ));
+    for i in 3..8 {
+        msgs.extend(call_pair(
+            i,
+            "list_dir",
+            json!({"path": format!("d{i}")}),
+            "f.txt",
+        ));
+    }
+    assert_eq!(prune_history(&mut msgs, 5), 3);
+    let tools: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(
+        tools[0].content,
+        "[earlier] create_file(report.md) → [created report.md (1200 bytes)]"
+    );
+    assert_eq!(
+        tools[1].content,
+        "[earlier] edit_file(m.py) → [edited m.py (backed up); .bak backup available]"
+    );
+    assert_eq!(
+        tools[2].content,
+        "[earlier] search_files(.) → pricing.py:1425: def tier_for_volume"
+    );
+    let assts: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Assistant).collect();
+    let content = assts[0].tool_calls[0].function.arguments["content"]
+        .as_str()
+        .expect("string arg");
+    assert!(
+        content.ends_with("… (1100 chars)") && content.len() < 120,
+        "{content}"
+    );
+    assert_eq!(
+        assts[0].tool_calls[0].function.arguments["path"], "report.md",
+        "short args untouched"
+    );
+    let old = assts[1].tool_calls[0].function.arguments["old"]
+        .as_str()
+        .expect("string arg");
+    assert!(old.ends_with("… (500 chars)"));
+    // A parallel-dispatch turn: two results under one assistant message get their own names.
+    let mut msgs = vec![Message::system("sys"), Message::user("task")];
+    let mut a = Message::assistant_call("read_file", json!({"path": "a.txt"}));
+    a.tool_calls.push(boubou_core::ollama::ToolCall {
+        function: boubou_core::ollama::FunctionCall {
+            name: "read_file".into(),
+            arguments: json!({"path": "b.txt"}),
+        },
+    });
+    msgs.push(a);
+    msgs.push(Message::tool_output("A".repeat(300)));
+    msgs.push(Message::tool_output("B".repeat(300)));
+    for i in 0..5 {
+        msgs.extend(call_pair(
+            i,
+            "list_dir",
+            json!({"path": format!("d{i}")}),
+            "f.txt",
+        ));
+    }
+    assert_eq!(prune_history(&mut msgs, 5), 2);
+    assert!(msgs[3]
+        .content
+        .starts_with("[earlier] read_file(a.txt) → AAAA"));
+    assert!(msgs[4]
+        .content
+        .starts_with("[earlier] read_file(b.txt) → BBBB"));
 }

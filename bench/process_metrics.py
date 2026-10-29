@@ -19,6 +19,8 @@ so one parser scores both. The counts reported, alongside the artefact score:
   compactions           compaction ladder steps taken ([context compaction L1..3] / [上下文压缩 L1..3]
                         lines, failed levels excluded) plus context-overflow forced compactions
   compaction_max_level  the deepest ladder level reached (0 = none)
+  prunes                recency-pruning passes ([context pruning: N older tool results …], Boubou only)
+  pruned_results        tool results collapsed to fact lines over the run
   budget_nudges         ⏱ time-budget nudges injected
   forced_end            the run was ended by the wrap-up/dead-loop guard or the iteration cap,
                         not by an accepted finish ([wrap-up] / [收尾] / ===== MAX ITERATIONS)
@@ -53,6 +55,7 @@ EXIT = re.compile(r"\[exit (-?\d+)\]")
 # The compaction ladder's own line, printed as a plain log line (not a ⚠️ guard) by both arms:
 #   [context compaction L2: 41 → 12 messages]   /   [上下文压缩 L2: 41 → 12 条消息]
 COMPACT = re.compile(r"^\[(?:context compaction|上下文压缩) L(\d)(?P<failed>[^\]]*?(?:failed|失败))?")
+PRUNE = re.compile(r"^\[context pruning: (\d+) older tool result")
 BANNER = "===== TASK COMPLETE ====="
 FORCED_END = ("[wrap-up]", "[收尾]", "===== MAX ITERATIONS =====")
 # Files the task text names: `shortlist.md`, `clean_data.py`, `fig_arrhenius.png` …
@@ -88,7 +91,8 @@ def parse_transcript(text):
     """Counts and the call list from one transcript (ANSI allowed)."""
     m = {k: 0 for k, _ in GUARDS}
     m.update(tool_calls=0, failed_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
-             compaction_max_level=0, budget_nudges=0, forced_end=False, finish_accepted=False,
+             compaction_max_level=0, prunes=0, pruned_results=0,
+             budget_nudges=0, forced_end=False, finish_accepted=False,
              corrector_calls=0, corrector_fixes=0, corrector_giveups=0)
     calls = []
     clean = _strip(text)
@@ -101,6 +105,11 @@ def parse_transcript(text):
             continue
         for a, _b in CTX.findall(line):
             m["peak_prompt_tokens"] = max(m["peak_prompt_tokens"], int(a))
+        pr = PRUNE.match(line)
+        if pr:
+            m["prunes"] += 1
+            m["pruned_results"] += int(pr.group(1))
+            continue
         k = COMPACT.match(line)
         if k and not k.group("failed"):
             m["compactions"] += 1

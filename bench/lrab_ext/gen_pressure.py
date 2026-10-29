@@ -152,8 +152,9 @@ def gen_cp01(rng):
         2. Find every distinct ERROR code (they look like E1042) and count the lines of each.
         3. Find every FATAL line and note its timestamp, code and request id (req=...).
         4. Note the first and last timestamp of the log.
-        5. Write errors_summary.md with: a table of the ERROR codes, one row per code, with the
-           exact count and the message text; a "Fatal events" section listing each FATAL line's
+        5. Write errors_summary.md with: a table of the ERROR codes with the columns
+           `| Code | Count | Message |` in exactly that order, one row per code, with the exact
+           count and the message text; a "Fatal events" section listing each FATAL line's
            timestamp, code and request id; and the log's time range.
         6. Verify errors_summary.md exists and its counts match what you measured, then finish.""")
     return task_json(
