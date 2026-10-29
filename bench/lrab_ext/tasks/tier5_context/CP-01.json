@@ -1,0 +1,234 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 5,
+  "judge_rubric": "",
+  "max_wall_minutes": 40,
+  "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CP-01",
+  "domain": "log-triage-under-context-pressure",
+  "tier": 5,
+  "fixtures": [
+    "fixtures/cp01_server.log"
+  ],
+  "prompt": "You are an autonomous agent working in the current directory. FIRST create a numbered plan covering every step below (at least 6 steps). Use your available planning/todo tool if you have one; otherwise write the plan to plan.md. Then execute the steps one by one, creating each required file with the exact filename given. Do not fabricate content: base every claim on the provided fixture files in this directory. When all artifacts are written and verified, finish with a short summary (use your available finish/done mechanism or just report completion).\n\nThe file cp01_server.log in this directory is a production log of about 2,400 lines\nfrom one night. It is far too long to read in one go: search it (grep, awk, wc, or\nthe search tool) rather than reading it whole.\n\nRequired steps (plan at least 6):\n1. Create your plan (todo tool if available, otherwise plan.md).\n2. Find every distinct ERROR code (they look like E1042) and count the lines of each.\n3. Find every FATAL line and note its timestamp, code and request id (req=...).\n4. Note the first and last timestamp of the log.\n5. Write errors_summary.md with: a table of the ERROR codes, one row per code, with the\n   exact count and the message text; a \"Fatal events\" section listing each FATAL line's\n   timestamp, code and request id; and the log's time range.\n6. Verify errors_summary.md exists and its counts match what you measured, then finish.",
+  "plan_steps": [
+    "Create todo plan",
+    "Count ERROR lines per code",
+    "List FATAL lines with request ids",
+    "Note time range",
+    "Write errors_summary.md",
+    "Verify counts and finish"
+  ],
+  "milestones": [
+    {
+      "artifact": "errors_summary.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "errors_summary.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "E1042"
+          ],
+          [
+            "E2210"
+          ],
+          [
+            "E3307"
+          ],
+          [
+            "E4001"
+          ],
+          [
+            "E5120"
+          ],
+          [
+            "E6655"
+          ],
+          [
+            "E7781"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "errors_summary.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "req-368251b7"
+          ],
+          [
+            "req-8aeb88d8"
+          ],
+          [
+            "req-2e5fa8f2"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    },
+    {
+      "artifact": "errors_summary.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "E1042 | 37",
+            "E1042: 37",
+            "E1042 - 37",
+            "E1042 — 37",
+            "E1042, 37",
+            "E1042` | 37",
+            "E1042** | 37",
+            "E1042: **37**",
+            "E1042\t37",
+            "E1042   37",
+            "E1042  37",
+            "E1042 37",
+            "E1042 (37",
+            "37 × E1042",
+            "37x E1042",
+            "37 occurrences of E1042"
+          ],
+          [
+            "E2210 | 21",
+            "E2210: 21",
+            "E2210 - 21",
+            "E2210 — 21",
+            "E2210, 21",
+            "E2210` | 21",
+            "E2210** | 21",
+            "E2210: **21**",
+            "E2210\t21",
+            "E2210   21",
+            "E2210  21",
+            "E2210 21",
+            "E2210 (21",
+            "21 × E2210",
+            "21x E2210",
+            "21 occurrences of E2210"
+          ],
+          [
+            "E3307 | 14",
+            "E3307: 14",
+            "E3307 - 14",
+            "E3307 — 14",
+            "E3307, 14",
+            "E3307` | 14",
+            "E3307** | 14",
+            "E3307: **14**",
+            "E3307\t14",
+            "E3307   14",
+            "E3307  14",
+            "E3307 14",
+            "E3307 (14",
+            "14 × E3307",
+            "14x E3307",
+            "14 occurrences of E3307"
+          ],
+          [
+            "E4001 | 9",
+            "E4001: 9",
+            "E4001 - 9",
+            "E4001 — 9",
+            "E4001, 9",
+            "E4001` | 9",
+            "E4001** | 9",
+            "E4001: **9**",
+            "E4001\t9",
+            "E4001   9",
+            "E4001  9",
+            "E4001 9",
+            "E4001 (9",
+            "9 × E4001",
+            "9x E4001",
+            "9 occurrences of E4001"
+          ],
+          [
+            "E5120 | 6",
+            "E5120: 6",
+            "E5120 - 6",
+            "E5120 — 6",
+            "E5120, 6",
+            "E5120` | 6",
+            "E5120** | 6",
+            "E5120: **6**",
+            "E5120\t6",
+            "E5120   6",
+            "E5120  6",
+            "E5120 6",
+            "E5120 (6",
+            "6 × E5120",
+            "6x E5120",
+            "6 occurrences of E5120"
+          ],
+          [
+            "E6655 | 4",
+            "E6655: 4",
+            "E6655 - 4",
+            "E6655 — 4",
+            "E6655, 4",
+            "E6655` | 4",
+            "E6655** | 4",
+            "E6655: **4**",
+            "E6655\t4",
+            "E6655   4",
+            "E6655  4",
+            "E6655 4",
+            "E6655 (4",
+            "4 × E6655",
+            "4x E6655",
+            "4 occurrences of E6655"
+          ],
+          [
+            "E7781 | 2",
+            "E7781: 2",
+            "E7781 - 2",
+            "E7781 — 2",
+            "E7781, 2",
+            "E7781` | 2",
+            "E7781** | 2",
+            "E7781: **2**",
+            "E7781\t2",
+            "E7781   2",
+            "E7781  2",
+            "E7781 2",
+            "E7781 (2",
+            "2 × E7781",
+            "2x E7781",
+            "2 occurrences of E7781"
+          ]
+        ],
+        "min_ratio": 0.85
+      }
+    },
+    {
+      "artifact": "errors_summary.md",
+      "check": "contains_any",
+      "params": {
+        "any_of": [
+          "2026-03-14T00:00:00Z",
+          "2026-03-14T00:00",
+          "00:00:00"
+        ]
+      }
+    }
+  ],
+  "pressure": {
+    "log_lines": 2400,
+    "log_bytes": 205038,
+    "fatal_requests": [
+      "req-368251b7",
+      "req-8aeb88d8",
+      "req-2e5fa8f2"
+    ]
+  }
+}

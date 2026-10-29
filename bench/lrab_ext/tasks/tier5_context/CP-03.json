@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 4,
+  "judge_rubric": "",
+  "max_wall_minutes": 40,
+  "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CP-03",
+  "domain": "deep-edit-under-context-pressure",
+  "tier": 5,
+  "fixtures": [
+    "fixtures/cp03_billing"
+  ],
+  "prompt": "You are an autonomous agent working in the current directory. FIRST create a numbered plan covering every step below (at least 5 steps). Use your available planning/todo tool if you have one; otherwise write the plan to plan.md. Then execute the steps one by one, creating each required file with the exact filename given. Do not fabricate content: base every claim on the provided fixture files in this directory. When all artifacts are written and verified, finish with a short summary (use your available finish/done mechanism or just report completion).\n\nThe directory cp03_billing holds pricing.py, a generated 1,500-line module of rate\ntables and helpers, and test_pricing.py. `python test_pricing.py` (inside cp03_billing)\nfails on tier boundaries. The module is too long to read whole: search it for the\nfunction the tests exercise and read only that region.\n\nRequired steps (plan at least 5):\n1. Create your plan (todo tool if available, otherwise plan.md).\n2. Run the tests and identify which function and which boundaries fail.\n3. Fix that one function in pricing.py. Change nothing else in the file, do not\n   reformat it, do not touch the tests (python check_collateral.py must print\n   COLLATERAL OK).\n4. Re-run the tests until the last line is `13 passed, 0 failed`.\n5. Write fix_note.md (in the task directory) with the function name, the line you\n   changed and why, then finish.",
+  "plan_steps": [
+    "Create todo plan",
+    "Run tests, read failures",
+    "Find tier_for_volume",
+    "Fix the boundary comparisons only",
+    "Re-run tests, write fix_note.md, finish"
+  ],
+  "milestones": [
+    {
+      "artifact": "fix_note.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "fix_note.md",
+      "check": "contains_any",
+      "params": {
+        "any_of": [
+          "tier_for_volume"
+        ]
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "cp03_billing/test_pricing.py",
+      "check": "script_pass",
+      "params": {
+        "command": "cd cp03_billing && python test_pricing.py",
+        "expect_stdout": "13 passed, 0 failed",
+        "timeout_s": 60
+      }
+    },
+    {
+      "artifact": "cp03_billing/check_collateral.py",
+      "check": "script_pass",
+      "params": {
+        "command": "cd cp03_billing && python check_collateral.py",
+        "expect_stdout": "COLLATERAL OK",
+        "timeout_s": 60
+      }
+    }
+  ],
+  "pressure": {
+    "module_lines": 1552,
+    "target_line": 1425
+  }
+}

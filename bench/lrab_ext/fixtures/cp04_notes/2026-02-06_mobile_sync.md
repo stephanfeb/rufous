@@ -1,0 +1,208 @@
+# Mobile sync, 2026-02-06
+
+Attendees: Dalia, Ines, Jonas, Eli, Chen
+
+## Agenda
+
+- the onboarding flow
+- localisation
+- the permission prompts
+- battery usage
+- crash reporting
+
+## Notes
+
+- Jonas walked through the the onboarding flow numbers from last week; nothing surprising.
+- Hugo: the the CI matrix spike is done, results in the shared doc.
+- Open question from Amina: do we need mDNS discovery before the demo? Parked.
+- Ines asked whether relay setup is still on the critical path. Chen thinks it is.
+- Hugo flagged flaky behaviour in localisation on the office Wi-Fi; Femi could not reproduce.
+- Reminder from Greta: update the logging runbook when the change lands.
+- Dalia: the the block cache spike is done, results in the shared doc.
+- Jonas noted the relay setup estimate slipped by two days; no change to the milestone.
+- Bram walked through the the CI matrix numbers from last week; nothing surprising.
+- Greta: the mDNS discovery spike is done, results in the shared doc.
+- Bram noted the mDNS discovery estimate slipped by two days; no change to the milestone.
+- Reviewed the mDNS discovery checklist line by line. Two items reworded.
+- Bram demoed relay setup on a test device. Looked fine; one visual glitch noted.
+- Reminder from Ines: update the the CI matrix runbook when the change lands.
+- Jonas asked whether crash reporting is still on the critical path. Dalia thinks it is.
+- Open question from Dalia: do we need logging before the demo? Parked.
+- Eli flagged flaky behaviour in battery usage on the office Wi-Fi; Femi could not reproduce.
+- Side discussion on the block cache: Eli will write it up separately.
+- Eli asked whether the permission prompts is still on the critical path. Dalia thinks it is.
+- Amina walked through the relay setup numbers from last week; nothing surprising.
+- Open question from Bram: do we need the CI matrix before the demo? Parked.
+- ACTION: Jonas to write up localisation by Friday.
+- Open question from Bram: do we need crash reporting before the demo? Parked.
+- Side discussion on the permission prompts: Chen will write it up separately.
+- Side discussion on localisation: Femi will write it up separately.
+- Chen asked whether logging is still on the critical path. Ines thinks it is.
+- Hugo flagged flaky behaviour in mDNS discovery on the office Wi-Fi; Greta could not reproduce.
+- Jonas asked whether logging is still on the critical path. Dalia thinks it is.
+- Reviewed the battery usage checklist line by line. Two items reworded.
+- Amina noted the relay setup estimate slipped by two days; no change to the milestone.
+- Reviewed the localisation checklist line by line. Two items reworded.
+- Hugo noted the the onboarding flow estimate slipped by two days; no change to the milestone.
+- Side discussion on battery usage: Greta will write it up separately.
+- Open question from Bram: do we need relay setup before the demo? Parked.
+- Open question from Bram: do we need localisation before the demo? Parked.
+- Dalia: the relay setup spike is done, results in the shared doc.
+- Bram flagged flaky behaviour in crash reporting on the office Wi-Fi; Greta could not reproduce.
+- Side discussion on mDNS discovery: Dalia will write it up separately.
+- Chen demoed the CI matrix on a test device. Looked fine; one visual glitch noted.
+- Open question from Hugo: do we need the permission prompts before the demo? Parked.
+- Open question from Jonas: do we need the permission prompts before the demo? Parked.
+- Chen demoed the CI matrix on a test device. Looked fine; one visual glitch noted.
+- Side discussion on the block cache: Eli will write it up separately.
+- Femi: the the onboarding flow spike is done, results in the shared doc.
+- Greta flagged flaky behaviour in logging on the office Wi-Fi; Jonas could not reproduce.
+- Dalia flagged flaky behaviour in logging on the office Wi-Fi; Ines could not reproduce.
+- Ines demoed localisation on a test device. Looked fine; one visual glitch noted.
+- Side discussion on logging: Hugo will write it up separately.
+- Amina walked through the mDNS discovery numbers from last week; nothing surprising.
+- Jonas: the battery usage spike is done, results in the shared doc.
+- Reviewed the the permission prompts checklist line by line. Two items reworded.
+- Side discussion on the permission prompts: Jonas will write it up separately.
+- Open question from Bram: do we need logging before the demo? Parked.
+- Reminder from Bram: update the battery usage runbook when the change lands.
+- Amina: the the CI matrix spike is done, results in the shared doc.
+- Femi walked through the the CI matrix numbers from last week; nothing surprising.
+- Femi asked whether relay setup is still on the critical path. Greta thinks it is.
+- Hugo demoed mDNS discovery on a test device. Looked fine; one visual glitch noted.
+- Open question from Ines: do we need relay setup before the demo? Parked.
+- Eli noted the the block cache estimate slipped by two days; no change to the milestone.
+- Side discussion on crash reporting: Jonas will write it up separately.
+- Eli asked whether the CI matrix is still on the critical path. Chen thinks it is.
+- Hugo noted the crash reporting estimate slipped by two days; no change to the milestone.
+- Dalia walked through the mDNS discovery numbers from last week; nothing surprising.
+- Jonas walked through the mDNS discovery numbers from last week; nothing surprising.
+- Eli: the mDNS discovery spike is done, results in the shared doc.
+- Greta asked whether localisation is still on the critical path. Hugo thinks it is.
+- Dalia demoed the permission prompts on a test device. Looked fine; one visual glitch noted.
+- Eli noted the localisation estimate slipped by two days; no change to the milestone.
+- Femi: the the permission prompts spike is done, results in the shared doc.
+- Ines noted the mDNS discovery estimate slipped by two days; no change to the milestone.
+- Chen walked through the relay setup numbers from last week; nothing surprising.
+- Reviewed the the onboarding flow checklist line by line. Two items reworded.
+- Greta: the mDNS discovery spike is done, results in the shared doc.
+- Ines flagged flaky behaviour in the permission prompts on the office Wi-Fi; Eli could not reproduce.
+- Jonas: the localisation spike is done, results in the shared doc.
+- Reminder from Femi: update the mDNS discovery runbook when the change lands.
+- Reviewed the crash reporting checklist line by line. Two items reworded.
+- Reviewed the relay setup checklist line by line. Two items reworded.
+- Amina walked through the crash reporting numbers from last week; nothing surprising.
+- Femi flagged flaky behaviour in relay setup on the office Wi-Fi; Amina could not reproduce.
+- Bram walked through the the block cache numbers from last week; nothing surprising.
+- Reminder from Dalia: update the localisation runbook when the change lands.
+- Amina walked through the the onboarding flow numbers from last week; nothing surprising.
+- Bram walked through the mDNS discovery numbers from last week; nothing surprising.
+- Hugo asked whether the onboarding flow is still on the critical path. Bram thinks it is.
+- Femi noted the the permission prompts estimate slipped by two days; no change to the milestone.
+- Dalia walked through the the onboarding flow numbers from last week; nothing surprising.
+- Reviewed the relay setup checklist line by line. Two items reworded.
+- Chen walked through the mDNS discovery numbers from last week; nothing surprising.
+- Side discussion on crash reporting: Chen will write it up separately.
+- Femi walked through the battery usage numbers from last week; nothing surprising.
+- Reminder from Hugo: update the the permission prompts runbook when the change lands.
+- ACTION: Dalia to review relay setup by Friday.
+- Side discussion on the CI matrix: Eli will write it up separately.
+- Open question from Femi: do we need crash reporting before the demo? Parked.
+- Eli noted the battery usage estimate slipped by two days; no change to the milestone.
+- ACTION: Bram to review logging by Friday.
+- Bram walked through the the permission prompts numbers from last week; nothing surprising.
+- Eli: the crash reporting spike is done, results in the shared doc.
+- Side discussion on logging: Greta will write it up separately.
+- Amina noted the battery usage estimate slipped by two days; no change to the milestone.
+- Femi asked whether relay setup is still on the critical path. Chen thinks it is.
+- Bram demoed relay setup on a test device. Looked fine; one visual glitch noted.
+- Femi demoed the CI matrix on a test device. Looked fine; one visual glitch noted.
+- Open question from Jonas: do we need the CI matrix before the demo? Parked.
+- Open question from Greta: do we need relay setup before the demo? Parked.
+- Bram flagged flaky behaviour in crash reporting on the office Wi-Fi; Amina could not reproduce.
+- Jonas flagged flaky behaviour in the block cache on the office Wi-Fi; Bram could not reproduce.
+- Side discussion on logging: Ines will write it up separately.
+- Greta flagged flaky behaviour in logging on the office Wi-Fi; Dalia could not reproduce.
+- Open question from Bram: do we need battery usage before the demo? Parked.
+- Reminder from Chen: update the logging runbook when the change lands.
+- Bram asked whether crash reporting is still on the critical path. Femi thinks it is.
+- Chen noted the crash reporting estimate slipped by two days; no change to the milestone.
+- Jonas demoed logging on a test device. Looked fine; one visual glitch noted.
+- Bram flagged flaky behaviour in battery usage on the office Wi-Fi; Dalia could not reproduce.
+- Dalia noted the the block cache estimate slipped by two days; no change to the milestone.
+- Reminder from Dalia: update the mDNS discovery runbook when the change lands.
+- Reviewed the relay setup checklist line by line. Two items reworded.
+- Reminder from Eli: update the mDNS discovery runbook when the change lands.
+- Eli noted the logging estimate slipped by two days; no change to the milestone.
+- Side discussion on the permission prompts: Hugo will write it up separately.
+- DECISION: ship the Android build with a foreground service for transfers.
+- Side discussion on relay setup: Amina will write it up separately.
+- Ines asked whether the CI matrix is still on the critical path. Eli thinks it is.
+- Reviewed the battery usage checklist line by line. Two items reworded.
+- Femi walked through the localisation numbers from last week; nothing surprising.
+- Greta: the crash reporting spike is done, results in the shared doc.
+- Side discussion on the block cache: Chen will write it up separately.
+- Dalia noted the mDNS discovery estimate slipped by two days; no change to the milestone.
+- Amina walked through the battery usage numbers from last week; nothing surprising.
+- Chen walked through the localisation numbers from last week; nothing surprising.
+- Greta flagged flaky behaviour in the onboarding flow on the office Wi-Fi; Amina could not reproduce.
+- Open question from Eli: do we need mDNS discovery before the demo? Parked.
+- Bram flagged flaky behaviour in the block cache on the office Wi-Fi; Hugo could not reproduce.
+- Open question from Chen: do we need the CI matrix before the demo? Parked.
+- Bram demoed localisation on a test device. Looked fine; one visual glitch noted.
+- Chen asked whether crash reporting is still on the critical path. Femi thinks it is.
+- Reviewed the the permission prompts checklist line by line. Two items reworded.
+- Reminder from Dalia: update the the block cache runbook when the change lands.
+- Reminder from Chen: update the the block cache runbook when the change lands.
+- Greta flagged flaky behaviour in logging on the office Wi-Fi; Femi could not reproduce.
+- Hugo walked through the the permission prompts numbers from last week; nothing surprising.
+- Eli walked through the crash reporting numbers from last week; nothing surprising.
+- Open question from Bram: do we need the CI matrix before the demo? Parked.
+- Reviewed the the permission prompts checklist line by line. Two items reworded.
+- Open question from Eli: do we need the CI matrix before the demo? Parked.
+- Open question from Hugo: do we need localisation before the demo? Parked.
+- Eli flagged flaky behaviour in relay setup on the office Wi-Fi; Amina could not reproduce.
+- Reviewed the mDNS discovery checklist line by line. Two items reworded.
+- Greta flagged flaky behaviour in the CI matrix on the office Wi-Fi; Femi could not reproduce.
+- Hugo noted the mDNS discovery estimate slipped by two days; no change to the milestone.
+- Eli asked whether the onboarding flow is still on the critical path. Hugo thinks it is.
+- Amina walked through the battery usage numbers from last week; nothing surprising.
+- Amina flagged flaky behaviour in logging on the office Wi-Fi; Greta could not reproduce.
+- Femi noted the mDNS discovery estimate slipped by two days; no change to the milestone.
+- Femi flagged flaky behaviour in localisation on the office Wi-Fi; Hugo could not reproduce.
+- Reviewed the the CI matrix checklist line by line. Two items reworded.
+- Reviewed the localisation checklist line by line. Two items reworded.
+- Dalia asked whether logging is still on the critical path. Bram thinks it is.
+- Bram: the battery usage spike is done, results in the shared doc.
+- Dalia flagged flaky behaviour in the onboarding flow on the office Wi-Fi; Bram could not reproduce.
+- Reviewed the the block cache checklist line by line. Two items reworded.
+- Open question from Greta: do we need the onboarding flow before the demo? Parked.
+- Dalia walked through the mDNS discovery numbers from last week; nothing surprising.
+- Jonas walked through the the onboarding flow numbers from last week; nothing surprising.
+- Jonas flagged flaky behaviour in the permission prompts on the office Wi-Fi; Eli could not reproduce.
+- Eli walked through the localisation numbers from last week; nothing surprising.
+- Open question from Femi: do we need the block cache before the demo? Parked.
+- Bram demoed relay setup on a test device. Looked fine; one visual glitch noted.
+- DECISION: drop iOS 15 support from the next minor.
+- Femi walked through the battery usage numbers from last week; nothing surprising.
+- Hugo: the localisation spike is done, results in the shared doc.
+- Amina: the logging spike is done, results in the shared doc.
+- Greta walked through the the onboarding flow numbers from last week; nothing surprising.
+- Bram noted the the CI matrix estimate slipped by two days; no change to the milestone.
+- Open question from Dalia: do we need relay setup before the demo? Parked.
+- Dalia demoed localisation on a test device. Looked fine; one visual glitch noted.
+- Bram asked whether the onboarding flow is still on the critical path. Hugo thinks it is.
+- Greta flagged flaky behaviour in logging on the office Wi-Fi; Amina could not reproduce.
+- Dalia demoed the block cache on a test device. Looked fine; one visual glitch noted.
+- Jonas walked through the battery usage numbers from last week; nothing surprising.
+- Femi: the battery usage spike is done, results in the shared doc.
+- Ines flagged flaky behaviour in relay setup on the office Wi-Fi; Bram could not reproduce.
+- Femi walked through the logging numbers from last week; nothing surprising.
+- Greta asked whether localisation is still on the critical path. Bram thinks it is.
+- Open question from Eli: do we need relay setup before the demo? Parked.
+- Side discussion on logging: Jonas will write it up separately.
+- Reviewed the the block cache checklist line by line. Two items reworded.
+
+## Next meeting
+
+Same slot next week; Femi to send the agenda.

@@ -598,6 +598,72 @@ Open follow-ups from the same transcript: bound read-only calls on a question tu
 (boubou-9c5), refuse command-shaped web_search queries (boubou-i3r), qwen3.5:9b quirks for the
 profile note (boubou-1sm).
 
+## Context-pressure tier (2026-10-29, bead boubou-65d.9)
+
+Mingbird's LRAB tiers never pushed the context: the 12B cells peaked at ~14.6k prompt tokens
+inside 32k, so the compaction ladder (`history.rs`) had no measurement behind it and bead
+boubou-65d.6 (recency pruning) nothing to be measured against. `bench/lrab_ext/` is a
+Boubou-side task root in LRAB's layout, generated deterministically by `gen_pressure.py` and
+scored by Mingbird's scorer imported read-only (`bench/lrab_ext/README.md`). Four tasks whose
+inputs do not fit a small context: CP-01 a 2,400-line log to summarise with exact error counts,
+CP-02 a package whose test runner prints ~1,300 lines with three planted bugs, CP-03 a boundary
+bug at line 1,425 of a 1,552-line module, CP-04 sixteen `DECISION:` lines across eight ~220-line
+notes. Collateral damage is caught by a `check_collateral.py` shipped with the fixture (AST
+fingerprints of every definition the task did not ask to change). Driver: `lrab_h2h.py
+--task-root --ctx 16384,32768,65536` sweeps `AGENT_CTX`, run ids get `_c16k`, the summary
+groups rows as `task@ctx`, `process_metrics.py` now counts the ladder's own
+`[context compaction L{n}]` lines (`compactions`, `compaction_max_level`); the scorer gets the
+same `python` shim as the agent (the smoke cell scored 0 with exit 127 although the agent's own
+run of the same command had passed). 8 tests in `bench/test_lrab_ext.py`, including drift
+between generator and checked-in fixtures.
+
+Baseline, qwen3.5:9b, one cell each, 20-minute budget (total 35 min):
+
+| task | 16k | 32k | 64k |
+|---|---|---|---|
+| CP-01 log triage | 1.00, peak 10.5k, L1 ×1, 21 calls | 1.00, 10.8k, 25 | 1.00, 7.8k, 20 |
+| CP-02 verbose tests | 1.00, 9.6k, L1 ×1, 37 calls | 1.00, 13.0k, 39 | 1.00, 13.4k, 44 |
+| CP-03 deep edit | 1.00, 6.2k, 18 calls | 1.00, 7.6k, 23 | 0.43, 7.8k, 22 |
+| CP-04 many files | 1.00, 6.6k, 16 calls | 1.00, 6.6k, 14 | 1.00, 6.8k, 16 |
+
+Reading: the pressure is latent with this model. qwen3.5:9b does what the prompts say (grep the
+log, read one region of the module, look at the FAILED line), so peak prompt usage stays at
+7–13k whatever the window, compaction fires only at 16k (L1 twice, never L2/L3), and the score
+is flat across windows. L1 did its job where it fired: CP-01 went from 63% to 35% in one step
+and finished at 57%. The one miss (CP-03 at 64k) is placement, not context: `fix_note.md` was
+written inside `cp03_billing/` instead of the task directory. The `integrity` charge on CP-04
+at 64k is a false positive of the lexical check: the last command before the accepted finish
+was a verification `grep` that exited 1 for no match.
+
+The 8k column is where the ladder is really exercised, and it shows what compaction costs:
+
+| task | 8k | vs 16k |
+|---|---|---|
+| CP-01 log triage | 0.86, peak 7.6k, L1 L2 L3, 20 calls, 351 s | 1.00, 179 s |
+| CP-02 verbose tests | **timeout** at 20 min, 25 compactions (L2 ×2), 110 calls | 1.00, 230 s |
+| CP-03 deep edit | 1.00, 7.5k, 9 compactions up to L3, 35 calls, 501 s | 1.00, 123 s |
+| CP-04 many files | 1.00, 6.1k, L1 ×2 L2 ×1, 19 calls, 202 s | 1.00, 117 s |
+
+Two failure shapes, both information loss by the ladder rather than model error. CP-01: the
+`grep FATAL` output (call 4) was evicted by L3 (17 → 5 messages) one call before the summary was
+written, so the "Fatal events" section has the three codes from the model's own prose but no
+timestamps or request ids, which is exactly the check it failed. CP-02: all three bugs were
+fixed and the suite green by +252 s; the remaining 15 minutes were 73 `run_bash` calls re-running
+tests and re-reading files after each L2 wiped the history to 7 messages (37 → 7, 44 → 7), the
+model no longer knowing it had finished; the one finish at +1131 s was rejected because
+`fix_report.md` was never written. Wall time doubles to quadruples at 8k on the tasks that did
+finish. A side finding from the same cell: `edit_file` on `textkit/tokens.py` was refused by the
+safety gate because `SENSITIVE_PATTERNS` contains `\token`, which matches any path segment
+starting with "token"; the model wrote the file with `cat >` in `run_bash` instead (bead
+boubou-a09: over-broad and leaky at once).
+
+Consequence for boubou-65d.6: the 8k column is its baseline (score, wall, calls, compactions,
+peak), with 16k as the mild case. Recency pruning should keep the latest tool results verbatim
+(the FATAL grep in CP-01) and summarise evicted pairs as "done: X" facts (the green test run in
+CP-02) so the loop neither loses the data it is about to use nor forgets that it has finished.
+At 32k and above there is nothing to improve on this tier with this model; a less disciplined
+model (gemma4:e2b reading files whole) is the second arm worth running.
+
 ## Loop behaviour beyond Mingbird (2026-10-28, from the LRAB WF-08 post-mortem)
 
 Two additions in `agent/run.rs` that Mingbird does not have; both came out of Boubou's WF-08

@@ -1,0 +1,32 @@
+# Boubou-side LRAB extension
+
+Tasks that live in this checkout, scored by Mingbird's LRAB scorer (`score_task.py`, imported
+read-only by `bench/lrab_h2h.py`). Mingbird's tree is never written to. The layout is LRAB's
+(`tasks/<tier>/*.json`, `fixtures/`), so the driver takes it as a task root:
+
+```sh
+python bench/lrab_ext/gen_pressure.py                      # regenerate (deterministic; tests check for drift)
+python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext \
+    --ctx 16384,32768,65536 --model qwen3.5:9b --results bench/results/lrab_ctx
+python bench/lrab_h2h.py --summary --results bench/results/lrab_ctx
+```
+
+Only the boubou arm runs here: Mingbird's own runner resolves fixtures against its own LRAB
+root. Task checks are limited to the scorer's root-independent kinds (`exists`, `contains_any`,
+`contains_groups`, `script_pass`); collateral damage is caught by a `check_collateral.py`
+shipped with the fixture (prints `COLLATERAL OK` when every untouched definition is intact).
+
+## tier5_context (bead boubou-65d.9)
+
+Inputs that do not fit a small context, so the agent has to search, run and summarise rather
+than read everything. Run at `AGENT_CTX` 8192 / 16384 / 32768 / 65536; the summary groups cells
+as `task@16k` etc. and the `compact` column counts compaction ladder steps. Baseline with
+qwen3.5:9b (2026-10-29, `docs/PORTING.md` "Context-pressure tier"): flat 1.0 at 16k and above
+with peaks of 6–13k tokens, so the ladder is only exercised at 8k (one timeout, one data loss).
+
+| task | input | deliverable | pressure |
+|---|---|---|---|
+| CP-01 | `cp01_server.log`, 2,400 lines, 200 KB | `errors_summary.md`: 7 error codes with exact counts, 3 FATAL request ids, time range | reading the log whole is ~60k tokens |
+| CP-02 | `textkit` package, 60 tests, runner prints ~1,300 lines | fix 3 planted bugs (`collapse_spaces`, `ngrams`, `median`), tests `60 passed, 0 failed`, `fix_report.md` | every test run is ~15k tokens of output |
+| CP-03 | `pricing.py`, 1,552 lines, target `tier_for_volume` at line 1,425 | boundary fix (`>` to `>=`), `13 passed, 0 failed`, `fix_note.md` | the file is ~35k tokens; collateral checker forbids reformatting |
+| CP-04 | eight ~220-line meeting notes | `decisions.md`: all 16 `DECISION:` lines with meeting dates | accumulation across eight reads |

@@ -16,7 +16,9 @@ so one parser scores both. The counts reported, alongside the artefact score:
   finish_refusals       finish rejected by any gate (hollow, tests, artefact, plan, sync)
   predelivery_checks    the original task re-injected before finishing
   truncations           generation budget burnt / tool call cut by done_reason=length
-  compactions           context-overflow forced compaction
+  compactions           compaction ladder steps taken ([context compaction L1..3] / [上下文压缩 L1..3]
+                        lines, failed levels excluded) plus context-overflow forced compactions
+  compaction_max_level  the deepest ladder level reached (0 = none)
   budget_nudges         ⏱ time-budget nudges injected
   forced_end            the run was ended by the wrap-up/dead-loop guard or the iteration cap,
                         not by an accepted finish ([wrap-up] / [收尾] / ===== MAX ITERATIONS)
@@ -48,6 +50,9 @@ CTX = re.compile(r"\[ctx: (\d+)/(\d+) = \d+%\]")
 CALL = re.compile(r"^\[(\d+)\|\+(\d+)s\] ⚙ (\S+) (.*?)(?: -> (.*))?$")
 WARN = re.compile(r"^\[(\d+)\] ⚠️ ?(.*)$")
 EXIT = re.compile(r"\[exit (-?\d+)\]")
+# The compaction ladder's own line, printed as a plain log line (not a ⚠️ guard) by both arms:
+#   [context compaction L2: 41 → 12 messages]   /   [上下文压缩 L2: 41 → 12 条消息]
+COMPACT = re.compile(r"^\[(?:context compaction|上下文压缩) L(\d)(?P<failed>[^\]]*?(?:failed|失败))?")
 BANNER = "===== TASK COMPLETE ====="
 FORCED_END = ("[wrap-up]", "[收尾]", "===== MAX ITERATIONS =====")
 # Files the task text names: `shortlist.md`, `clean_data.py`, `fig_arrhenius.png` …
@@ -83,7 +88,7 @@ def parse_transcript(text):
     """Counts and the call list from one transcript (ANSI allowed)."""
     m = {k: 0 for k, _ in GUARDS}
     m.update(tool_calls=0, failed_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
-             budget_nudges=0, forced_end=False, finish_accepted=False,
+             compaction_max_level=0, budget_nudges=0, forced_end=False, finish_accepted=False,
              corrector_calls=0, corrector_fixes=0, corrector_giveups=0)
     calls = []
     clean = _strip(text)
@@ -96,6 +101,11 @@ def parse_transcript(text):
             continue
         for a, _b in CTX.findall(line):
             m["peak_prompt_tokens"] = max(m["peak_prompt_tokens"], int(a))
+        k = COMPACT.match(line)
+        if k and not k.group("failed"):
+            m["compactions"] += 1
+            m["compaction_max_level"] = max(m["compaction_max_level"], int(k.group(1)))
+            continue
         c = CALL.match(line)
         if c:
             name, result = c.group(3), c.group(5) or ""

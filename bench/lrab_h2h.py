@@ -12,12 +12,19 @@ Usage (the mingbird arm needs `requests` and `beautifulsoup4` in the interpreter
   python bench/lrab_h2h.py --arms boubou --tasks WF-01,WF-07 --timeout-min 20
   python bench/lrab_h2h.py --reps 3             # 3 replications, (task, arm) cells round-robin
   python bench/lrab_h2h.py --summary            # table from an existing results dir
+  python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --ctx 16384,32768,65536
+                                                # Boubou-side tiers (context pressure), AGENT_CTX sweep
 Every cell also gets process metrics (tool calls, peak prompt tokens, guard firings, integrity;
 see process_metrics.py) under score.json["process"], and the summary reports per-arm means with
 a bootstrap 95% CI over tasks when there is more than one replication.
 
 Env: MINGBIRD_ROOT (default: sibling `../Mingbird-agent`), BOUBOU_BIN (default: PATH, then
 this checkout's target/release then target/debug), AGENT_CTX / AGENT_SLIM_OUTPUT pass through.
+
+Task roots: a task root holds `tasks/<tier>/*.json` and `fixtures/`, Mingbird's LRAB layout. The
+default root is Mingbird's `bench/lrab`; `--task-root` points at a Boubou-side root such as
+`bench/lrab_ext` (the context-pressure tier). Mingbird's own runner resolves fixtures against its
+own tree, so the mingbird arm only runs on the default root; the scorer is the same for both.
 """
 import argparse
 import glob
@@ -59,12 +66,12 @@ def boubou_exe():
                             "`cargo build --release -p boubou-cli` (tried: %s)" % ", ".join(cands))
 
 
-def prepare_workdir(task, workdir):
+def prepare_workdir(task, workdir, task_root=LRAB):
     """Mirror of run_bench.prepare_workdir: fixtures copied in, prompt in task_input.txt."""
     shutil.rmtree(workdir, ignore_errors=True)
     os.makedirs(workdir, exist_ok=True)
     for rel in task.get("fixtures", []):
-        src = os.path.join(LRAB, rel)
+        src = os.path.join(task_root, rel)
         if os.path.isfile(src):
             shutil.copy2(src, workdir)
         elif os.path.isdir(src):
@@ -73,14 +80,14 @@ def prepare_workdir(task, workdir):
         f.write(task["prompt"])
 
 
-def boubou_cmd(workdir, model):
+def boubou_cmd(workdir, model, ctx=None):
     """Same contract and env as Mingbird's `_cmd_mingbird`; no --new so phase 2 of a
-    kill-resume run continues from .agent_state.json."""
+    kill-resume run continues from .agent_state.json. `ctx` overrides AGENT_CTX for the cell."""
     env = dict(os.environ)
     env.pop("AGENT_STREAM", None)
     env["BOUBOU_HOME"] = BENCH_HOME
     env["MINGBIRD_HOME"] = BENCH_HOME
-    env["AGENT_CTX"] = os.environ.get("AGENT_CTX", "32768")
+    env["AGENT_CTX"] = str(ctx) if ctx else os.environ.get("AGENT_CTX", "32768")
     env["AGENT_SLIM_OUTPUT"] = os.environ.get("AGENT_SLIM_OUTPUT", "0")
     env["AGENT_UNATTENDED"] = "1"
     env.setdefault("PYTHONUTF8", "1")
@@ -140,9 +147,9 @@ def _run_phase(cmd, env, cwd, timeout_s):
         return -9, out or "", err or "", time.time() - t0, True
 
 
-def run_boubou(task, workdir, model, timeout_min, kill_at_pct):
+def run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx=None):
     """Returns (rc, stdout, stderr, wall, meta). meta mirrors run_bench's resume dict."""
-    cmd, env = boubou_cmd(workdir, model)
+    cmd, env = boubou_cmd(workdir, model, ctx)
     budget = timeout_min * 60
     if not kill_at_pct:
         rc, out, err, wall, timed_out = _run_phase(cmd, env, workdir, budget)
@@ -216,21 +223,27 @@ def classify(rc, wall, transcript, score, workdir):
 
 
 def score_with_mingbird(task_path, workdir, judge):
+    # script_pass checks run `python …` through the shell in this process's environment; give
+    # the scorer the same `python` shim the agent gets (CP-03 smoke 2026-10-29: exit 127, score 0
+    # although the agent's own run of the same command had passed).
+    ensure_python_on_path(os.environ)
     sys.path.insert(0, os.path.join(LRAB, "scoring"))
     from score_task import score_task   # Mingbird's referee, imported read-only
     return score_task(task_path, workdir, judge=bool(judge), judge_model=judge or "ornith-1.5:35b")
 
 
-def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge):
+def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge,
+                   task_root=LRAB, ctx=None):
     workdir = os.path.join(out_dir, "workdir")
-    prepare_workdir(task, workdir)
-    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct)
+    prepare_workdir(task, workdir, task_root)
+    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx)
     with open(os.path.join(out_dir, "transcript.txt"), "w", encoding="utf-8") as f:
         f.write(out)
         if err:
             f.write("\n--- STDERR ---\n" + err)
     base = {"task_id": task["id"], "agent": "boubou", "model": model,
-            "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id}
+            "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id,
+            "ctx": int(boubou_cmd(workdir, model, ctx)[1]["AGENT_CTX"])}
     if meta and (meta.get("timed_out") or meta.get("phase2_timeout")):
         score = dict(base, failure_mode="timeout", resume=meta,
                      failure_note=f"agent exceeded {timeout_min} min wall budget")
@@ -266,8 +279,14 @@ def run_mingbird_arm(task_path, task, model, results, run_id, timeout_min, kill_
 
 
 # ------------------------------------------------------------------- driver
-def list_tasks(tiers, ids, heldout):
-    root = os.path.join(LRAB, "tasks_heldout" if heldout else "tasks")
+def tiers_under(task_root, heldout=False):
+    """Every tier directory under a task root, in name order (tier5_context, …)."""
+    root = os.path.join(task_root, "tasks_heldout" if heldout else "tasks")
+    return sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))) if os.path.isdir(root) else []
+
+
+def list_tasks(tiers, ids, heldout, task_root=LRAB):
+    root = os.path.join(task_root, "tasks_heldout" if heldout else "tasks")
     paths = []
     for tier in tiers:
         paths += sorted(glob.glob(os.path.join(root, tier, "*.json")))
@@ -275,6 +294,16 @@ def list_tasks(tiers, ids, heldout):
     if ids:
         tasks = [(p, t) for p, t in tasks if t["id"] in ids]
     return tasks
+
+
+def ctx_suffix(ctx):
+    """Run-id suffix for a context-size cell: 16384 -> _c16k."""
+    return f"_c{int(ctx) // 1024}k"
+
+
+def row_key(d):
+    """Summary row: the task, or task@ctx when the results sweep AGENT_CTX."""
+    return d["task_id"] + (f"@{int(d['ctx']) // 1024}k" if d.get("ctx_sweep") else "")
 
 
 def cell(d):
@@ -309,16 +338,19 @@ def bootstrap_ci(task_means, n=2000, seed=0):
     return boots[int(0.025 * n)], boots[int(0.975 * n) - 1]
 
 
-PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("fail", "failed_calls"),
-                ("loop", "loop_interceptions"), ("refuse", "finish_refusals"),
+PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("compact", "compactions"),
+                ("fail", "failed_calls"), ("loop", "loop_interceptions"), ("refuse", "finish_refusals"),
                 ("empty", "empty_resets"), ("integrity", "integrity"), ("corr", "corrector_calls")]
 
 
 def summary(results):
     rows = {}
-    for sp in glob.glob(os.path.join(results, "*", "score.json")):
-        d = json.load(open(sp, encoding="utf-8"))
-        rows.setdefault(d["task_id"], {}).setdefault(d["agent"], []).append(d)
+    scores = [json.load(open(sp, encoding="utf-8")) for sp in glob.glob(os.path.join(results, "*", "score.json"))]
+    # A results dir with more than one AGENT_CTX is a sweep: rows are task@ctx, not task.
+    sweep = len({d.get("ctx") for d in scores if d.get("ctx")}) > 1
+    for d in scores:
+        d["ctx_sweep"] = sweep
+        rows.setdefault(row_key(d), {}).setdefault(d["agent"], []).append(d)
     arms = ["mingbird", "boubou"]
     order = sorted(rows, key=lambda x: (not x.startswith("WF"), x))
     lines = ["| task | mingbird | boubou |", "|---|---|---|"]
@@ -351,10 +383,11 @@ def summary(results):
         for label, key in PROCESS_COLS:
             vals = []
             for a in arms:
-                cells = [d["process"][key] for t in order for d in rows[t].get(a, []) if "process" in d]
+                cells = [d["process"].get(key, 0) for t in order for d in rows[t].get(a, []) if "process" in d]
                 vals.append(f"{sum(cells) / len(cells):.1f}" if cells else "—")
             lines.append(f"| {label} | " + " | ".join(vals) + " |")
-        lines.append("\n| task | " + " | ".join(f"{a} calls/peak/fail/loop/refuse/integrity" for a in arms) + " |")
+        row_cols = "/".join(label for label, key in PROCESS_COLS if key != "empty_resets")
+        lines.append("\n| task | " + " | ".join(f"{a} {row_cols}" for a in arms) + " |")
         lines.append("|---|" + "---|" * len(arms))
         for tid in order:
             parts = []
@@ -381,7 +414,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="gemma4:e2b")
     ap.add_argument("--arms", default="mingbird,boubou")
-    ap.add_argument("--tiers", default=",".join(TIERS[:3]), help="comma list; default tiers 1-3")
+    ap.add_argument("--task-root", default=LRAB,
+                    help="directory holding tasks/<tier>/*.json and fixtures/ (default: Mingbird's LRAB)")
+    ap.add_argument("--tiers", default="",
+                    help="comma list; default tiers 1-3 under LRAB, every tier under another root")
+    ap.add_argument("--ctx", default="",
+                    help="comma list of AGENT_CTX values to sweep (boubou arm); run ids get _c16k etc.")
     ap.add_argument("--tasks", default="", help="comma list of task ids to restrict to")
     ap.add_argument("--heldout", action="store_true", help="use tasks_heldout instead of tasks")
     ap.add_argument("--results", default=os.path.join(BOUBOU_ROOT, "bench", "results", "lrab_h2h"))
@@ -401,35 +439,45 @@ def main():
         return
     if not os.path.isdir(LRAB):
         sys.exit(f"Mingbird checkout not found at {MINGBIRD_ROOT} (set MINGBIRD_ROOT)")
+    task_root = os.path.abspath(a.task_root)
     arms = [x for x in a.arms.split(",") if x]
+    if "mingbird" in arms and os.path.realpath(task_root) != os.path.realpath(LRAB):
+        sys.exit("the mingbird arm resolves fixtures against Mingbird's own LRAB root, so a custom "
+                 "--task-root runs with --arms boubou only")
     ids = {x for x in a.tasks.split(",") if x}
-    tasks = list_tasks(a.tiers.split(","), ids, a.heldout)
+    tiers = [t for t in a.tiers.split(",") if t] or (
+        TIERS[:3] if os.path.realpath(task_root) == os.path.realpath(LRAB) else tiers_under(task_root, a.heldout))
+    tasks = list_tasks(tiers, ids, a.heldout, task_root)
+    ctxs = [int(x) for x in a.ctx.split(",") if x] or [None]
     cells = []
     for rep in range(a.reps):
-        for ti, (task_path, task) in enumerate(tasks):
-            arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
-            for arm in arm_order:
-                cells.append((rep, task_path, task, arm))
-    for rep, task_path, task, arm in cells:
+        for ctx in ctxs:
+            for ti, (task_path, task) in enumerate(tasks):
+                arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
+                for arm in arm_order:
+                    cells.append((rep, ctx, task_path, task, arm))
+    for rep, ctx, task_path, task, arm in cells:
         kill_at = a.kill_at_pct if a.kill_at_pct is not None else task.get("kill_at_pct")
         budget = a.timeout_min
-        run_id = f"{arm}_{task['id']}" + (f"_r{rep}" if a.reps > 1 else "")
+        run_id = f"{arm}_{task['id']}" + (ctx_suffix(ctx) if ctx else "") + (f"_r{rep}" if a.reps > 1 else "")
         out_dir = os.path.join(a.results, run_id)
         if os.path.exists(os.path.join(out_dir, "score.json")):
             print(f"skip {run_id} (scored)", flush=True)
             continue
         if a.dry_run:
             if arm == "boubou":
-                print(run_id, boubou_cmd(os.path.join(out_dir, "workdir"), a.model)[0])
+                cmd, env = boubou_cmd(os.path.join(out_dir, "workdir"), a.model, ctx)
+                print(run_id, f"AGENT_CTX={env['AGENT_CTX']}", cmd)
             else:
                 print(run_id, "run_bench.py --agent mingbird --task", task_path)
             continue
         os.makedirs(out_dir, exist_ok=True)
         print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m"
-              + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
+              + (f" ctx={ctx}" if ctx else "") + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
         t0 = time.time()
         if arm == "boubou":
-            sc = run_boubou_arm(task_path, task, a.model, out_dir, run_id, budget, kill_at, a.judge)
+            sc = run_boubou_arm(task_path, task, a.model, out_dir, run_id, budget, kill_at, a.judge,
+                                task_root, ctx)
         else:
             with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:
                 sc = run_mingbird_arm(task_path, task, a.model, a.results, run_id, budget, kill_at, a.judge, log)
@@ -442,6 +490,7 @@ def main():
               f"fs={sc.get('final_score')} wall={sc.get('wall_seconds')} "
               f"mode={sc.get('failure_mode')} exit={sc.get('exit_code')} "
               f"calls={pm.get('tool_calls')} peak={pm.get('peak_prompt_tokens')} "
+              f"compact={pm.get('compactions')} "
               f"loop={pm.get('loop_interceptions')} refuse={pm.get('finish_refusals')} "
               f"integrity={pm.get('integrity')} ({time.time() - t0:.0f}s)", flush=True)
     print("\nMATRIX DONE\n" + summary(a.results), flush=True)

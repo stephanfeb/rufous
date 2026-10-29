@@ -1,0 +1,152 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 4,
+  "judge_rubric": "",
+  "max_wall_minutes": 40,
+  "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CP-04",
+  "domain": "many-file-digest-under-context-pressure",
+  "tier": 5,
+  "fixtures": [
+    "fixtures/cp04_notes"
+  ],
+  "prompt": "You are an autonomous agent working in the current directory. FIRST create a numbered plan covering every step below (at least 5 steps). Use your available planning/todo tool if you have one; otherwise write the plan to plan.md. Then execute the steps one by one, creating each required file with the exact filename given. Do not fabricate content: base every claim on the provided fixture files in this directory. When all artifacts are written and verified, finish with a short summary (use your available finish/done mechanism or just report completion).\n\nThe directory cp04_notes holds eight team meeting notes (one Markdown file each, about\n220 lines). Each contains exactly two lines that start with `DECISION:` among the\ndiscussion bullets. Do not read the files whole one after another and hope to remember\nthem: search for the DECISION lines (grep or the search tool), file by file.\n\nRequired steps (plan at least 5):\n1. Create your plan (todo tool if available, otherwise plan.md).\n2. For each of the eight files, find the two DECISION lines and the meeting date (in the\n   file name and the title).\n3. Write decisions.md: one section per meeting (team and date), listing its two\n   decisions verbatim; sixteen decisions in total.\n4. Verify decisions.md has sixteen decisions and all eight dates.\n5. Finish.",
+  "plan_steps": [
+    "Create todo plan",
+    "Grep DECISION lines per file",
+    "Collect dates",
+    "Write decisions.md",
+    "Verify sixteen decisions, finish"
+  ],
+  "milestones": [
+    {
+      "artifact": "decisions.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "decisions.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "2026-02-03",
+            "Feb 3"
+          ],
+          [
+            "2026-02-06",
+            "Feb 6"
+          ],
+          [
+            "2026-02-09",
+            "Feb 9"
+          ],
+          [
+            "2026-02-12",
+            "Feb 12"
+          ],
+          [
+            "2026-02-15",
+            "Feb 15"
+          ],
+          [
+            "2026-02-18",
+            "Feb 18"
+          ],
+          [
+            "2026-02-21",
+            "Feb 21"
+          ],
+          [
+            "2026-02-24",
+            "Feb 24"
+          ]
+        ],
+        "min_ratio": 0.75
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "decisions.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "UDX as the default transport",
+            "udx as the default transport"
+          ],
+          [
+            "Freeze the v2 ingestion API",
+            "freeze the v2 ingestion API",
+            "freeze the v2 ingestion api"
+          ],
+          [
+            "Foreground service for transfers",
+            "foreground service for transfers"
+          ],
+          [
+            "Drop iOS 15",
+            "drop iOS 15",
+            "drop ios 15"
+          ],
+          [
+            "Named by CID",
+            "named by CID",
+            "named by cid"
+          ],
+          [
+            "2 GiB",
+            "2 gib"
+          ],
+          [
+            "Platform keystore only",
+            "platform keystore only"
+          ],
+          [
+            "Every 30 days",
+            "every 30 days"
+          ],
+          [
+            "Single peer list screen",
+            "single peer list screen"
+          ],
+          [
+            "Share button into the file row",
+            "share button into the file row"
+          ],
+          [
+            "Pin the dart_libp2p",
+            "pin the dart-libp2p",
+            "pin the dart_libp2p"
+          ],
+          [
+            "Nightly, not on every push",
+            "nightly, not on every push"
+          ],
+          [
+            "Two physical devices",
+            "two physical devices"
+          ],
+          [
+            "Environment limit",
+            "environment limit"
+          ],
+          [
+            "Label it preview",
+            "label it preview"
+          ],
+          [
+            "Defer wide-area discovery",
+            "defer wide-area discovery"
+          ]
+        ],
+        "min_ratio": 0.875
+      }
+    }
+  ],
+  "pressure": {
+    "files": 8,
+    "decisions": 16
+  }
+}

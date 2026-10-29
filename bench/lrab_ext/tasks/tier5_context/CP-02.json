@@ -1,0 +1,75 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 5,
+  "judge_rubric": "",
+  "max_wall_minutes": 40,
+  "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CP-02",
+  "domain": "verbose-test-triage-under-context-pressure",
+  "tier": 5,
+  "fixtures": [
+    "fixtures/cp02_pkg"
+  ],
+  "prompt": "You are an autonomous agent working in the current directory. FIRST create a numbered plan covering every step below (at least 6 steps). Use your available planning/todo tool if you have one; otherwise write the plan to plan.md. Then execute the steps one by one, creating each required file with the exact filename given. Do not fabricate content: base every claim on the provided fixture files in this directory. When all artifacts are written and verified, finish with a short summary (use your available finish/done mechanism or just report completion).\n\nThe directory cp02_pkg contains the `textkit` package, its 60 tests (tests_textkit.py)\nand a runner. `python run_tests.py` (run inside cp02_pkg) prints a long trace for every\ntest and ends with `N passed, M failed`; several tests currently fail, caused by bugs in\nthree functions. The runner's output is long: look at the FAILED line and the failing\ntests' blocks, not the whole output.\n\nRequired steps (plan at least 6):\n1. Create your plan (todo tool if available, otherwise plan.md).\n2. Run the tests and identify the failing tests and the three functions they exercise.\n3. Fix the three functions in the textkit package. Change nothing else: do not edit the\n   tests, the runner, or any other function (python check_collateral.py must print\n   COLLATERAL OK).\n4. Re-run the tests until the last line is `60 passed, 0 failed`.\n5. Write fix_report.md (in the task directory, next to cp02_pkg) naming each fixed\n   function, the failing test(s) it caused, and the one-line cause.\n6. Verify fix_report.md exists and the tests are green, then finish.",
+  "plan_steps": [
+    "Create todo plan",
+    "Run tests, read FAILED line",
+    "Locate the three functions",
+    "Fix each without collateral edits",
+    "Re-run until green",
+    "Write fix_report.md and finish"
+  ],
+  "milestones": [
+    {
+      "artifact": "fix_report.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "fix_report.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "collapse_spaces"
+          ],
+          [
+            "ngrams"
+          ],
+          [
+            "median"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "cp02_pkg/run_tests.py",
+      "check": "script_pass",
+      "params": {
+        "command": "cd cp02_pkg && python run_tests.py",
+        "expect_stdout": "60 passed, 0 failed",
+        "timeout_s": 120
+      }
+    },
+    {
+      "artifact": "cp02_pkg/check_collateral.py",
+      "check": "script_pass",
+      "params": {
+        "command": "cd cp02_pkg && python check_collateral.py",
+        "expect_stdout": "COLLATERAL OK",
+        "timeout_s": 60
+      }
+    }
+  ],
+  "pressure": {
+    "tests": 60,
+    "planted_bugs": [
+      "normalize.collapse_spaces",
+      "tokens.ngrams",
+      "stats.median"
+    ]
+  }
+}
