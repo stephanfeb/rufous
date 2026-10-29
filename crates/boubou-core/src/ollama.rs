@@ -313,6 +313,21 @@ pub struct SystemOneResponse {
     pub usage: Option<Value>,
 }
 
+/// Default socket timeout, seconds: Mingbird's `API_TIMEOUT_OPEN` (`AGENT_APITIMEOUT`).
+pub const DEFAULT_API_TIMEOUT_SECS: u64 = 240;
+/// Time allowed to open the TCP connection.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `AGENT_APITIMEOUT` in seconds, default 240. Zero or unparsable falls back to the default.
+pub fn api_timeout() -> std::time::Duration {
+    let secs = std::env::var("AGENT_APITIMEOUT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DEFAULT_API_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     base: String,
@@ -320,15 +335,31 @@ pub struct Client {
 }
 
 impl Client {
+    /// A client with the socket semantics of Mingbird's `urlopen(timeout=API_TIMEOUT_OPEN)`:
+    /// the connect and every single read are bounded by [`api_timeout`], the whole request is
+    /// not, so a slow model that keeps streaming tokens is never cut off, while a server that
+    /// goes silent (review 2026-10-29: the loop hung for ever on a stalled `/api/chat`) fails
+    /// after `AGENT_APITIMEOUT` seconds and the loop's retry ladder takes over.
     pub fn new(host: impl Into<String>) -> Self {
+        Self::with_timeouts(host, CONNECT_TIMEOUT, api_timeout())
+    }
+
+    /// `new` with explicit connect and per-read timeouts.
+    pub fn with_timeouts(
+        host: impl Into<String>,
+        connect: std::time::Duration,
+        read: std::time::Duration,
+    ) -> Self {
         let mut base: String = host.into();
         while base.ends_with('/') {
             base.pop();
         }
-        Self {
-            base,
-            http: reqwest::Client::new(),
-        }
+        let http = reqwest::Client::builder()
+            .connect_timeout(connect)
+            .read_timeout(read)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { base, http }
     }
 
     pub fn base_url(&self) -> &str {
