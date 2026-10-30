@@ -2788,3 +2788,94 @@ fn a_relocated_harness_dir_takes_the_plan_and_the_session_snapshot_follows() {
         .collect();
     assert_eq!(left, vec!["a.txt".to_string()], "{left:?}");
 }
+
+// ---- image the server cannot decode (tier7 CH-03 unattended, 2026-10-30; bd boubou-am3) ----
+
+/// Answers like `Scripted`, except that a request carrying an image is refused the way Ollama
+/// refuses a corrupt PNG. Counts the refusals.
+struct RejectsImages {
+    inner: Scripted,
+    refused: usize,
+}
+
+impl ChatBackend for RejectsImages {
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        if messages.iter().any(|m| !m.images.is_empty()) {
+            self.refused += 1;
+            return Err(ChatError::Status {
+                status: 400,
+                body: r#"{"error":"decode image: png: invalid format: invalid checksum"}"#
+                    .to_string(),
+            });
+        }
+        self.inner.chat(model, messages, tools, on)
+    }
+}
+
+#[test]
+fn an_image_the_server_cannot_decode_is_dropped_and_the_run_goes_on() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![(
+        "read_file",
+        json!({"path": "shot.png"}),
+        "[image attached: shot.png (0 KB)]",
+    )];
+    // read_file queues the image for the next request the way the real tool does.
+    std::fs::write(
+        d.path().join(".hb_pending_images.json"),
+        r#"[{"path":"shot.png","b64":"QUJD"}]"#,
+    )
+    .expect("w");
+    let backend = RejectsImages {
+        inner: Scripted {
+            calls: calls.clone(),
+            i: 0,
+            finish_content: "done".to_string(),
+            finish_summary: "Looked at the folder.".to_string(),
+        },
+        refused: 0,
+    };
+    let tools = ScriptedTools {
+        calls,
+        repeat: Vec::new(),
+        served: Vec::new(),
+    };
+    let _ = std::fs::write(d.path().join("m08.py"), "def f():\n    return 1\n");
+    let params = RunParams::plain("gemma4:12b", d.path());
+    let mut a = Agent::new(params, backend, tools);
+    a.sessions_dir = d.path().join("sessions");
+    let out = a
+        .run(
+            start("Look at shot.png and tell me what it shows."),
+            None,
+            None,
+        )
+        .expect("the run must not die on a 400 the harness caused");
+    assert_eq!(
+        a.backend.refused, 1,
+        "refused once, then the retry carried no image"
+    );
+    assert!(out.iter().all(|m| m.images.is_empty()));
+    let noted: Vec<&Message> = out
+        .iter()
+        .filter(|m| {
+            m.content
+                .contains("image could not be decoded by the model server")
+        })
+        .collect();
+    assert_eq!(noted.len(), 1, "{out:#?}");
+    // The image hangs on the last tool or user message before the request (a harness note
+    // may follow the tool output), so the note is on whichever carried it.
+    assert!(
+        matches!(noted[0].role, Role::Tool | Role::User),
+        "{:?}",
+        noted[0].role
+    );
+    assert_eq!(out.last().map(|m| &m.role), Some(&Role::Assistant));
+}

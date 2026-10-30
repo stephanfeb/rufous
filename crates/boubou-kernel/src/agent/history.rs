@@ -500,6 +500,29 @@ pub fn pending_images_path(harness_dir: &Path) -> std::path::PathBuf {
     harness_dir.join(".hb_pending_images.json")
 }
 
+/// What a message that carried a rejected image says afterwards.
+pub const IMAGE_DROPPED_NOTE: &str = "\n[image could not be decoded by the model server and was removed from the request; the file may be empty, truncated or not an image]";
+
+/// The server rejected an attached image (HTTP 400 "decode image …"): remove every image
+/// from the history and say so on the last message that carried one, so the same request
+/// can be retried and the model knows why it sees no picture. Returns how many images went.
+pub fn drop_images(messages: &mut [Message], note: &str) -> usize {
+    let mut dropped = 0;
+    let mut noted = false;
+    for m in messages.iter_mut().rev() {
+        if m.images.is_empty() {
+            continue;
+        }
+        dropped += m.images.len();
+        m.images.clear();
+        if !noted {
+            m.content.push_str(note);
+            noted = true;
+        }
+    }
+    dropped
+}
+
 /// `_attach_pending_images`: strip images from older messages, then hang the queued images
 /// (`.hb_pending_images.json`, written by `read_file`) on the last tool/user message.
 /// Returns how many were attached.

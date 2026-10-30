@@ -3,7 +3,7 @@
 
 use boubou_kernel::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
 use boubou_kernel::agent::history::{
-    attach_pending_images, compact_history, dedupe_trailing_assistant, prune_history,
+    attach_pending_images, compact_history, dedupe_trailing_assistant, drop_images, prune_history,
     sanitize_ckpt, similar, PRUNED_MARK,
 };
 use boubou_kernel::ollama::{Message, Role};
@@ -483,4 +483,34 @@ fn pruning_with_keep_zero_is_off_and_does_not_panic() {
     let mut msgs = history_with_pairs(3);
     assert_eq!(prune_history(&mut msgs, 0), 0);
     assert!(msgs.iter().all(|m| !m.content.starts_with(PRUNED_MARK)));
+}
+
+#[test]
+fn a_rejected_image_is_dropped_everywhere_and_noted_once_where_it_was() {
+    let mut v = vec![
+        Message::system("s"),
+        Message::user("look"),
+        Message::assistant_call("read_file", json!({"path": "a.png"})),
+        Message::tool_output("[image attached: a.png]"),
+        Message::assistant_call("read_file", json!({"path": "b.png"})),
+        Message::tool_output("[image attached: b.png]"),
+    ];
+    v[3].images = vec!["QUJD".to_string()];
+    v[5].images = vec!["REVG".to_string(), "R0hJ".to_string()];
+    assert_eq!(drop_images(&mut v, " [gone]"), 3);
+    assert!(v.iter().all(|m| m.images.is_empty()));
+    assert_eq!(
+        v[5].content, "[image attached: b.png] [gone]",
+        "the last carrier gets the note"
+    );
+    assert_eq!(
+        v[3].content, "[image attached: a.png]",
+        "older carriers are only stripped"
+    );
+    assert_eq!(
+        drop_images(&mut v, " [gone]"),
+        0,
+        "nothing left to drop, nothing noted again"
+    );
+    assert_eq!(v[5].content, "[image attached: b.png] [gone]");
 }

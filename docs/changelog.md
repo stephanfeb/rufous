@@ -1170,3 +1170,17 @@ Step 10 reading for `general`: nothing here says the chat preset needs a gate, a
 the batch harness is worse at chat-shaped work once the question route fires. The difference
 the products exist for is the turn shape and the prompt, not the protections.
 
+## A rejected image no longer ends the run (2026-10-30)
+
+The loop already repaired one 400 the harness itself caused, the structural "consecutive
+assistant turns" error, by cleaning the history and retrying through the failure ladder as
+`repaired`. A server that cannot decode an attached image (`HTTP 400: decode image: png:
+invalid format`, tier7 CH-03 unattended, bd boubou-am3) is the same class, so the repair sits
+at the same seam: `history::drop_images` strips every image from the history and appends
+`IMAGE_DROPPED_NOTE` to the message that carried the last one, and the ladder retries once
+(`Http4xx { repaired: true }`); the retry log line now names which repair was made. The model
+sees why it got no picture and the task continues. No header check in `read_file`: the
+server's decoder is the authority. Tests: `tests/history.rs` (drop everywhere, note once) and
+`tests/agent_loop.rs` (a backend that refuses any request carrying an image is refused once,
+the retry carries none, the run completes). 502 Rust tests, clippy clean.
+

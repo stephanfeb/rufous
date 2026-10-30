@@ -21,8 +21,8 @@ use super::chat::{ChatBackend, StreamPiece};
 use super::corrector::{self, Verdict};
 use super::face::{self, ToolFace, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
-    attach_pending_images, compact_history, dedupe_trailing_assistant, estimate_messages_tokens,
-    prune_history, workdir_files_text, PRUNE_AT,
+    attach_pending_images, compact_history, dedupe_trailing_assistant, drop_images,
+    estimate_messages_tokens, prune_history, workdir_files_text, PRUNE_AT,
 };
 use super::ladders::{
     CallLadders, ChatFailure, Compaction, CorrectorLedger, EmptyVerdict, Failure, Recall, Retry,
@@ -853,16 +853,33 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         return Ok(messages);
                     }
                     let low = e.lower_text();
+                    // What a repaired 4xx had wrong, for the retry log line.
+                    let mut repair = "";
                     let kind = if e.is_4xx() {
-                        // Structural 400 (consecutive assistant turns): clean and retry.
+                        // Two 400s the harness itself caused are repaired and retried: the
+                        // structural "consecutive assistant turns" error, and an attached image
+                        // the server cannot decode (a 0-byte or corrupt file read as an image
+                        // ended tier7 CH-03 unattended, 2026-10-30, bd boubou-am3).
                         let structural = low.contains("assistant messages at the end")
                             || low.contains("consecutive");
+                        let image = low.contains("image")
+                            && (low.contains("decode")
+                                || low.contains("invalid format")
+                                || low.contains("unsupported"));
                         let before = messages.len();
                         if structural {
                             dedupe_trailing_assistant(&mut messages);
+                            if messages.len() != before {
+                                repair = "conversation structure (consecutive assistant turns)";
+                            }
+                        }
+                        if image
+                            && drop_images(&mut messages, super::history::IMAGE_DROPPED_NOTE) > 0
+                        {
+                            repair = "request (the server could not decode an attached image; removed it)";
                         }
                         ChatFailure::Http4xx {
-                            repaired: structural && messages.len() != before,
+                            repaired: !repair.is_empty(),
                         }
                     } else if CTX_OVERFLOW_KEYS.iter().any(|k| low.contains(k)) {
                         ChatFailure::ContextOverflow
@@ -901,7 +918,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                     match verdict {
                         Retry::Again { nap_secs } => {
-                            log!("[{i}] repaired conversation structure (consecutive assistant turns), cleaned up and retrying");
+                            log!("[{i}] repaired {repair}, retrying");
                             nap(nap_secs, params.sleep_scale);
                             continue;
                         }
