@@ -149,7 +149,7 @@ pub fn core_tools() -> Vec<Value> {
             &["action"]),
         spec("skills", "List available skills, or load one by name to follow its instructions",
             json!({"action": {"type": "string", "enum": ["list", "load"]}, "name": s()}), &["action"]),
-        spec("enable_tools", "Enable advanced tools on demand: append_file, delete_file, search_files, web_search, web_fetch, memory_store, memory_recall, mcp_call",
+        spec("enable_tools", "Enable optional tools on demand: web_search, web_fetch, memory_store, memory_recall, mcp_call (the file tools, append_file, delete_file and search_files included, need no enabling)",
             json!({"tools": str_array()}), &["tools"]),
         spec("finish", "Declare the task complete with a short summary", json!({"summary": s()}), &["summary"]),
     ]

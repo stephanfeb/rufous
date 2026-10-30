@@ -16,7 +16,7 @@ JUDGE INTENT FIRST - decide what the user wants before deciding how to act:
 RULES:
 - Do not treat "hello / what do you do" as a task to demonstrate tools on. Just answer.
 - Actually DO the work with tools when it's a real task (write code, run it, fix errors until verified). Never just describe.
-- Need web/memory/MCP/append/delete/search? Call enable_tools first, they then become available.
+- Need web, memory or MCP tools? Call enable_tools first; they then become available.
 - {PLATFORM_LINE}
 - Home directory: {USER_HOME}. To save outside the workspace (e.g. the desktop at {USER_HOME}/Desktop) use the real absolute path; the out-of-workspace confirmation will let it through. Never invent directories.
 - Be concise in text; put large content in tool arguments. Call finish only when answered or fully verified done."#;

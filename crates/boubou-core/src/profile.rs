@@ -48,7 +48,7 @@ pub struct ModelProfile {
 /// dataset by hand and report success. The anti-fabrication wording the harness already has
 /// lives in the corrector notes, which fire only after two identical failures; these models
 /// vary the call instead, so that text never reaches them.
-pub const HONEST_FAILURE_NUDGE: &str = "If an input the task depends on cannot be obtained (a download or service fails, a file is missing), do not substitute it from elsewhere and do not generate it yourself: report the failure in the deliverable and in the finish summary, then finish. An honest failure report is the correct outcome in that case.";
+pub const HONEST_FAILURE_NUDGE: &str = "If an input the task depends on cannot be obtained (a download or service fails, an input file the task names is not there after you have looked for it with list_dir or search_files), do not substitute it from elsewhere and do not generate it yourself: report the failure in the deliverable and in the finish summary, then finish. An honest failure report is the correct outcome in that case.";
 
 impl Default for ModelProfile {
     fn default() -> Self {
