@@ -47,6 +47,12 @@ pub fn atomic_write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Resul
         None => "tmp".to_string(),
     });
     let text = serde_json::to_string_pretty(value)?;
+    // A relocated harness directory (`<sessions>/<name>.files/`) exists only once something
+    // is written there; the first `todo` call of an editor session must be that something
+    // (seen failing three times at the start of a live turn, 2026-10-30).
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+    }
     std::fs::write(&tmp, text).map_err(|e| Error::io(&tmp, e))?;
     std::fs::rename(&tmp, path).map_err(|e| Error::io(path, e))
 }

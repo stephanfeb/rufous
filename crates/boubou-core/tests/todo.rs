@@ -115,3 +115,21 @@ fn format_and_progress() {
     std::fs::write(todo_file(d.path()), "[{}]").expect("write");
     assert_eq!(load_todo(d.path()), vec![TodoItem::default()]);
 }
+
+#[test]
+fn the_first_todo_call_of_a_session_creates_the_relocated_harness_dir() {
+    // The ACP server points the plan at `<sessions>/<name>.files/`, which does not exist
+    // until the harness writes there; the plan must be able to be that first write.
+    let (_d, mut e) = ex();
+    let h = tempfile::tempdir().expect("tmp");
+    let hdir = h.path().join("acp_1030.files");
+    e.harness_dir = hdir.clone();
+    assert!(!hdir.exists());
+    let out = e.run_tool(
+        "todo",
+        &json!({"action": "create", "items": ["write the block store", "wire bitswap"]}),
+    );
+    assert!(!out.contains("tool error"), "{out}");
+    assert!(todo_file(&hdir).is_file(), "{out}");
+    assert_eq!(load_todo(&hdir).len(), 2);
+}
