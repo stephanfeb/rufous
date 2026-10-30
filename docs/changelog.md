@@ -914,3 +914,18 @@ results". Four guards now sit on the scraping, all in `web.rs` and covered by lo
 Mingbird's `cn.bing.com` host is therefore not shared in the search cache; `web_fetch` entries
 still are. `AGENT_SEARCH_BACKENDS` overrides the list. Backlog (beads): a SearXNG backend
 (`format=json`, no HTML scraping, self-hosted) and a Tavily backend (hosted API, key in config).
+
+## Kernel boundary inside the loop (refactor step 8, 2026-10-30)
+
+The loop's stateful compensation mechanisms moved out of `agent/run.rs` into
+`agent/ladders.rs` as structs the loop feeds an observation and gets a verdict from, with
+no policy reads: `TextLadder` (empty replies, repeats, the talk streak), `CallLadders`
+(disabled-tool recalls, duplicates, the failure and missing-argument ladders, tool and
+same-call streaks, idle, research, the plan-tool loop), `Compaction` (the three-level
+context ladder), `RetryLadder` (engine errors: repair, restart, compact, back off, give up)
+and `CorrectorLedger` (failures per signature, consultations, blocks, stale lifting).
+Format-leak salvage is composed in `guards/leak.rs::salvage`. The loop keeps every message
+text, tool-face change, context reset and the finish gates. Measured: `run.rs` 2118 → 1969
+lines, `ladders.rs` 975 lines (with 8 unit tests), mutable locals in `Agent::run` 55 → 38.
+Behaviour unchanged apart from two log lines (the duplicate-call refusal no longer prints
+its count; a sixth structural-400 repair now also logs the 4xx stop line). 479 tests.

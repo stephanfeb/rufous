@@ -7,9 +7,41 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{Map, Value};
 
+use crate::ollama::{FunctionCall, ToolCall};
 use crate::tools::is_known_tool;
 
 pub type LeakedCall = (String, Map<String, Value>);
+
+/// Tool calls salvaged from a text reply, and whether the profile's finish-prose rescue
+/// found them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Salvaged {
+    pub calls: Vec<ToolCall>,
+    pub rescued: bool,
+}
+
+/// Format-leak salvage: the model wrote its call as text. The generic shapes first
+/// ([`try_parse_tool_calls`]); the finish-prose rescue ([`parse_finish_prose`]) only when
+/// `finish_prose_rescue` is set, for models known to end a text turn with `Finish: …`.
+pub fn salvage(content: &str, finish_prose_rescue: bool) -> Option<Salvaged> {
+    let (calls, rescued) = match try_parse_tool_calls(content) {
+        Some(c) => (c, false),
+        None if finish_prose_rescue => (parse_finish_prose(content)?, true),
+        None => return None,
+    };
+    Some(Salvaged {
+        calls: calls
+            .into_iter()
+            .map(|(name, args)| ToolCall {
+                function: FunctionCall {
+                    name,
+                    arguments: Value::Object(args),
+                },
+            })
+            .collect(),
+        rescued,
+    })
+}
 
 static TOOL_CALL_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>").expect("regex"));

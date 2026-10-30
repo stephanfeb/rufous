@@ -8,7 +8,7 @@
 //! the guard stack, or handle a text-only turn (empty-turn ladder, repeat detection,
 //! Q&A wrap-up). `finish` runs the gate sequence and returns.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,7 +25,8 @@ use super::history::{
     prune_history, workdir_files_text, PRUNE_AT,
 };
 use super::ladders::{
-    CallLadders, EmptyVerdict, Failure, Recall, Streak, Talk, TalkVerdict, TextLadder,
+    CallLadders, ChatFailure, Compaction, CorrectorLedger, EmptyVerdict, Failure, Recall, Retry,
+    RetryLadder, Streak, Talk, TalkVerdict, TextLadder,
 };
 use super::openai::OpenAiBackend;
 use super::policy::{Gate, Prompt, Route};
@@ -41,7 +42,7 @@ use crate::guards::idle;
 use crate::guards::qa::Intent;
 use crate::guards::qa::DISPATCH_NOTE_MARK;
 use crate::guards::{self, artifacts, integrity, leak, qa};
-use crate::ollama::{FunctionCall, Message, Role, ToolCall};
+use crate::ollama::{Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
 use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
@@ -581,10 +582,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             };
         }
 
-        // Per-run counters (names follow the Python locals).
-        let mut fails = 0usize;
-        // `_restarts`: engine restarts this run (≤3), the 500-degradation self-heal.
-        let mut restarts = 0usize;
+        // Per-run ladders (agent/ladders.rs) and counters.
+        let mut retry = RetryLadder::default();
+        let mut compaction = Compaction::default();
         let mut calls = CallLadders::default();
         let mut productive_used = false;
         let mut fake_finish_warns = 0;
@@ -593,13 +593,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // artefact gate) and the deliverable refusal (1).
         let mut cmd_records: Vec<integrity::CommandRecord> = Vec::new();
         let mut claim_gate_warns = 0;
-        // Isolated corrector (corrector.rs): failures per exact signature, signatures already
-        // taken to the corrector, signatures it judged blocked (with the reason), and the
-        // per-run consultation count.
-        let mut sig_fails: HashMap<(String, String), u32> = HashMap::new();
-        let mut corrector_seen: HashSet<(String, String)> = HashSet::new();
-        let mut corrector_blocked: HashMap<(String, String), String> = HashMap::new();
-        let mut corrector_calls: u32 = 0;
+        let mut ledger = CorrectorLedger::default();
         let mut named_gate_warns = 0;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
@@ -608,7 +602,6 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut test_guard_warns = 0;
         let mut casual_warns = 0;
         let mut casual_force = false;
-        let mut compact_lvl: u8 = 0;
         let mut todo_stale = 0;
         let mut todo_nudge_warns = 0;
         let mut todo_gate_warns = 0;
@@ -767,16 +760,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     );
                 }
             }
-            let pre = if est > ctx_budget * 0.90 && compact_lvl < 3 {
-                Some(3)
-            } else if est > ctx_budget * 0.75 && compact_lvl < 2 {
-                Some(2)
-            } else if est > ctx_budget * 0.60 && compact_lvl < 1 {
-                Some(1)
-            } else {
-                None
-            };
-            if let Some(level) = pre {
+            if let Some(level) = compaction.due(est, ctx_budget) {
                 let (todo, files) = if level >= 2 {
                     (
                         plan_note(plan_dir_for_notes),
@@ -788,7 +772,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 messages = compact(
                     backend, model, messages, level, todo, files, transcript, sink,
                 );
-                compact_lvl = level;
+                compaction.compacted(level);
                 log!("[{i}] pre-flight estimate {est:.0} tokens over the limit, compacted (L{level})");
             }
             let n_img = attach_pending_images(&mut messages, hdir);
@@ -801,7 +785,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 StreamPiece::Think(t) => sink(AgentEvent::Thinking(t.to_string())),
             }) {
                 Ok(r) => {
-                    fails = 0;
+                    retry.on_ok();
                     r
                 }
                 Err(e) => {
@@ -812,101 +796,117 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         return Ok(messages);
                     }
                     let low = e.lower_text();
-                    if e.is_4xx() {
+                    let kind = if e.is_4xx() {
                         // Structural 400 (consecutive assistant turns): clean and retry.
-                        if low.contains("assistant messages at the end")
-                            || low.contains("consecutive")
-                        {
-                            let before = messages.len();
+                        let structural = low.contains("assistant messages at the end")
+                            || low.contains("consecutive");
+                        let before = messages.len();
+                        if structural {
                             dedupe_trailing_assistant(&mut messages);
-                            if messages.len() != before {
-                                log!("[{i}] repaired conversation structure (consecutive assistant turns), cleaned up and retrying");
-                                fails += 1;
-                                if fails >= 6 {
-                                    save!();
-                                    return Err(Error::Ollama(e.to_string()));
-                                }
-                                nap(1, params.sleep_scale);
-                                continue;
-                            }
                         }
-                        log!("[{i}] API 4xx error (retrying is pointless, stopped): {e}");
-                        save!();
-                        return Err(Error::Ollama(e.to_string()));
-                    }
-                    if CTX_OVERFLOW_KEYS.iter().any(|k| low.contains(k)) {
-                        log!(
-                            "[{i}] ⚠️ context-overflow error → forcing L3 compaction and retrying"
-                        );
-                        let todo = plan_note(plan_dir_for_notes);
-                        let files = Some(workdir_files_text(workdir, 30));
-                        messages =
-                            compact(backend, model, messages, 3, todo, files, transcript, sink);
-                        compact_lvl = 3;
-                        fails = 0;
-                        nap(1, params.sleep_scale);
-                        continue;
-                    }
-                    fails += 1;
-                    if e.is_500() && fails >= 4 && restarts < 3 {
+                        ChatFailure::Http4xx {
+                            repaired: structural && messages.len() != before,
+                        }
+                    } else if CTX_OVERFLOW_KEYS.iter().any(|k| low.contains(k)) {
+                        ChatFailure::ContextOverflow
+                    } else if e.is_500() {
+                        ChatFailure::Server
+                    } else {
+                        ChatFailure::Other
+                    };
+                    let mut verdict = retry.on_error(kind);
+                    if verdict == Retry::RestartEngine {
                         // ★ Root cause, not symptom: ≥4 consecutive 500s = a degraded
                         // ollama process (temp=0 replays the same bad path; compaction and
                         // waiting cannot escape). A restart recovers; the checkpoint keeps
                         // the task. OpenAI-compatible engines are not ours to restart.
+                        let fails = retry.fails();
                         match backend.restart_engine() {
                             Some(ok) => {
-                                restarts += 1;
+                                retry.restarted();
                                 log!(
-                                    "[{i}] {fails} consecutive 500s → ollama process judged degraded, restarting automatically ({restarts}/3)..."
+                                    "[{i}] {fails} consecutive 500s → ollama process judged degraded, restarting automatically ({}/3)...",
+                                    retry.restarts()
                                 );
                                 if ok {
                                     log!("[{i}] ✓ ollama restarted, resuming the task");
                                 } else {
                                     log!("[{i}] ⚠ ollama not ready after restart, still retrying");
                                 }
-                                fails = 0;
                                 nap(3, params.sleep_scale);
                                 continue;
                             }
                             None => {
                                 log!("[{i}] {fails} consecutive 500s (this engine cannot be restarted by Boubou; compacting and retrying)");
+                                verdict = Retry::ServerCompact;
                             }
                         }
                     }
-                    if e.is_500() && fails >= 2 {
-                        if compact_lvl < 3 {
-                            let lvl = (compact_lvl + 1).min(3);
-                            compact_lvl = lvl;
+                    match verdict {
+                        Retry::Again { nap_secs } => {
+                            log!("[{i}] repaired conversation structure (consecutive assistant turns), cleaned up and retrying");
+                            nap(nap_secs, params.sleep_scale);
+                            continue;
+                        }
+                        Retry::GiveUp => {
+                            if e.is_4xx() {
+                                log!("[{i}] API 4xx error (retrying is pointless, stopped): {e}");
+                            }
+                            save!();
+                            return Err(Error::Ollama(e.to_string()));
+                        }
+                        Retry::Overflow => {
+                            log!(
+                                "[{i}] ⚠️ context-overflow error → forcing L3 compaction and retrying"
+                            );
                             let todo = plan_note(plan_dir_for_notes);
                             let files = Some(workdir_files_text(workdir, 30));
-                            messages = compact(
-                                backend, model, messages, lvl, todo, files, transcript, sink,
+                            messages =
+                                compact(backend, model, messages, 3, todo, files, transcript, sink);
+                            compaction.compacted(3);
+                            nap(1, params.sleep_scale);
+                            continue;
+                        }
+                        Retry::RestartEngine => unreachable!("resolved above"),
+                        Retry::ServerCompact => {
+                            if let Some(lvl) = compaction.bump() {
+                                let todo = plan_note(plan_dir_for_notes);
+                                let files = Some(workdir_files_text(workdir, 30));
+                                messages = compact(
+                                    backend, model, messages, lvl, todo, files, transcript, sink,
+                                );
+                                log!(
+                                    "[{i}] 500 error, compacted the context (L{lvl}) and retrying"
+                                );
+                            }
+                            let last_user_is_note = messages
+                                .iter()
+                                .rev()
+                                .find(|m| m.role == Role::User)
+                                .is_some_and(|m| m.content.starts_with("⚠️"));
+                            if !last_user_is_note {
+                                messages.push(Message::user(
+                                    "⚠️ System note: the previous request hit a server error. Carry on from the progress you already have; try a different formulation or move on to the next step.",
+                                ));
+                                log!("[{i}] 500 error, injected a continue note (breaks the dead-loop path)");
+                            }
+                            nap(2, params.sleep_scale);
+                            continue;
+                        }
+                        Retry::Backoff { nap_secs, give_up } => {
+                            log!(
+                                "[{i}] API error: {e} (retry {}, wait {nap_secs}s)",
+                                retry.fails()
                             );
-                            log!("[{i}] 500 error, compacted the context (L{lvl}) and retrying");
+                            nap(nap_secs, params.sleep_scale);
+                            if give_up {
+                                log!("===== FAILED: repeated ollama errors (still failing after restart), stopped. Fix the engine and resume to continue from the checkpoint =====");
+                                save!();
+                                return Err(Error::Ollama(e.to_string()));
+                            }
+                            continue;
                         }
-                        let last_user_is_note = messages
-                            .iter()
-                            .rev()
-                            .find(|m| m.role == Role::User)
-                            .is_some_and(|m| m.content.starts_with("⚠️"));
-                        if !last_user_is_note {
-                            messages.push(Message::user(
-                                "⚠️ System note: the previous request hit a server error. Carry on from the progress you already have; try a different formulation or move on to the next step.",
-                            ));
-                            log!("[{i}] 500 error, injected a continue note (breaks the dead-loop path)");
-                        }
-                        nap(2, params.sleep_scale);
-                        continue;
                     }
-                    let wait = (3u64 << (fails - 1).min(10)).min(60);
-                    log!("[{i}] API error: {e} (retry {fails}, wait {wait}s)");
-                    nap(wait, params.sleep_scale);
-                    if fails >= 8 {
-                        log!("===== FAILED: repeated ollama errors (still failing after restart), stopped. Fix the engine and resume to continue from the checkpoint =====");
-                        save!();
-                        return Err(Error::Ollama(e.to_string()));
-                    }
-                    continue;
                 }
             };
 
@@ -918,20 +918,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     used: pt,
                     limit: params.num_ctx,
                 });
-                let ptf = pt as f64;
-                if ptf < ctx_budget * 0.60 {
-                    compact_lvl = 0; // context fell back: re-arm the ladder
-                }
-                let post = if ptf > ctx_budget * 0.90 && compact_lvl < 3 {
-                    Some(3)
-                } else if ptf > ctx_budget * 0.75 && compact_lvl < 2 {
-                    Some(2)
-                } else if ptf > ctx_budget * 0.60 && compact_lvl < 1 {
-                    Some(1)
-                } else {
-                    None
-                };
-                if let Some(level) = post {
+                if let Some(level) = compaction.observe(pt as f64, ctx_budget) {
                     let todo = if level >= 2 {
                         plan_note(plan_dir_for_notes)
                     } else {
@@ -940,7 +927,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     messages = compact(
                         backend, model, messages, level, todo, None, transcript, sink,
                     );
-                    compact_lvl = level;
+                    compaction.compacted(level);
                 }
             }
 
@@ -966,36 +953,20 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
             }
             if tcs.is_empty() && turn.route != Route::Question {
-                // Format leak salvage: the model wrote the call as text. The generic shapes
-                // first; the profile's finish-prose rescue only for models known to end a
-                // text turn with `Finish: …`.
-                let generic = leak::try_parse_tool_calls(&content);
-                let rescued = generic.is_none() && params.profile.finish_prose_rescue;
-                let salvaged = generic.or_else(|| {
-                    rescued
-                        .then(|| leak::parse_finish_prose(&content))
-                        .flatten()
-                });
-                if let Some(salvaged) = salvaged {
-                    let names: Vec<&str> = salvaged.iter().map(|(n, _)| n.as_str()).collect();
+                // Format-leak salvage (guards/leak.rs): the model wrote its call as text.
+                if let Some(s) = leak::salvage(&content, params.profile.finish_prose_rescue) {
+                    let names: Vec<&str> =
+                        s.calls.iter().map(|c| c.function.name.as_str()).collect();
                     log!(
                         "[{i}] ⚡ salvaged tool call(s) from text{}: {}",
-                        if rescued {
+                        if s.rescued {
                             " (profile finish-prose rescue)"
                         } else {
                             ""
                         },
                         names.join(", ")
                     );
-                    tcs = salvaged
-                        .into_iter()
-                        .map(|(name, args)| ToolCall {
-                            function: FunctionCall {
-                                name,
-                                arguments: Value::Object(args),
-                            },
-                        })
-                        .collect();
+                    tcs = s.calls;
                 }
             }
             for tc in &mut tcs {
@@ -1217,9 +1188,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         )));
                     }
                     continue;
-                } else if let Some(reason) =
-                    corrector_blocked.get(&(name.clone(), sig_json.clone()))
-                {
+                } else if let Some(reason) = ledger.blocked_reason(&name, &sig_json) {
                     // The corrector judged this exact call unfixable from here: it does not
                     // run again this turn.
                     let res = format!("[blocked: the corrector judged this exact {name} call cannot succeed here ({reason}). Do not retry it. Report the failure in the deliverable and finish honestly.]");
@@ -1345,9 +1314,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     .last()
                     .is_some_and(|r| r.succeeded() && r.mutates())
                 {
-                    let me = (name.clone(), sig_json.clone());
-                    sig_fails.retain(|k, _| *k == me);
-                    corrector_blocked.retain(|k, _| *k == me);
+                    ledger.lift_others(&name, &sig_json);
                 }
                 log!(
                     "[{i}|+{}s] ⚙ {name} {} -> {}",
@@ -1612,20 +1579,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     && (is_tool_error(&res)
                         || (n == "run_bash"
                             && integrity::exit_code_of(&res).is_some_and(|c| c != 0)));
-                let sig_key = (name.clone(), sig_json.clone());
                 if failed_call {
-                    let k = sig_fails.entry(sig_key.clone()).or_insert(0);
-                    *k += 1;
-                    let k = *k;
-                    if k >= corrector::CONSULT_AT
-                        && turn.working
+                    let k = ledger.on_failed(&name, &sig_json);
+                    if turn.working
                         && !params.ablated("corrector")
                         && missing_arg_key(&res).is_none()
-                        && corrector_calls < corrector::MAX_PER_RUN
-                        && !corrector_seen.contains(&sig_key)
+                        && ledger.consult(&name, &sig_json, k)
                     {
-                        corrector_seen.insert(sig_key.clone());
-                        corrector_calls += 1;
                         let task_text = qa::task_original_text(&messages, 100_000);
                         let verdict = corrector::consult(
                             &mut *backend,
@@ -1644,16 +1604,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 name: cname,
                                 args: cargs,
                                 reason: _,
-                            } if corrector_blocked
-                                .contains_key(&(cname.clone(), cargs.to_string())) =>
-                            {
+                            } if ledger.blocked_reason(&cname, &cargs.to_string()).is_some() => {
                                 // probes_corrector2 t02: the only alternative offered was a
                                 // call an earlier give-up had already blocked; that is no fix.
                                 let reason = format!("the only alternative proposed was `{cname}`, which an earlier verdict already blocked");
                                 log!(
                                     "[{i}] ⚠️ corrector consulted: {name} failed {k}× with identical arguments; verdict: give up: {reason}"
                                 );
-                                corrector_blocked.insert(sig_key.clone(), reason.clone());
+                                ledger.block(&name, &sig_json, reason.clone());
                                 let missing =
                                     integrity::task_named_missing(&task_text, "", workdir);
                                 messages.push(Message::user(corrector::give_up_note(
@@ -1698,9 +1656,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 if !cfailed && cmd_records.last().is_some_and(|r| r.mutates()) {
                                     // The corrected call changed the world: other signatures'
                                     // counts and blocks are stale now (see the main record site).
-                                    let me = (cname.clone(), cargs.to_string());
-                                    sig_fails.retain(|k, _| *k == me);
-                                    corrector_blocked.retain(|k, _| *k == me);
+                                    ledger.lift_others(&cname, &cargs.to_string());
                                 }
                                 calls.ran(&cname, &cargs.to_string());
                                 let outcome = if cfailed {
@@ -1726,7 +1682,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     format!(" ({})", text::head(&reason, 120))
                                 };
                                 if cfailed {
-                                    corrector_blocked.insert(sig_key.clone(), "two identical failures and a corrected attempt also failed".to_string());
+                                    ledger.block(&name, &sig_json, "two identical failures and a corrected attempt also failed".to_string());
                                     messages.push(Message::user(format!(
                                         "⚠️ Corrector: your `{name}` call had failed {k} times with the same arguments, so an isolated retry tried `{cname}` instead{why}; it failed as well (result above). Treat this step as blocked: do not repeat either call, do not invent the missing input. State the failure in the deliverable and in the finish summary, then finish."
                                     )));
@@ -1741,8 +1697,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     "[{i}] ⚠️ corrector consulted: {name} failed {k}× with identical arguments; verdict: give up: {}",
                                     text::head(&reason, 100)
                                 );
-                                corrector_blocked
-                                    .insert(sig_key.clone(), text::head(&reason, 160).to_string());
+                                ledger.block(
+                                    &name,
+                                    &sig_json,
+                                    text::head(&reason, 160).to_string(),
+                                );
                                 let missing =
                                     integrity::task_named_missing(&task_text, "", workdir);
                                 messages.push(Message::user(corrector::give_up_note(
@@ -1757,7 +1716,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     }
                 } else {
-                    sig_fails.remove(&sig_key);
+                    ledger.on_ok(&name, &sig_json);
                 }
 
                 // Failure ladder: same tool failing repeatedly → change strategy / disable.

@@ -4,8 +4,9 @@
 //! and the loop in [`super::run`] decides what to do with it under the policy
 //! (`docs/refactor.md`, step 8).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
+use super::corrector;
 use super::face::{PRODUCTIVE, RESEARCH_ALL};
 
 /// The text-only turn ladders: a reply with no tool call is either empty (the empty-reply
@@ -447,6 +448,218 @@ impl CallLadders {
     }
 }
 
+/// The compaction ladder: three levels over the context window (60, 75 and 90 % of it),
+/// each armed once until the real prompt count falls back under 60 %.
+#[derive(Debug, Default)]
+pub struct Compaction {
+    level: u8,
+}
+
+impl Compaction {
+    /// The level a context size (`tokens` of `budget`) calls for, if a higher one than the
+    /// current is due.
+    pub fn due(&self, tokens: f64, budget: f64) -> Option<u8> {
+        if tokens > budget * 0.90 && self.level < 3 {
+            Some(3)
+        } else if tokens > budget * 0.75 && self.level < 2 {
+            Some(2)
+        } else if tokens > budget * 0.60 && self.level < 1 {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    /// The real prompt count after a call: under 60 % the ladder is re-armed; then as
+    /// [`Self::due`].
+    pub fn observe(&mut self, prompt_tokens: f64, budget: f64) -> Option<u8> {
+        if prompt_tokens < budget * 0.60 {
+            self.level = 0;
+        }
+        self.due(prompt_tokens, budget)
+    }
+
+    /// The history was compacted to `level`.
+    pub fn compacted(&mut self, level: u8) {
+        self.level = level;
+    }
+
+    /// A server error: one level further, if any is left.
+    pub fn bump(&mut self) -> Option<u8> {
+        if self.level < 3 {
+            self.level += 1;
+            return Some(self.level);
+        }
+        None
+    }
+}
+
+/// The model-call retry ladder: consecutive failed calls to the engine and what each one
+/// calls for, from a one-second retry to giving the run up.
+#[derive(Debug, Default)]
+pub struct RetryLadder {
+    fails: usize,
+    restarts: usize,
+}
+
+/// How a model call failed, as the loop classified the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatFailure {
+    /// A 4xx. `repaired` when it was the structural "consecutive assistant turns" error and
+    /// deduplicating the history changed something to retry with.
+    Http4xx { repaired: bool },
+    /// The engine refused the context size.
+    ContextOverflow,
+    /// A 5xx.
+    Server,
+    /// Anything else (network, timeout, malformed reply).
+    Other,
+}
+
+/// What a failed model call calls for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// Retry after this many seconds.
+    Again { nap_secs: u64 },
+    /// Retrying is pointless (a 4xx) or has been pointless for long enough.
+    GiveUp,
+    /// Compact the history to the top level, then retry.
+    Overflow,
+    /// Four consecutive server errors: the engine is degraded; ask the backend to restart
+    /// it (then [`RetryLadder::restarted`]), or, if it cannot, treat as
+    /// [`Retry::ServerCompact`].
+    RestartEngine,
+    /// Repeated server errors: compact one level, leave a continue note, retry after two
+    /// seconds.
+    ServerCompact,
+    /// Exponential back-off; `give_up` after the nap when the errors have gone on for too
+    /// long.
+    Backoff { nap_secs: u64, give_up: bool },
+}
+
+impl RetryLadder {
+    /// Consecutive failures so far.
+    pub fn fails(&self) -> usize {
+        self.fails
+    }
+
+    /// Engine restarts this run.
+    pub fn restarts(&self) -> usize {
+        self.restarts
+    }
+
+    /// The call succeeded.
+    pub fn on_ok(&mut self) {
+        self.fails = 0;
+    }
+
+    /// The backend restarted the engine.
+    pub fn restarted(&mut self) {
+        self.restarts += 1;
+        self.fails = 0;
+    }
+
+    /// The call failed.
+    pub fn on_error(&mut self, kind: ChatFailure) -> Retry {
+        match kind {
+            ChatFailure::Http4xx { repaired: true } => {
+                self.fails += 1;
+                if self.fails >= 6 {
+                    Retry::GiveUp
+                } else {
+                    Retry::Again { nap_secs: 1 }
+                }
+            }
+            ChatFailure::Http4xx { repaired: false } => Retry::GiveUp,
+            ChatFailure::ContextOverflow => {
+                self.fails = 0;
+                Retry::Overflow
+            }
+            ChatFailure::Server | ChatFailure::Other => {
+                self.fails += 1;
+                let server = kind == ChatFailure::Server;
+                if server && self.fails >= 4 && self.restarts < 3 {
+                    return Retry::RestartEngine;
+                }
+                if server && self.fails >= 2 {
+                    return Retry::ServerCompact;
+                }
+                Retry::Backoff {
+                    nap_secs: (3u64 << (self.fails - 1).min(10)).min(60),
+                    give_up: self.fails >= 8,
+                }
+            }
+        }
+    }
+}
+
+/// The isolated corrector's ledger: failures per exact call signature, the signatures
+/// already taken to the corrector, the ones it judged blocked (with the reason) and the
+/// per-run consultation count. The consultation itself is the loop's (it calls the model
+/// and runs the substitute); the ledger says when it is due and remembers the verdicts.
+#[derive(Debug, Default)]
+pub struct CorrectorLedger {
+    fails: HashMap<(String, String), u32>,
+    seen: HashSet<(String, String)>,
+    blocked: HashMap<(String, String), String>,
+    consultations: u32,
+}
+
+impl CorrectorLedger {
+    /// Why this exact call was judged unfixable from here, if it was.
+    pub fn blocked_reason(&self, name: &str, sig: &str) -> Option<&str> {
+        self.blocked
+            .get(&(name.to_string(), sig.to_string()))
+            .map(String::as_str)
+    }
+
+    /// The call failed: failures of this exact signature so far.
+    pub fn on_failed(&mut self, name: &str, sig: &str) -> u32 {
+        let k = self
+            .fails
+            .entry((name.to_string(), sig.to_string()))
+            .or_insert(0);
+        *k += 1;
+        *k
+    }
+
+    /// The call succeeded: its count is gone.
+    pub fn on_ok(&mut self, name: &str, sig: &str) {
+        self.fails.remove(&(name.to_string(), sig.to_string()));
+    }
+
+    /// Whether a signature failed `count` times goes to the corrector now: from the second
+    /// identical failure, at most [`corrector::MAX_PER_RUN`] consultations a run, once per
+    /// signature. Records the consultation when it says yes.
+    pub fn consult(&mut self, name: &str, sig: &str, count: u32) -> bool {
+        let key = (name.to_string(), sig.to_string());
+        if count >= corrector::CONSULT_AT
+            && self.consultations < corrector::MAX_PER_RUN
+            && !self.seen.contains(&key)
+        {
+            self.seen.insert(key);
+            self.consultations += 1;
+            return true;
+        }
+        false
+    }
+
+    /// The corrector judged this exact call unfixable from here.
+    pub fn block(&mut self, name: &str, sig: &str, reason: String) {
+        self.blocked
+            .insert((name.to_string(), sig.to_string()), reason);
+    }
+
+    /// This call changed the world: every earlier verdict about *other* calls is stale
+    /// (the integrity gate's stale-evidence rule), so a verification command that failed
+    /// before an edit is a fresh attempt after it.
+    pub fn lift_others(&mut self, name: &str, sig: &str) {
+        let me = (name.to_string(), sig.to_string());
+        self.fails.retain(|k, _| *k == me);
+        self.blocked.retain(|k, _| *k == me);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EmptyVerdict, Talk, TalkVerdict, TextLadder};
@@ -653,5 +866,110 @@ mod tests {
             assert_eq!(v.is_some(), i == 6, "{i}");
         }
         l.on_todo("create_file");
+    }
+
+    #[test]
+    fn compaction_climbs_once_per_level_and_rearms_when_the_context_falls_back() {
+        use super::Compaction;
+        let mut c = Compaction::default();
+        assert_eq!(c.due(50.0, 100.0), None);
+        assert_eq!(c.due(61.0, 100.0), Some(1));
+        c.compacted(1);
+        assert_eq!(c.due(61.0, 100.0), None, "level 1 is spent");
+        assert_eq!(c.due(76.0, 100.0), Some(2));
+        assert_eq!(c.due(91.0, 100.0), Some(3));
+        c.compacted(3);
+        assert_eq!(c.observe(95.0, 100.0), None, "nothing above three");
+        assert_eq!(c.observe(40.0, 100.0), None);
+        assert_eq!(c.due(61.0, 100.0), Some(1), "re-armed under 60 %");
+        assert_eq!(c.bump(), Some(1));
+        assert_eq!(c.bump(), Some(2));
+        assert_eq!(c.bump(), Some(3));
+        assert_eq!(c.bump(), None);
+    }
+
+    #[test]
+    fn the_retry_ladder_repairs_restarts_compacts_and_gives_up() {
+        use super::{ChatFailure, Retry, RetryLadder};
+        let mut r = RetryLadder::default();
+        assert_eq!(
+            r.on_error(ChatFailure::Http4xx { repaired: false }),
+            Retry::GiveUp
+        );
+        for _ in 0..5 {
+            assert_eq!(
+                r.on_error(ChatFailure::Http4xx { repaired: true }),
+                Retry::Again { nap_secs: 1 }
+            );
+        }
+        assert_eq!(
+            r.on_error(ChatFailure::Http4xx { repaired: true }),
+            Retry::GiveUp,
+            "six structural repairs"
+        );
+        // Server errors: back-off, then compaction, then a restart at four.
+        let mut r = RetryLadder::default();
+        assert_eq!(
+            r.on_error(ChatFailure::Server),
+            Retry::Backoff {
+                nap_secs: 3,
+                give_up: false
+            }
+        );
+        assert_eq!(r.on_error(ChatFailure::Server), Retry::ServerCompact);
+        assert_eq!(r.on_error(ChatFailure::Server), Retry::ServerCompact);
+        assert_eq!(r.on_error(ChatFailure::Server), Retry::RestartEngine);
+        r.restarted();
+        assert_eq!((r.fails(), r.restarts()), (0, 1));
+        // Three restarts, then the compaction path keeps going.
+        r.restarted();
+        r.restarted();
+        for _ in 0..3 {
+            r.on_error(ChatFailure::Server);
+        }
+        assert_eq!(r.on_error(ChatFailure::Server), Retry::ServerCompact);
+        // Overflow resets the count; other errors back off exponentially to a minute and
+        // give up at eight.
+        assert_eq!(r.on_error(ChatFailure::ContextOverflow), Retry::Overflow);
+        assert_eq!(r.fails(), 0);
+        let naps: Vec<u64> = (0..8)
+            .map(|_| match r.on_error(ChatFailure::Other) {
+                Retry::Backoff { nap_secs, .. } => nap_secs,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(naps, [3, 6, 12, 24, 48, 60, 60, 60]);
+        assert_eq!(
+            r.on_error(ChatFailure::Other),
+            Retry::Backoff {
+                nap_secs: 60,
+                give_up: true
+            }
+        );
+        r.on_ok();
+        assert_eq!(r.fails(), 0);
+    }
+
+    #[test]
+    fn the_corrector_ledger_counts_consults_once_and_lifts_stale_verdicts() {
+        use super::CorrectorLedger;
+        let mut l = CorrectorLedger::default();
+        assert_eq!(l.on_failed("run_bash", "a"), 1);
+        assert!(!l.consult("run_bash", "a", 1));
+        assert_eq!(l.on_failed("run_bash", "a"), 2);
+        assert!(l.consult("run_bash", "a", 2));
+        assert!(!l.consult("run_bash", "a", 3), "once per signature");
+        l.block("run_bash", "a", "no such input".into());
+        assert_eq!(l.blocked_reason("run_bash", "a"), Some("no such input"));
+        assert_eq!(l.blocked_reason("run_bash", "b"), None);
+        // Another signature's success lifts the first's count and block.
+        l.on_failed("run_bash", "b");
+        l.lift_others("create_file", "c");
+        assert_eq!(l.blocked_reason("run_bash", "a"), None);
+        assert_eq!(l.on_failed("run_bash", "a"), 1, "count started over");
+        assert_eq!(l.on_failed("run_bash", "b"), 1);
+        // A success of the signature itself drops its count.
+        l.on_ok("run_bash", "b");
+        assert_eq!(l.on_failed("run_bash", "b"), 1);
     }
 }
