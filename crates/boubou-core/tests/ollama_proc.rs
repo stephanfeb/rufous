@@ -2,10 +2,188 @@
 //! explicit paths win, a closed port reads as down, a bogus executable fails fast and
 //! quietly, and `api_alive` is callable from inside a tokio runtime.
 
-use std::time::Duration;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use boubou_core::config::Config;
-use boubou_core::ollama_proc::{api_alive, block_on_fresh, find_ollama_exe, OllamaProc};
+use boubou_core::ollama_proc::{
+    api_alive, block_on_fresh, find_ollama_exe, host_addr, port_open, OllamaProc,
+};
+
+/// A stand-in `ollama serve`: answers every request on `listener` with 200 until `stop` is
+/// raised, then closes the port. `delay` holds the first answer back (a server still
+/// loading: the port is bound, the API is silent).
+fn serve_tags(listener: TcpListener, stop: Arc<AtomicBool>, delay: Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        listener.set_nonblocking(true).expect("nonblocking");
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut s, _)) => {
+                    let _ = s.set_nonblocking(false);
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf);
+                    let _ = s.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    );
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    });
+}
+
+fn free_port() -> SocketAddr {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+}
+
+/// An `ollama` stand-in that records being started and exits (unix only).
+#[cfg(unix)]
+fn marker_exe(dir: &std::path::Path) -> (String, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let marker = dir.join("spawned");
+    let exe = dir.join("ollama");
+    std::fs::write(
+        &exe,
+        format!("#!/bin/sh\ntouch {}\nexit 0\n", marker.display()),
+    )
+    .expect("script");
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    (exe.to_string_lossy().into_owned(), marker)
+}
+
+fn proc_for(addr: SocketAddr, exe: &str) -> OllamaProc {
+    OllamaProc::new(
+        format!("http://{addr}"),
+        exe.to_string(),
+        Default::default(),
+    )
+}
+
+#[test]
+fn the_hosts_port_is_what_gets_probed() {
+    assert_eq!(
+        host_addr("http://127.0.0.1:11434"),
+        Some("127.0.0.1:11434".parse().expect("addr"))
+    );
+    assert_eq!(host_addr("http://127.0.0.1").map(|a| a.port()), Some(80));
+    assert!(host_addr("not a url").is_none());
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = l.local_addr().expect("addr");
+    assert!(port_open(&format!("http://{addr}"), Duration::from_secs(1)));
+    drop(l);
+    assert!(!port_open(
+        &format!("http://{addr}"),
+        Duration::from_secs(1)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bound_port_that_is_not_answering_yet_is_waited_for_not_spawned_over() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (exe, marker) = marker_exe(d.path());
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = l.local_addr().expect("addr");
+    let stop = Arc::new(AtomicBool::new(false));
+    // Bound at once, answering after 3 s: longer than ensure's first 2 s probe.
+    serve_tags(l, stop.clone(), Duration::from_secs(3));
+    let p = proc_for(addr, &exe);
+    assert!(p.ensure(Duration::from_secs(10)), "the API came up");
+    stop.store(true, Ordering::SeqCst);
+    assert!(
+        !marker.exists(),
+        "a second server was started over a bound port"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_lets_a_supervised_server_come_back_before_starting_its_own() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (exe, marker) = marker_exe(d.path());
+    let addr = free_port();
+    let stop = Arc::new(AtomicBool::new(false));
+    serve_tags(
+        TcpListener::bind(addr).expect("bind"),
+        stop.clone(),
+        Duration::ZERO,
+    );
+    let mut p = proc_for(addr, &exe);
+    p.supervisor_grace = Duration::from_secs(10);
+    assert!(p.alive(Duration::from_secs(2)));
+    assert!(!p.owns_server());
+    // The "kill": the server goes away and, as the Ollama app or systemd would, comes back
+    // on the same port four seconds later, longer than the old fixed two-second wait.
+    let kill = || {
+        stop.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(200));
+        let again = Arc::new(AtomicBool::new(false));
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(4));
+            serve_tags(
+                TcpListener::bind(addr).expect("rebind"),
+                again,
+                Duration::ZERO,
+            );
+        });
+    };
+    assert!(p.restart_with(Duration::from_secs(5), kill));
+    assert!(
+        !marker.exists(),
+        "Boubou started a server beside the relaunched one"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_starts_its_own_server_only_once_the_grace_period_has_passed() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (exe, marker) = marker_exe(d.path());
+    let addr = free_port();
+    let stop = Arc::new(AtomicBool::new(false));
+    serve_tags(
+        TcpListener::bind(addr).expect("bind"),
+        stop.clone(),
+        Duration::ZERO,
+    );
+    let mut p = proc_for(addr, &exe);
+    p.supervisor_grace = Duration::from_secs(4);
+    let t0 = Instant::now();
+    // Nobody brings it back: after the grace period Boubou starts one (the stand-in exits
+    // at once, so the API never answers).
+    assert!(!p.restart_with(Duration::from_secs(1), || stop
+        .store(true, Ordering::SeqCst)));
+    assert!(marker.exists(), "no server was started on the free port");
+    assert!(
+        t0.elapsed() >= Duration::from_secs(4),
+        "spawned before the grace period"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_server_boubou_started_is_killed_by_handle() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().expect("tmp");
+    let exe = d.path().join("ollama");
+    std::fs::write(&exe, "#!/bin/sh\nsleep 60\n").expect("script");
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let p = proc_for(free_port(), &exe.to_string_lossy());
+    p.spawn_serve().expect("spawn");
+    assert!(p.owns_server());
+    // Only an owned server is killed here; the by-name path would signal a real Ollama.
+    p.kill();
+    assert!(!p.owns_server(), "the spawned process is still running");
+    let q = p.clone();
+    assert!(!q.owns_server(), "clones share the handle");
+}
 
 #[test]
 fn explicit_path_wins_over_detection() {

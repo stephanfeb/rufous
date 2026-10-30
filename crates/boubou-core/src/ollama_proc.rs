@@ -3,13 +3,24 @@
 //! 500s at temperature 0 replay the same bad path; compaction and waiting cannot escape, a
 //! restart does, and the checkpoint keeps the task).
 //!
+//! The server is usually not ours: the Ollama app on macOS and the systemd unit on Linux
+//! supervise their own `ollama serve` and relaunch it when it dies. Seen live on
+//! 2026-10-29: the self-heal killed the app's server, the app relaunched it, and Boubou,
+//! finding the API still down two seconds later, started a second one; both bound 11434,
+//! the model was loaded twice and the machine swapped. So a server Boubou did not start is
+//! given [`OllamaProc::supervisor_grace`] to come back on its own after a kill, a bound
+//! port is waited for rather than spawned over, and the one server Boubou does start is
+//! remembered and killed by handle, not by name.
+//!
 //! Everything here is synchronous and runtime-free on the outside: the HTTP liveness probe
 //! runs on a scoped thread with its own runtime, so it is safe from inside the loop thread
 //! (which owns a runtime of its own) and from a tokio worker alike.
 
 use std::collections::BTreeMap;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
@@ -105,21 +116,61 @@ fn which(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// The socket a host URL names (`http://127.0.0.1:11434` → `127.0.0.1:11434`).
+pub fn host_addr(host: &str) -> Option<SocketAddr> {
+    let url = reqwest::Url::parse(host.trim()).ok()?;
+    let h = url.host_str()?;
+    let port = url.port_or_known_default()?;
+    (h, port).to_socket_addrs().ok()?.next()
+}
+
+/// Does something accept connections on the host's port? True while a server is loading
+/// or restarting and not yet answering `/api/tags`; false once the port is free.
+pub fn port_open(host: &str, timeout: Duration) -> bool {
+    host_addr(host).is_some_and(|a| TcpStream::connect_timeout(&a, timeout).is_ok())
+}
+
+/// How long a server Boubou did not start is given to be relaunched by its supervisor.
+pub const DEFAULT_SUPERVISOR_GRACE: Duration = Duration::from_secs(20);
+
 /// How to reach and (re)start this machine's Ollama. Built from the config; carried by the
-/// Ollama backend so the loop can ask for a restart without knowing any of this.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Ollama backend so the loop can ask for a restart without knowing any of this. Clones
+/// share the handle of the server Boubou started, if any.
+#[derive(Debug, Clone)]
 pub struct OllamaProc {
     pub host: String,
     pub exe: String,
     pub env: BTreeMap<String, String>,
+    /// After killing a server Boubou did not start, how long its own supervisor (the
+    /// Ollama app, systemd, `brew services`) gets to bring it back before Boubou starts one.
+    pub supervisor_grace: Duration,
+    /// The `ollama serve` Boubou spawned, while it runs.
+    owned: Arc<Mutex<Option<Child>>>,
 }
+
+impl PartialEq for OllamaProc {
+    fn eq(&self, o: &Self) -> bool {
+        self.host == o.host && self.exe == o.exe && self.env == o.env
+    }
+}
+impl Eq for OllamaProc {}
 
 impl OllamaProc {
     pub fn from_config(cfg: &Config) -> Self {
+        Self::new(
+            cfg.ollama_host(),
+            cfg.ollama_exe.clone(),
+            cfg.ollama_env.clone(),
+        )
+    }
+
+    pub fn new(host: String, exe: String, env: BTreeMap<String, String>) -> Self {
         Self {
-            host: cfg.ollama_host(),
-            exe: cfg.ollama_exe.clone(),
-            env: cfg.ollama_env.clone(),
+            host,
+            exe,
+            env,
+            supervisor_grace: DEFAULT_SUPERVISOR_GRACE,
+            owned: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -127,7 +178,26 @@ impl OllamaProc {
         api_alive(&self.host, timeout)
     }
 
-    /// Spawn `ollama serve` detached, with the configured extra environment (GPU flags etc.).
+    /// Is the server Boubou started still running?
+    pub fn owns_server(&self) -> bool {
+        let mut guard = match self.owned.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        match guard.as_mut() {
+            Some(c) => match c.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    *guard = None;
+                    false
+                }
+            },
+            None => false,
+        }
+    }
+
+    /// Spawn `ollama serve` detached, with the configured extra environment (GPU flags etc.),
+    /// and remember it as ours.
     pub fn spawn_serve(&self) -> std::io::Result<()> {
         let exe = find_ollama_exe(&self.exe);
         let mut cmd = Command::new(&exe);
@@ -146,16 +216,24 @@ impl OllamaProc {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        cmd.spawn().map(|_| ())
+        let child = cmd.spawn()?;
+        match self.owned.lock() {
+            Ok(mut g) => *g = Some(child),
+            Err(p) => *p.into_inner() = Some(child),
+        }
+        Ok(())
     }
 
-    /// `ensure_ollama`: reachable → true at once; otherwise start `serve` and wait up to
-    /// `timeout` for the API.
+    /// `ensure_ollama`: reachable → true at once; a bound port that is not answering yet
+    /// (a server loading or being relaunched) is waited for; only a free port gets a
+    /// `serve` of our own. Waits up to `timeout` for the API either way.
     pub fn ensure(&self, timeout: Duration) -> bool {
         if self.alive(Duration::from_secs(2)) {
             return true;
         }
-        let _ = self.spawn_serve();
+        if !port_open(&self.host, Duration::from_secs(1)) {
+            let _ = self.spawn_serve();
+        }
         self.wait_alive(timeout)
     }
 
@@ -170,9 +248,20 @@ impl OllamaProc {
         false
     }
 
-    /// Kill the serving process (and its runner children): `taskkill /F /IM ollama.exe`
-    /// on Windows, `pkill -f "ollama serve"` elsewhere (matches the server only, never us).
+    /// Kill the serving process. The server Boubou started is killed by handle; any other
+    /// by name (`taskkill /F /IM ollama.exe` on Windows, `pkill -f "ollama serve"`
+    /// elsewhere, which matches the server only, never us), and its supervisor is then
+    /// expected to relaunch it (see [`restart`](Self::restart)).
     pub fn kill(&self) {
+        if self.owns_server() {
+            if let Ok(mut g) = self.owned.lock() {
+                if let Some(mut c) = g.take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+            }
+            return;
+        }
         let r = if cfg!(windows) {
             Command::new("taskkill")
                 .args(["/F", "/IM", "ollama.exe"])
@@ -189,15 +278,28 @@ impl OllamaProc {
         let _ = r;
     }
 
-    /// `restart_ollama`: kill → wait for the API to die (≤15 s) → 2 s for the port →
-    /// [`ensure`](Self::ensure). Returns whether the API answered afterwards.
+    /// `restart_ollama`: kill → wait for the API to die (≤15 s) → for a server that was not
+    /// ours, up to [`supervisor_grace`](Self::supervisor_grace) for its supervisor to bring
+    /// it back → [`ensure`](Self::ensure), which starts one only on a free port. Returns
+    /// whether the API answered afterwards.
     pub fn restart(&self, timeout: Duration) -> bool {
-        self.kill();
+        self.restart_with(timeout, || self.kill())
+    }
+
+    /// [`restart`](Self::restart) with the kill step supplied (tests stop a fake server
+    /// instead of signalling a real one).
+    pub fn restart_with(&self, timeout: Duration, kill: impl FnOnce()) -> bool {
+        let ours = self.owns_server();
+        kill();
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(15) && self.alive(Duration::from_secs(1)) {
             std::thread::sleep(Duration::from_millis(500));
         }
-        std::thread::sleep(Duration::from_secs(2));
+        if ours {
+            std::thread::sleep(Duration::from_secs(2));
+        } else if self.wait_alive(self.supervisor_grace) {
+            return true;
+        }
         self.ensure(timeout)
     }
 }
