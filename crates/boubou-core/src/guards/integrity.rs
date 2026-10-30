@@ -72,8 +72,25 @@ static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Programs that verify by being run at all.
 const VERIFIER_PROGRAMS: &[&str] = &[
-    "pytest", "py.test", "nosetests", "nose2", "tox", "nox", "jest", "vitest", "mocha", "ava",
-    "rspec", "phpunit", "ctest", "gotestsum", "flake8", "pylint", "mypy", "pyright", "eslint",
+    "pytest",
+    "py.test",
+    "nosetests",
+    "nose2",
+    "tox",
+    "nox",
+    "jest",
+    "vitest",
+    "mocha",
+    "ava",
+    "rspec",
+    "phpunit",
+    "ctest",
+    "gotestsum",
+    "flake8",
+    "pylint",
+    "mypy",
+    "pyright",
+    "eslint",
     "shellcheck",
 ];
 /// Tools that verify under one of these subcommands (`cargo build` is not a check).
@@ -99,8 +116,15 @@ const VERIFIER_SUBCOMMANDS: &[(&str, &[&str])] = &[
 ];
 /// Package managers whose named script verifies: `npm run lint`, `yarn test:unit`.
 const SCRIPT_RUNNERS: &[&str] = &["npm", "yarn", "pnpm", "bun"];
-const VERIFY_SCRIPT_PREFIXES: &[&str] =
-    &["test", "lint", "check", "typecheck", "verify", "validate", "ci"];
+const VERIFY_SCRIPT_PREFIXES: &[&str] = &[
+    "test",
+    "lint",
+    "check",
+    "typecheck",
+    "verify",
+    "validate",
+    "ci",
+];
 /// Interpreters: the script or module they run decides.
 const INTERPRETERS: &[&str] = &[
     "python", "python3", "python2", "py", "node", "ruby", "perl", "sh", "bash", "zsh", "dart",
@@ -111,8 +135,9 @@ const PY_VERIFY_MODULES: &[&str] = &[
     "pyright",
 ];
 /// Words that run the program after them, plus their option words.
-const RUN_WRAPPERS: &[&str] =
-    &["sudo", "env", "time", "timeout", "nice", "nohup", "npx", "bunx", "xvfb-run"];
+const RUN_WRAPPERS: &[&str] = &[
+    "sudo", "env", "time", "timeout", "nice", "nohup", "npx", "bunx", "xvfb-run",
+];
 const RUN_PREFIX_PAIRS: &[(&str, &str)] = &[
     ("uv", "run"),
     ("poetry", "run"),
@@ -291,7 +316,10 @@ fn segment_verifies(seg: &str) -> bool {
         if RUN_WRAPPERS.contains(&b.as_str()) {
             i += 1;
             while let Some(a) = words.get(i) {
-                if a.starts_with('-') || a.starts_with(|c: char| c.is_ascii_digit()) || a.contains('=') {
+                if a.starts_with('-')
+                    || a.starts_with(|c: char| c.is_ascii_digit())
+                    || a.contains('=')
+                {
                     i += 1;
                 } else {
                     break;
@@ -316,13 +344,21 @@ fn segment_verifies(seg: &str) -> bool {
         return true;
     }
     if let Some((_, subs)) = VERIFIER_SUBCOMMANDS.iter().find(|(p, _)| *p == base) {
-        let sub = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
+        let sub = args
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .copied()
+            .unwrap_or("");
         if subs.contains(&sub) {
             return true;
         }
         if SCRIPT_RUNNERS.contains(&base.as_str()) {
             let script = if sub == "run" || sub == "run-script" {
-                args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("")
+                args.iter()
+                    .filter(|a| !a.starts_with('-'))
+                    .nth(1)
+                    .copied()
+                    .unwrap_or("")
             } else {
                 sub
             };
@@ -342,7 +378,11 @@ fn segment_verifies(seg: &str) -> bool {
         if args.iter().any(|a| *a == "-c" || *a == "-e") {
             return false;
         }
-        let script = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
+        let script = args
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .copied()
+            .unwrap_or("");
         return path_is_test_like(script);
     }
     path_is_test_like(prog)

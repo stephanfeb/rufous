@@ -117,11 +117,52 @@ pub const DANGER_CMD_TOKEN_ONLY: [&str; 12] = [
 /// of these (and the wrapper's own flags) is in program position. Interpreters are here for
 /// their `-c`/`-e` scripts; `systemctl` for `systemctl poweroff`.
 const COMMAND_WRAPPERS: [&str; 46] = [
-    "sudo", "doas", "su", "nohup", "exec", "time", "nice", "env", "command", "builtin",
-    "eval", "xargs", "setsid", "watch", "timeout", "chroot", "systemctl", "then", "do", "else",
-    "elif", "if", "while", "until", "!", "sh", "bash", "zsh", "dash", "ksh", "fish", "python",
-    "python3", "python2", "perl", "ruby", "node", "osascript", "cmd", "cmd.exe", "powershell",
-    "pwsh", "start", "call", "busybox", "run0",
+    "sudo",
+    "doas",
+    "su",
+    "nohup",
+    "exec",
+    "time",
+    "nice",
+    "env",
+    "command",
+    "builtin",
+    "eval",
+    "xargs",
+    "setsid",
+    "watch",
+    "timeout",
+    "chroot",
+    "systemctl",
+    "then",
+    "do",
+    "else",
+    "elif",
+    "if",
+    "while",
+    "until",
+    "!",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "python",
+    "python3",
+    "python2",
+    "perl",
+    "ruby",
+    "node",
+    "osascript",
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "pwsh",
+    "start",
+    "call",
+    "busybox",
+    "run0",
 ];
 
 /// Wrapper flags that consume the next word (`sudo -u root shutdown`, `nice -n 5 halt`).
@@ -169,9 +210,7 @@ fn runs_program(low: &str, needle: &str) -> bool {
 /// `VAR=value` (a shell assignment that precedes a command).
 fn is_assignment(w: &str) -> bool {
     match w.split_once('=') {
-        Some((k, _)) => {
-            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
+        Some((k, _)) => !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
         None => false,
     }
 }
@@ -526,7 +565,14 @@ fn expand_shell_path(t: &str) -> ShellPath {
         return ShellPath::Unknown; // ~user: another account's home
     }
     let low = t.to_lowercase();
-    for var in ["${home}", "$home", "${userprofile}", "$userprofile", "%userprofile%", "%home%"] {
+    for var in [
+        "${home}",
+        "$home",
+        "${userprofile}",
+        "$userprofile",
+        "%userprofile%",
+        "%home%",
+    ] {
         if let Some(rest) = low.strip_prefix(var) {
             if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
                 return match home_string() {
@@ -555,7 +601,8 @@ fn cwd_before(cmd: &str, offset: usize, workdir: &Path) -> Option<PathBuf> {
         if !matches!(prog.to_lowercase().as_str(), "cd" | "pushd" | "chdir") {
             continue;
         }
-        let arg = words.find(|w| !(w.starts_with('-') && w.len() > 1) && !w.eq_ignore_ascii_case("/d"));
+        let arg =
+            words.find(|w| !(w.starts_with('-') && w.len() > 1) && !w.eq_ignore_ascii_case("/d"));
         match arg {
             None => cwd = dirs::home_dir()?,
             Some("-") => return None,

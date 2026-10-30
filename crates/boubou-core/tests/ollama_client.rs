@@ -70,7 +70,11 @@ fn a_chat_stream_that_stalls_mid_way_times_out_instead_of_hanging() {
     }));
     let dt = t0.elapsed();
     drop(stop);
-    assert_eq!(seen, vec!["hi".to_string()], "the token before the stall arrived");
+    assert_eq!(
+        seen,
+        vec!["hi".to_string()],
+        "the token before the stall arrived"
+    );
     assert!(res.is_err(), "{res:?}");
     assert!(dt < Duration::from_secs(5), "took {dt:?}");
 }

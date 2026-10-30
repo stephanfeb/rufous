@@ -743,7 +743,11 @@ fn a_chat_turn_is_interactive_unless_batch_mode_is_on() {
     assert!(!p.interactive, "batch: true");
     let mut off = prefs::load(d.path());
     off.insert("batch".into(), json!(false));
-    assert!(params_from_prefs("m", d.path(), d.path(), &off).expect("params").interactive);
+    assert!(
+        params_from_prefs("m", d.path(), d.path(), &off)
+            .expect("params")
+            .interactive
+    );
 
     // The preference round-trips through the API and the status endpoint.
     let (_, sp) = scripted(false, false);
