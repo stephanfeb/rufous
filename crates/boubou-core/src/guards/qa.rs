@@ -120,10 +120,7 @@ const TASK_HINTS: &[&str] = &[
 /// take? Output just the number") end in a full stop and must keep their mutating tools.
 const QA_HINTS: &[&str] = &[
     "are you ",
-    "can you ",
     "do you ",
-    "will you ",
-    "would you ",
     "is there ",
     "what is ",
     "what are ",
@@ -132,6 +129,10 @@ const QA_HINTS: &[&str] = &[
     "how do i",
     "how does ",
     "how can i",
+    "how to ",
+    "tell me ",
+    "describe ",
+    "explanation",
     "why is ",
     "why does ",
     "why do ",
@@ -144,7 +145,12 @@ const QA_HINTS: &[&str] = &[
     "when was ",
     "where is ",
     "is it possible",
-    "could you",
+];
+
+/// Greetings and sign-offs. They decide only a short message (`GREETING_MAX_CHARS`): a task
+/// that mentions `hello.txt` or ends with "thanks" is still a task, which the plain
+/// word-boundary match used to miss (three labelled cases).
+const GREETING_HINTS: &[&str] = &[
     "hi",
     "hello",
     "hey",
@@ -155,7 +161,37 @@ const QA_HINTS: &[&str] = &[
     "good morning",
     "good night",
     "are you there",
+    "who are you",
 ];
+pub const GREETING_MAX_CHARS: usize = 40;
+
+/// Request openers that say nothing about intent: "Could you add a retry?" asks for the
+/// retry, "Can you explain the decider?" asks for an explanation. The opener is dropped and
+/// the rest of the message is classified; with no cue in the rest, a question mark after an
+/// opener is a request, not a question. (Mingbird read `can you` as a question, which sent
+/// polite task requests to the Q&A route, where the writing tools are off.)
+const POLITE_OPENERS: &[&str] = &[
+    "can you please ",
+    "could you please ",
+    "would you please ",
+    "would you mind ",
+    "can you ",
+    "could you ",
+    "would you ",
+    "will you ",
+    "please ",
+];
+
+/// The message without a leading polite opener, and the opener if there was one.
+fn strip_opener(low: &str) -> (Option<&'static str>, &str) {
+    let s = low.trim_start_matches(|c: char| !c.is_alphanumeric());
+    for o in POLITE_OPENERS {
+        if let Some(rest) = s.strip_prefix(o) {
+            return (Some(o), rest);
+        }
+    }
+    (None, low)
+}
 
 /// Hints match on word boundaries so `hi` does not hit `this` and `fix` does not hit
 /// `prefix`; a hint with no alphanumeric character (none today) would match as a substring.
@@ -164,6 +200,7 @@ fn hint_hit(hint: &str, low: &str) -> bool {
         TASK_HINTS
             .iter()
             .chain(QA_HINTS.iter())
+            .chain(GREETING_HINTS.iter())
             .filter(|h| h.chars().any(char::is_alphanumeric))
             .map(|h| {
                 let re = Regex::new(&format!(r"\b{}\b", regex::escape(h.trim()))).expect("regex");
@@ -268,10 +305,11 @@ pub fn intent_heuristic(messages: &[Message], has_progress: bool) -> HeuristicIn
             continue;
         }
         let low = t.to_lowercase();
-        if let Some(h) = TASK_HINTS.iter().find(|h| hint_hit(h, &low)) {
+        let (opener, body) = strip_opener(&low);
+        if let Some(h) = TASK_HINTS.iter().find(|h| hint_hit(h, body)) {
             return verdict(Intent::Task, 1.0, format!("task hint `{}`", h.trim()), t);
         }
-        if let Some(h) = QA_HINTS.iter().find(|h| hint_hit(h, &low)) {
+        if let Some(h) = QA_HINTS.iter().find(|h| hint_hit(h, body)) {
             return verdict(
                 Intent::Question,
                 1.0,
@@ -279,8 +317,21 @@ pub fn intent_heuristic(messages: &[Message], has_progress: bool) -> HeuristicIn
                 t,
             );
         }
+        if text::clen(t) <= GREETING_MAX_CHARS {
+            if let Some(h) = GREETING_HINTS.iter().find(|h| hint_hit(h, &low)) {
+                return verdict(Intent::Question, 1.0, format!("greeting `{}`", h.trim()), t);
+            }
+        }
         if ends_with_question(t) {
-            return verdict(Intent::Question, 1.0, "trailing `?`".to_string(), t);
+            return match opener {
+                Some(o) => verdict(
+                    Intent::Task,
+                    0.7,
+                    format!("polite request `{}` with `?`", o.trim()),
+                    t,
+                ),
+                None => verdict(Intent::Question, 1.0, "trailing `?`".to_string(), t),
+            };
         }
         // After real work, a cue-free message up to a sentence or two steers that work
         // ("I think we already did that one. It can be closed.", 51 chars, bead boubou-he2);

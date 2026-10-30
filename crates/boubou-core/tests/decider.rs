@@ -130,7 +130,54 @@ fn heuristic_confidence_is_one_on_a_rule_and_half_on_a_default() {
     assert_eq!((h.intent, h.confidence), (Intent::Question, 1.0));
     assert_eq!(h.rule, "trailing `?`");
     let h = intent_heuristic(&[Message::user("hello there")], false);
-    assert_eq!(h.rule, "question hint `hello`");
+    assert_eq!(h.rule, "greeting `hello`");
+    // A greeting decides a short message only: a task that names hello.txt is a task
+    // (three labelled cases).
+    let h = intent_heuristic(
+        &[Message::user(
+            "在工作目录创建 hello.txt,内容为 hello boubou,然后 finish。",
+        )],
+        false,
+    );
+    assert_eq!(h.intent, Intent::Task);
+    // Polite openers are transparent; a request with a question mark is a request.
+    let h = intent_heuristic(
+        &[Message::user(
+            "Could you set the project up with a Makefile?",
+        )],
+        false,
+    );
+    assert_eq!((h.intent, h.confidence), (Intent::Task, 0.7));
+    assert_eq!(h.rule, "polite request `could you` with `?`");
+    let h = intent_heuristic(
+        &[Message::user(
+            "Would you mind creating a README for this crate?",
+        )],
+        false,
+    );
+    assert_eq!(h.intent, Intent::Task);
+    // A short cue-free request keeps the short-message rules once the opener is gone: an
+    // instruction mid-session, a question before any work (as in Mingbird).
+    let h = intent_heuristic(&[Message::user("Please add a retry to the fetch")], true);
+    assert_eq!(h.intent, Intent::FollowUp);
+    let h = intent_heuristic(&[Message::user("Please add a retry to the fetch")], false);
+    assert_eq!(h.intent, Intent::Question);
+    // … and an information request stays a question through the opener.
+    let h = intent_heuristic(
+        &[Message::user("Can you explain how the decider works?")],
+        false,
+    );
+    assert_eq!(
+        (h.intent, h.rule.as_str()),
+        (Intent::Question, "question hint `explain`")
+    );
+    let h = intent_heuristic(
+        &[Message::user(
+            "Can you tell me how a distributed hashtable works ?",
+        )],
+        false,
+    );
+    assert_eq!(h.intent, Intent::Question);
     let h = intent_heuristic(&[Message::user("ok go on")], true);
     assert_eq!((h.intent, h.confidence), (Intent::FollowUp, 0.5));
     let h = intent_heuristic(&[Message::user("ok go on")], false);
