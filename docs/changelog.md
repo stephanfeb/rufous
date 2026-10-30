@@ -982,3 +982,20 @@ its substrings. Tests: `bench/test_surface.py` (generator determinism, each edit
 then passes, the referees, the driver's axis, `final_reply`, a scorer round trip on ED-02 and
 CH-01). No model has run the tiers yet; the first measurement is the coding preset with and
 without the named-deliverable gate on `tier6_editor`.
+
+## Survey of pi and opencode (2026-10-30)
+
+Read `~/IdeaProjects/pi` and `~/IdeaProjects/opencode` (V2) to see what production harnesses
+for frontier models do that Boubou does not. Both keep the loop tiny and put the rigour in the
+tools and in what tools say back: edit matching in gated tiers (exact, Unicode-normalised,
+trailing whitespace, typographic) with a counted error; compaction as a validated section
+template plus a verbatim recent tail; tool calls cut off by the output limit refused rather than
+executed; tool output capped at about 2000 lines or 50 KB with a cut marker and a spill file;
+short assembled prompts with per-tool rules, an environment block and `AGENTS.md`; per-step
+content-addressed snapshots with revert. Neither adapts anything to the model beyond opencode's
+prompt swap by vendor name, neither sets `num_ctx` for Ollama, and neither has a task-success
+benchmark. Filed as bd epic `boubou-bk9` with six children; post-edit diagnostics stays in
+`boubou-po1`, the ACP gaps stay in `boubou-m64`. Not copied: pi's absence of a permission
+system, fixed 16k compaction reserves, subagents and plan mode in the kernel, and
+thousand-word per-model prompts.
+

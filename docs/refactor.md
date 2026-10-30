@@ -123,4 +123,7 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 Steps 3 to 7 can land in any order and each one is a single commit with the workspace tests
 green. Step 8 waits for 4 to 7; 11 waits for 8; 12 waits for 11 and the signals. Step 10 is
 driven by the bench, not by this document: a divergence without a measurement behind it is
-drift.
+drift. The tool-side work borrowed from pi and opencode (bd epic `boubou-bk9`: truncated-call
+refusal, compaction template, edit matching tiers, output bounds, prompt assembly, snapshots)
+is kernel work both products inherit, so its first two children land before step 10 diverges
+the gates.
