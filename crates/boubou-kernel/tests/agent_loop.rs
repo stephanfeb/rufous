@@ -2407,6 +2407,20 @@ fn interactive_finish_is_accepted_without_gates() {
 }
 
 #[test]
+fn the_sandbox_flag_pins_the_child_policy() {
+    // A child's sandbox and its policy go together: whatever a caller sets as the policy,
+    // AGENT_CHILD_SANDBOX runs TurnPolicy::child, so a child can never be a conversation
+    // whose text reply ends the turn before the dispatcher's exit contract is met.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut p = RunParams::plain("small:2b", d.path());
+    assert_eq!(p.turn_policy(), TurnPolicy::unattended());
+    p.policy = TurnPolicy::coding();
+    assert_eq!(p.turn_policy(), TurnPolicy::coding());
+    p.child_mode = true;
+    assert_eq!(p.turn_policy(), TurnPolicy::child());
+}
+
+#[test]
 fn a_preset_lists_its_gates_one_by_one() {
     // The coding product's expected shape, by changing the preset alone: the
     // named-deliverable gate on, every other gate off. The task names fix_summary.md and it

@@ -25,7 +25,7 @@ use super::history::{
     prune_history, similar, workdir_files_text, PRUNE_AT,
 };
 use super::openai::OpenAiBackend;
-use super::policy::{Gate, Prompt, Route, TurnPolicy};
+use super::policy::{Gate, Prompt, Route};
 use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
@@ -490,11 +490,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
     pub fn task_messages(&mut self, task: &str) -> Vec<Message> {
         // The opening turn of a fresh run is a task; the policy says which prompt frames it
         // (a dispatched child gets its sandbox prompt).
-        let which = self
-            .params
-            .policy
-            .turn(Intent::Task, self.params.child_mode, false)
-            .prompt;
+        let which = self.params.turn_policy().turn(Intent::Task, false).prompt;
         let sys = system_for(which, &self.params, &self.skill_dirs, &mut self.sink, task);
         vec![Message::system(sys), Message::user(task)]
     }
@@ -523,7 +519,6 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             skill_dirs,
             decider,
         } = self;
-        let child = params.child_mode;
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
         // The harness's own files (plan, backups, trash, image queue): the workdir unless
@@ -539,19 +534,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             .unwrap_or_else(|| session::checkpoint_path(workdir));
         let elapsed_path = budget::elapsed_meta_for(&ckpt_path);
         let ctx_budget = f64::from(params.num_ctx);
-        // The turn policy (`RunParams::policy`): a child always runs the batch harness.
-        let policy = if child {
-            TurnPolicy::unattended()
-        } else {
-            params.policy
-        };
+        let policy = params.turn_policy();
         let gates_ablated =
             params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
         }
-        if !child {
+        {
             let prof = &params.profile;
             let effective = format!(
                 "think={} temp={}",
@@ -658,37 +648,40 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut qa_cap_blocks: u32 = 0;
         let mut no_result_searches: u32 = 0;
 
-        if child {
+        if params.child_mode {
             log!(
                 "[child-mode] sandbox installed: tools={:?} workdir={}",
                 face.active,
                 workdir.display()
             );
         }
+        if !policy.is_unattended() {
+            log!(
+                "[policy] {} (context {} tokens)",
+                policy.describe(),
+                params.num_ctx
+            );
+        }
         // Q&A or task? A session with real progress treats short follow-ups as task steps.
-        // A child never counts as Q&A: its task text is mechanical by construction, and the
-        // Q&A path would swap out the sandbox prompt and drop the producing tools.
-        let intent = decider.intent_of(&messages);
-        if !child {
-            log!("[decider] {}", intent.describe());
-            if !policy.is_unattended() {
-                log!(
-                    "[policy] {} (context {} tokens)",
-                    policy.describe(),
-                    params.num_ctx
-                );
-            }
+        // The decider is consulted when the policy says so; its verdict routes the turn only
+        // under a policy with intent routing, and is logged and recorded either way.
+        let intent = if policy.consult_decider {
+            let d = decider.intent_of(&messages);
+            log!("[decider] {}", d.describe());
             // Shadow and on modes leave a labelling trace per session (boubou-acy.3): the log
             // line alone reached no file on any surface. A run without a session name shares
             // one sidecar.
             if decider.mode() != DeciderMode::Off {
                 let name = session.unwrap_or("_unnamed");
-                session::append_decision(sessions_dir, name, &intent.record(decider.mode(), name));
+                session::append_decision(sessions_dir, name, &d.record(decider.mode(), name));
             }
-        }
-        // What this turn does around the model, derived once from the policy, the intent,
-        // child mode and the ablations; read by name from here on.
-        let turn = policy.turn(intent.intent, child, gates_ablated);
+            d.intent
+        } else {
+            Intent::Task
+        };
+        // What this turn does around the model, derived once from the policy, the intent
+        // and the ablations; read by name from here on.
+        let turn = policy.turn(intent, gates_ablated);
         let plan_dir_for_notes: Option<&Path> = turn.working.then_some(hdir);
         let mut acted_this_turn = false;
         let mut follow_up_nudged = false;

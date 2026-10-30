@@ -10,9 +10,11 @@
 //! a conversation, an editor turn and an unattended task run.
 //!
 //! [`TurnPolicy`] names that second thing so it is set in one place and read by name,
-//! instead of through a spread of booleans (`docs/refactor.md`). Today the three presets
-//! carry exactly the two behaviours the loop had before the struct existed:
-//! [`TurnPolicy::unattended`] is Mingbird's batch harness (the old default), and
+//! instead of through a spread of booleans (`docs/refactor.md`). The presets carry exactly
+//! the behaviours the loop had before the struct existed: [`TurnPolicy::unattended`] is
+//! Mingbird's batch harness (the old default), [`TurnPolicy::child`] is that harness
+//! narrowed to a dispatched child's one mechanical task (the old `child_mode` minus the
+//! sandbox, which is safety and stays on `RunParams::child_mode`), and
 //! [`TurnPolicy::general`] and [`TurnPolicy::coding`] are both the old editor/chat
 //! semantics (`interactive = true`). The two products are expected to pull `general` and
 //! `coding` apart; until then they are equal by construction and the tests say so.
@@ -205,7 +207,7 @@ pub struct Turn {
     /// apply.
     pub working: bool,
     /// The finish gates this turn runs: the policy's, none on the question route or under
-    /// the finish-gate ablations, and without the plan bookkeeping for a child.
+    /// the finish-gate ablations.
     pub gates: Gates,
     /// A plan may be dispatched to children this turn (the `parallel` config permitting).
     pub dispatch: bool,
@@ -222,6 +224,14 @@ pub struct TurnPolicy {
     pub text_ends_turn: bool,
     /// The finish gates `finish` has to pass ([`Gate`]). Empty, `finish` is accepted as is.
     pub gates: Gates,
+    /// The system prompt that frames a task turn: [`Prompt::Task`] for every policy but a
+    /// child's. The question route takes [`Prompt::Chat`] whatever this says.
+    pub prompt: Prompt,
+    /// The decider reads the opening message and its verdict is logged and, in shadow or on
+    /// mode, recorded in the session's labelling sidecar. Off for a child: its task text is
+    /// mechanical by construction and would only pollute the labelled set. Whether the
+    /// verdict routes the turn is `intent_routing`.
+    pub consult_decider: bool,
     /// The decider's intent routes the turn: a question takes the Q&A prompt and loses the
     /// producing tools, a follow-up ends once acted on and reported. Off, every turn takes
     /// the task prompt and the full tool set, so an instruction phrased as a question can
@@ -233,15 +243,39 @@ pub struct TurnPolicy {
 }
 
 impl TurnPolicy {
-    /// Mingbird's unattended task run (`boubou run`, children, the web UI's batch mode):
-    /// every finish gate, the Q&A and follow-up routes, continue notes and child dispatch.
+    /// Mingbird's unattended task run (`boubou run`, the web UI's batch mode): every finish
+    /// gate, the Q&A and follow-up routes, continue notes and child dispatch.
     pub const fn unattended() -> Self {
         Self {
             name: "unattended",
             text_ends_turn: false,
             gates: Gates::ALL,
+            prompt: Prompt::Task,
+            consult_decider: true,
             intent_routing: true,
             parallel_dispatch: true,
+        }
+    }
+
+    /// A dispatched child (`AGENT_CHILD_SANDBOX=1`): the batch harness narrowed to one
+    /// mechanical task. The sandbox prompt; the delivery gates without the plan bookkeeping
+    /// (no plan to maintain, and the dispatcher checks the exit contract); no decider and no
+    /// Q&A, which would swap out the sandbox prompt and drop the producing tools; no dispatch
+    /// of its own. The sandbox itself (ring-0 executor, narrowed tool face, circuit breaker)
+    /// is safety, not policy, and follows `RunParams::child_mode`.
+    pub const fn child() -> Self {
+        Self {
+            name: "child",
+            text_ends_turn: false,
+            gates: Gates::ALL
+                .without(Gate::NamedFiles)
+                .without(Gate::PlanFiles)
+                .without(Gate::PlanSync)
+                .without(Gate::ReRead),
+            prompt: Prompt::Child,
+            consult_decider: false,
+            intent_routing: false,
+            parallel_dispatch: false,
         }
     }
 
@@ -253,6 +287,8 @@ impl TurnPolicy {
             name: "general",
             text_ends_turn: true,
             gates: Gates::NONE,
+            prompt: Prompt::Task,
+            consult_decider: true,
             intent_routing: false,
             parallel_dispatch: false,
         }
@@ -268,10 +304,10 @@ impl TurnPolicy {
         }
     }
 
-    /// The route for a turn whose opening message the decider read as `intent`. A child
-    /// always runs a task, and so does every turn under a policy without intent routing.
-    pub fn route(&self, intent: Intent, child: bool) -> Route {
-        if child || !self.intent_routing {
+    /// The route for a turn whose opening message the decider read as `intent`. Every turn
+    /// under a policy without intent routing is a task.
+    pub fn route(&self, intent: Intent) -> Route {
+        if !self.intent_routing {
             return Route::Task;
         }
         match intent {
@@ -283,29 +319,23 @@ impl TurnPolicy {
 
     /// Everything the loop needs to know about this turn, derived once. `gates_ablated` is
     /// the bench's `finish_gate` / `finish_gate_text_only` ablation.
-    pub fn turn(&self, intent: Intent, child: bool, gates_ablated: bool) -> Turn {
-        let route = self.route(intent, child);
+    pub fn turn(&self, intent: Intent, gates_ablated: bool) -> Turn {
+        let route = self.route(intent);
         let working = route != Route::Question;
-        let gates = if !working || gates_ablated {
-            Gates::NONE
-        } else if child {
-            self.gates.without_plan_bookkeeping()
-        } else {
-            self.gates
-        };
-        let prompt = if child {
-            Prompt::Child
-        } else if route == Route::Question {
-            Prompt::Chat
-        } else {
-            Prompt::Task
-        };
         Turn {
             route,
-            prompt,
+            prompt: if route == Route::Question {
+                Prompt::Chat
+            } else {
+                self.prompt
+            },
             working,
-            gates,
-            dispatch: working && !child && self.parallel_dispatch,
+            gates: if working && !gates_ablated {
+                self.gates
+            } else {
+                Gates::NONE
+            },
+            dispatch: working && self.parallel_dispatch,
         }
     }
 
@@ -353,6 +383,8 @@ mod tests {
         let c = TurnPolicy::coding();
         assert_eq!(g.text_ends_turn, c.text_ends_turn);
         assert_eq!(g.gates, c.gates);
+        assert_eq!(g.prompt, c.prompt);
+        assert_eq!(g.consult_decider, c.consult_decider);
         assert_eq!(g.intent_routing, c.intent_routing);
         assert_eq!(g.parallel_dispatch, c.parallel_dispatch);
         assert_ne!(g, c, "the names differ");
@@ -361,23 +393,25 @@ mod tests {
     #[test]
     fn the_route_follows_the_intent_only_where_the_policy_routes() {
         let u = TurnPolicy::unattended();
-        assert_eq!(u.route(Intent::Question, false), Route::Question);
-        assert_eq!(u.route(Intent::FollowUp, false), Route::FollowUp);
-        assert_eq!(u.route(Intent::Task, false), Route::Task);
-        // A child always runs a task, whatever the decider read.
-        assert_eq!(u.route(Intent::Question, true), Route::Task);
-        // A conversation or an editor turn takes the task route for every intent.
-        for p in [TurnPolicy::general(), TurnPolicy::coding()] {
-            assert_eq!(p.route(Intent::Question, false), Route::Task);
-            assert_eq!(p.route(Intent::FollowUp, false), Route::Task);
+        assert_eq!(u.route(Intent::Question), Route::Question);
+        assert_eq!(u.route(Intent::FollowUp), Route::FollowUp);
+        assert_eq!(u.route(Intent::Task), Route::Task);
+        // A child, a conversation and an editor turn take the task route for every intent.
+        for p in [
+            TurnPolicy::child(),
+            TurnPolicy::general(),
+            TurnPolicy::coding(),
+        ] {
+            assert_eq!(p.route(Intent::Question), Route::Task);
+            assert_eq!(p.route(Intent::FollowUp), Route::Task);
         }
     }
 
     #[test]
-    fn the_turn_is_the_policy_applied_to_intent_child_and_ablation() {
+    fn the_turn_is_the_policy_applied_to_intent_and_ablation() {
         let u = TurnPolicy::unattended();
         assert_eq!(
-            u.turn(Intent::Task, false, false),
+            u.turn(Intent::Task, false),
             Turn {
                 route: Route::Task,
                 prompt: Prompt::Task,
@@ -388,7 +422,7 @@ mod tests {
         );
         // A question: the answer is the chat; nothing is gated, paced or dispatched.
         assert_eq!(
-            u.turn(Intent::Question, false, false),
+            u.turn(Intent::Question, false),
             Turn {
                 route: Route::Question,
                 prompt: Prompt::Chat,
@@ -398,11 +432,14 @@ mod tests {
             }
         );
         // A follow-up works and is gated like a task; only its ending differs.
-        let f = u.turn(Intent::FollowUp, false, false);
+        let f = u.turn(Intent::FollowUp, false);
         assert_eq!(f.route, Route::FollowUp);
         assert!(f.working && f.gates == Gates::ALL && f.dispatch);
-        // A child: the delivery gates but no plan bookkeeping and no dispatch of its own.
-        let c = u.turn(Intent::Task, true, false);
+        // A child: its own prompt, the delivery gates but no plan bookkeeping, no decider,
+        // no dispatch of its own, whatever the opening message looks like.
+        let child = TurnPolicy::child();
+        assert!(!child.consult_decider);
+        let c = child.turn(Intent::Question, false);
         assert_eq!(
             (c.route, c.prompt, c.working, c.dispatch),
             (Route::Task, Prompt::Child, true, false)
@@ -411,11 +448,12 @@ mod tests {
             c.gates.names(),
             ["delivery", "tests", "claims", "claimed files", "wrap-up"]
         );
+        assert_eq!(child.gates, Gates::ALL.without_plan_bookkeeping());
         // The ablation switches every gate off, the plan bookkeeping included.
-        let a = u.turn(Intent::Task, false, true);
+        let a = u.turn(Intent::Task, true);
         assert!(a.working && a.gates.is_empty() && a.dispatch);
         // A conversation: working, nothing gated, nothing dispatched.
-        let g = TurnPolicy::general().turn(Intent::Question, false, false);
+        let g = TurnPolicy::general().turn(Intent::Question, false);
         assert!(g.route == Route::Task && g.working && g.gates.is_empty() && !g.dispatch);
     }
 
@@ -427,7 +465,7 @@ mod tests {
             gates: Gates::NONE.with(Gate::NamedFiles),
             ..TurnPolicy::coding()
         };
-        let t = p.turn(Intent::Task, false, false);
+        let t = p.turn(Intent::Task, false);
         assert!(t.gates.has(Gate::NamedFiles));
         assert!(!t.gates.has(Gate::Tests) && !t.gates.has(Gate::Delivery));
         assert_eq!(
@@ -456,16 +494,17 @@ mod tests {
     #[test]
     fn the_prompt_follows_the_route_and_a_child_keeps_its_own() {
         let u = TurnPolicy::unattended();
-        assert_eq!(u.turn(Intent::Task, false, false).prompt, Prompt::Task);
-        assert_eq!(u.turn(Intent::FollowUp, false, false).prompt, Prompt::Task);
-        assert_eq!(u.turn(Intent::Question, false, false).prompt, Prompt::Chat);
-        assert_eq!(u.turn(Intent::Question, true, false).prompt, Prompt::Child);
+        assert_eq!(u.turn(Intent::Task, false).prompt, Prompt::Task);
+        assert_eq!(u.turn(Intent::FollowUp, false).prompt, Prompt::Task);
+        assert_eq!(u.turn(Intent::Question, false).prompt, Prompt::Chat);
+        assert_eq!(
+            TurnPolicy::child().turn(Intent::Question, false).prompt,
+            Prompt::Child
+        );
         // A conversation or an editor turn: the task prompt for a question too, so an
         // instruction phrased as a question keeps the producing tools.
         assert_eq!(
-            TurnPolicy::general()
-                .turn(Intent::Question, false, false)
-                .prompt,
+            TurnPolicy::general().turn(Intent::Question, false).prompt,
             Prompt::Task
         );
         // Rebuilding: chat every turn, task on a continued session, child never.
@@ -483,6 +522,7 @@ mod tests {
         );
         assert!(!TurnPolicy::general().is_unattended());
         assert!(!TurnPolicy::coding().is_unattended());
+        assert!(!TurnPolicy::child().is_unattended());
         assert_eq!(
             TurnPolicy::coding().describe(),
             "coding: text ends turn on, finish gates none, intent routing off, dispatch off"

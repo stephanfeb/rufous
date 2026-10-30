@@ -81,8 +81,10 @@ pub struct RunParams {
     /// `AGENT_ABLATION`: comma-separated switches used by the benchmark harness.
     pub ablation: Vec<String>,
     pub max_iterations: usize,
-    /// `AGENT_CHILD_SANDBOX=1`: this process is a dispatched child (ring-0 sandbox,
-    /// minimal prompt, narrowed tool face, never Q&A, never dispatches itself).
+    /// `AGENT_CHILD_SANDBOX=1`: this process is a dispatched child. This flag is the
+    /// sandbox: the ring-0 default-deny executor, the narrowed tool face, the circuit
+    /// breaker and a dispatch hook that never dispatches. The child's turn semantics are
+    /// [`TurnPolicy::child`], which [`Self::turn_policy`] returns whenever this is set.
     pub child_mode: bool,
     /// Multiplier on the loop's retry/back-off sleeps (`AGENT_SLEEP_SCALE`; tests use 0).
     pub sleep_scale: f32,
@@ -93,9 +95,9 @@ pub struct RunParams {
     /// ends the turn, whether `finish` meets the delivery gates, whether a question is
     /// routed away from the producing tools, whether a plan may be dispatched. The default
     /// is [`TurnPolicy::unattended`], Mingbird's batch harness; the ACP server sets
-    /// [`TurnPolicy::coding`], the web UI's chat and `boubou chat` [`TurnPolicy::general`]. A child run
-    /// is always unattended. The safety gate, the duplicate-call and failure ladders and
-    /// compaction do not depend on the policy.
+    /// [`TurnPolicy::coding`], the web UI's chat and `boubou chat` [`TurnPolicy::general`].
+    /// A child runs [`TurnPolicy::child`] (see [`Self::turn_policy`]). The safety gate, the
+    /// duplicate-call and failure ladders and compaction do not depend on the policy.
     pub policy: TurnPolicy,
     /// Where the loop's own files go: `todo.json`, the backups edits leave behind, the
     /// trash of deleted files and the image queue. `None` is the workdir itself (the CLI,
@@ -148,6 +150,17 @@ impl RunParams {
             harness_dir: None,
             profile,
         })
+    }
+
+    /// The policy the loop runs under. A child's sandbox and its policy go together: with
+    /// `child_mode` set this is [`TurnPolicy::child`] whatever `policy` says, so a caller
+    /// that sets the flag by hand (tests, the CLI) cannot run a child as a conversation.
+    pub fn turn_policy(&self) -> TurnPolicy {
+        if self.child_mode {
+            TurnPolicy::child()
+        } else {
+            self.policy
+        }
     }
 
     /// Defaults with no environment lookups (tests, embedding).
