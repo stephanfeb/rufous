@@ -1,0 +1,101 @@
+# Refactor: kernel and policies
+
+This document states where Boubou's agent loop is going and tracks how far it has got. It is
+a plan and a status board, not a log: when a step lands, its row changes, and nothing is
+appended. Dates, measurements and the story of how a step went belong in `docs/changelog.md`;
+what the code does today belongs in `README.md`, `docs/acp.md` and the crate docs.
+
+## Intent
+
+Boubou started as a port of Mingbird, a batch harness for 2–12B local models. What it has
+become is a layer that compensates for small-model quirks, and that layer is the basis for two
+products over small models:
+
+- a **general-purpose harness**: a conversation with an assistant that has tools;
+- an **agentic coding harness**: an editor's agent working in the user's project.
+
+Neither of them is Mingbird's unattended task run, and the loop must stop assuming it is.
+
+The loop (`crates/boubou-core/src/agent/run.rs`) is two things entangled:
+
+| | What it is | Examples |
+|---|---|---|
+| **Kernel** | What every product needs from a small model: the same for a chat, an editor turn and a batch task | format-leak salvage, argument coercion, the duplicate-call, streak and idle ladders, the empty-reply ladder, the integrity and honest-failure checks, the corrector, compaction, the five safety rings, per-model profiles |
+| **Policy** | What the harness does *around* the model for this kind of turn | whether a text reply ends the turn, whether `finish` must pass the delivery gates, whether a question is routed away from the producing tools, whether a plan is dispatched to children, which system prompt frames the turn, the continue notes |
+
+The goal is a kernel that does not know which product it is running in, driven by a policy
+that is set in one place and read by name. The crate split (a kernel crate and two product
+crates) is the last step, not the first: it happens once the seam is proven inside
+`boubou-core`.
+
+## The seam: `TurnPolicy`
+
+`crates/boubou-core/src/agent/policy.rs`. `RunParams::policy` replaces the old
+`RunParams::interactive` boolean; the loop reads `policy.<field>` where it read `interactive`
+or `!interactive`. A child run (`AGENT_CHILD_SANDBOX=1`) always runs `unattended`.
+
+| Field | On | Off |
+|---|---|---|
+| `text_ends_turn` | a text reply with no tool call ends the turn; two empty replies end it | continue note; context reset after repeated empty replies |
+| `finish_gates` | `finish` must pass: delivery, tests, claimed artefacts, named deliverables, plan sync, pre-delivery re-read, closing wrap-up | `finish` accepted as is |
+| `intent_routing` | a question takes the Q&A prompt and loses the producing tools; a follow-up ends once acted on and reported | every turn takes the task prompt and the full tool set |
+| `parallel_dispatch` | a plan with enough simple items is farmed out to sandboxed children when `parallel` is configured | nothing is dispatched |
+
+Presets and who sets them:
+
+| Preset | `text_ends_turn` | `finish_gates` | `intent_routing` | `parallel_dispatch` | Set by |
+|---|---|---|---|---|---|
+| `unattended` | off | on | on | on | `boubou run`, `boubou chat`, children, the web UI with `batch: true`; the default |
+| `general` | on | off | off | off | the web UI's chat (`boubou serve`, `boubou-app`) |
+| `coding` | on | off | off | off | the ACP server (`boubou acp`, Zed) |
+
+`general` and `coding` are equal field for field today: they are the two behaviours the loop
+already had, given names. A unit test in `policy.rs` asserts the equality so that the first
+divergence is a deliberate, documented change (step 9 below) and not drift.
+
+## What is still entangled
+
+Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
+
+- **`RunParams::chat_mode`** (`boubou chat`): a text reply draws a "your answer is
+  sufficient, call finish" note instead of ending the turn. It runs the `unattended` policy
+  with one exception bolted on. It should become `general`, once the difference between
+  "text ends the turn" and "text asks for finish" is either reconciled or made a policy field.
+- **`RunParams::child_mode`**: three things in one flag. The ring-0 sandbox and the
+  narrowed tool face are safety, and stay where they are; "never Q&A, never dispatch, batch
+  gates" is a policy and is already expressed as `unattended`; the child system prompt is
+  prompt selection (next item).
+- **Prompt selection** (`agent/prompt.rs`, chosen in `run.rs`): task, Q&A or child system
+  prompt, decided from `qa`, `child` and the profile rather than from the policy.
+- **The `qa` and `follow_up` locals**: computed once from the decider's intent and the
+  policy, then threaded through about forty sites in `run.rs`. The route should be a value
+  the policy produces from the intent, read in a handful of places.
+- **The finish gates as one block**: `finish_gates` is all or nothing. The coding product
+  will want some of them (a deliverable the user named is missing) and not others (running
+  the project's test suite on every `finish`). Each gate needs a name and the policy a list.
+- **Ablations** (`AGENT_ABLATION=finish_gate,finish_gate_text_only`): the bench's way of
+  switching policy pieces off for a measurement, overlapping the policy fields.
+- **`RunParams` itself** carries kernel knobs (`num_ctx`, `think`, `prune_keep`, the profile)
+  and policy side by side. Fine while both live in one crate; the crate split will separate
+  them.
+- **The run log and the decision sidecar** record the policy by name but the session files
+  do not: a session resumed on another surface silently changes policy.
+
+## Progress
+
+| # | Step | Done when | Status |
+|---|---|---|---|
+| 1 | `TurnPolicy` struct with `general`, `coding` and `unattended`; `RunParams::interactive` removed; every surface sets a preset | workspace tests pass with no behaviour change; the equality test is in | done |
+| 2 | `boubou chat` runs `general`; `chat_mode` folded into the policy or removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | open |
+| 3 | The intent route is a value the policy derives from the decider's intent | `qa`/`follow_up` read in fewer than ten places in `run.rs`; no `!child && policy.x && intent == …` expressions | open |
+| 4 | System prompt chosen from the policy and the route | `run.rs` no longer branches on `child` or `qa` to pick a prompt | open |
+| 5 | The finish gates are named units the policy lists | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | open |
+| 6 | `child_mode` split: sandbox and tool face stay as safety; the rest is `unattended` plus the child prompt | `run.rs` reads `child` only where the sandbox or the dispatch receipt needs it | open |
+| 7 | Kernel boundary inside `boubou-core`: the ladders, salvage, compaction and corrector are a module the policy-driven loop calls | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | open |
+| 8 | Sessions record the policy they ran under | a resumed session keeps its policy or says it changed | open |
+| 9 | `general` and `coding` diverge where measurement says so | the equality test is replaced by one that states the difference and why | open |
+| 10 | Crate split: kernel crate, general-purpose product, coding product | each product crate depends on the kernel and sets its own preset; `boubou-core` as it is today no longer exists | open |
+
+Steps 2 to 6 can land in any order and each one is a single commit with the workspace tests
+green. Step 7 waits for 3 to 6; 10 waits for 7. Step 9 is driven by the bench, not by this
+document: a divergence without a measurement behind it is drift.

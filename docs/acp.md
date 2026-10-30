@@ -68,11 +68,11 @@ harness files in any mode.
 
 ## Turn semantics
 
-An editor turn is a standard agent turn, not a batch task run. The turn ends when the model
-replies in text without a tool call, or when it calls `finish`. `finish` is accepted as it
-is: the delivery, test, artefact, plan and self-check gates exist for unattended batch tasks,
-and in a project directory they would run your own test suite and bounce the turn into work
-you did not ask for. The loop's "continue with tools" notes are not sent, every turn takes the
+An editor turn runs under the `coding` turn policy (`docs/refactor.md`), not the batch task
+run. The turn ends when the model replies in text without a tool call, or when it calls
+`finish`. `finish` is accepted as it is: the delivery, test, artefact, plan and self-check
+gates exist for unattended batch tasks, and in a project directory they would run your own
+test suite and bounce the turn into work you did not ask for. The loop's "continue with tools" notes are not sent, every turn takes the
 task prompt and the full tool set (a question can still read files, and an instruction
 phrased as a question can still write them), and nothing is dispatched to child processes.
 The safety gate, the duplicate-call and failure ladders, the idle-streak nudges and context

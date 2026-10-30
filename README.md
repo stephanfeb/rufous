@@ -29,8 +29,9 @@ Web search defaults to Brave, then DuckDuckGo, then Bing (`AGENT_SEARCH_BACKENDS
 (every tool call with its step time), inline permission cards, a pinned composer with the model and
 Online/Offline controls, and an inspector with the live plan, activity and files; dark by default,
 light available; the agent runs in-process. `cargo run -p boubou-app` opens the same UI in a native window.
-A chat turn ends when the model replies or calls `finish`, as in an editor; "Batch task mode" in
-the settings opts a session into the unattended task harness (finish gates, test guard, continue notes).
+A chat turn runs under the `general` turn policy (`docs/refactor.md`): it ends when the model
+replies or calls `finish`, as in an editor; "Batch task mode" in the settings opts a session into
+the `unattended` policy, Mingbird's task harness (finish gates, test guard, continue notes).
 Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, "child_model":
 "<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
 sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside
@@ -57,7 +58,9 @@ Neovim) can run Boubou as its agent: streamed text and thoughts, tool calls with
 the plan, and the safety gate's questions as the editor's permission dialog (see
 [docs/acp.md](docs/acp.md)). Next: voice model installer, Tauri bundling, the LRAB bench adapter.
 The Python → Rust module map is in [docs/PORTING.md](docs/PORTING.md); dated engineering
-notes are in [docs/changelog.md](docs/changelog.md).
+notes are in [docs/changelog.md](docs/changelog.md); the plan for separating the small-model
+kernel from the turn policies, towards a general-purpose harness and a coding harness over
+small models, is in [docs/refactor.md](docs/refactor.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)
 are not carried over; Boubou ships no Python runtime.
@@ -114,6 +117,7 @@ crates/boubou-app    Tauri shell embedding webui/index.html (not built by defaul
 skills/              built-in skills, carried over from Mingbird unchanged
 docs/PORTING.md      Python → Rust module map and port status
 docs/changelog.md    dated engineering log (what shipped, what was measured)
+docs/refactor.md     kernel-and-policies refactor: intent and progress
 ```
 
 ## License

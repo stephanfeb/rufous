@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use boubou_core::agent::session::{load_session, sessions_dir};
-use boubou_core::agent::{Agent, AgentEvent, RunParams};
+use boubou_core::agent::{Agent, AgentEvent, RunParams, TurnPolicy};
 use boubou_core::config::Config;
 use boubou_core::guards::budget::resolve_time_budget;
 use boubou_core::ollama::Message;
@@ -156,11 +156,15 @@ pub fn params_from_prefs(
         }
     }
     p.think = prefs.get("think").and_then(Value::as_bool);
-    // A chat turn is a standard agent turn, as in the editor: text or `finish` ends it and
-    // the batch gates stay out of the way. `batch: true` opts a session into Mingbird's
-    // unattended task run (finish gates, test guard, continue notes, child dispatch) for
-    // watching the harness work a task in the workdir.
-    p.interactive = prefs.get("batch").and_then(Value::as_bool) != Some(true);
+    // A chat turn runs under the general policy: text or `finish` ends it and the batch
+    // gates stay out of the way. `batch: true` opts a session into Mingbird's unattended
+    // task run (finish gates, test guard, continue notes, child dispatch) for watching the
+    // harness work a task in the workdir.
+    p.policy = if prefs.get("batch").and_then(Value::as_bool) == Some(true) {
+        TurnPolicy::unattended()
+    } else {
+        TurnPolicy::general()
+    };
     if prefs.get("sys_enable").and_then(Value::as_bool) == Some(true) {
         let f = home.join("system_override.txt");
         if f.is_file() {

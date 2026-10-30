@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use boubou_core::agent::TurnPolicy;
 use boubou_core::safety::{ConfirmRequest, Confirmer};
 use boubou_web::events::Bus;
 use boubou_web::runner::{RunRequest, Spawner};
@@ -736,17 +737,18 @@ fn a_chat_turn_is_interactive_unless_batch_mode_is_on() {
     use boubou_web::runner::params_from_prefs;
     let d = tempfile::tempdir().expect("tmp");
     let p = params_from_prefs("m", d.path(), d.path(), &prefs::load(d.path())).expect("params");
-    assert!(p.interactive, "default");
+    assert_eq!(p.policy, TurnPolicy::general(), "default");
     let mut on = prefs::load(d.path());
     on.insert("batch".into(), json!(true));
     let p = params_from_prefs("m", d.path(), d.path(), &on).expect("params");
-    assert!(!p.interactive, "batch: true");
+    assert_eq!(p.policy, TurnPolicy::unattended(), "batch: true");
     let mut off = prefs::load(d.path());
     off.insert("batch".into(), json!(false));
-    assert!(
+    assert_eq!(
         params_from_prefs("m", d.path(), d.path(), &off)
             .expect("params")
-            .interactive
+            .policy,
+        TurnPolicy::general()
     );
 
     // The preference round-trips through the API and the status endpoint.

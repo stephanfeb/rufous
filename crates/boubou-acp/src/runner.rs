@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use boubou_core::agent::session;
-use boubou_core::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner};
+use boubou_core::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner, TurnPolicy};
 use boubou_core::config::Config;
 use boubou_core::ollama::Message;
 use boubou_core::safety::{ConfirmRequest, Confirmer, Gate, SafetyPolicy, Verdict};
@@ -135,8 +135,8 @@ pub struct StandardFactory {
 }
 
 /// The loop parameters for one editor turn: the environment's defaults as for the CLI
-/// (`AGENT_CTX` and the rest), then what an editor session needs. The editor is interactive,
-/// so a text reply or `finish` ends the turn and the batch gates are off; the plan, backups
+/// (`AGENT_CTX` and the rest), then what an editor session needs. The turn runs under the
+/// coding policy, so a text reply or `finish` ends it and the batch gates are off; the plan, backups
 /// and trash go beside the session files, not into the project; and `num_ctx`, from
 /// `boubou acp --ctx`, sets the context window. An editor passes no environment, so without
 /// the flag the window is the 131072-token default and the model loads with a KV cache sized
@@ -149,7 +149,7 @@ pub fn turn_params(
     num_ctx: Option<u32>,
 ) -> boubou_core::Result<RunParams> {
     let mut params = RunParams::from_env(model, cwd)?;
-    params.interactive = true;
+    params.policy = TurnPolicy::coding();
     params.harness_dir = Some(session::harness_dir(sessions_dir, session));
     if let Some(n) = num_ctx {
         params.num_ctx = n;

@@ -8,6 +8,8 @@
 //!   `sanitize_ckpt`, `_similar`, pending-image attachment).
 //! - [`session`]: checkpoint, transcript and session files, byte-compatible with Mingbird.
 //! - [`prompt`]: the system prompts and the platform block.
+//! - [`policy`]: the turn policy (what the harness does around the model), with the
+//!   `general`, `coding` and `unattended` presets.
 //! - [`testguard`]: the finish-gate test runner.
 //! - [`run`]: the loop body itself.
 //!
@@ -20,6 +22,7 @@ pub mod corrector;
 pub mod face;
 pub mod history;
 pub mod openai;
+pub mod policy;
 pub mod prompt;
 pub mod run;
 pub mod session;
@@ -35,6 +38,7 @@ use crate::{Error, Result};
 pub use chat::{ChatBackend, ChatError, ChatResponse, DynBackend, OllamaBackend, StreamPiece};
 pub use face::ToolFace;
 pub use openai::OpenAiBackend;
+pub use policy::TurnPolicy;
 pub use run::{Agent, ToolRunner};
 
 pub const DEFAULT_NUM_CTX: u32 = 131_072;
@@ -88,15 +92,14 @@ pub struct RunParams {
     /// Interactive chat (`boubou chat`): a plain text reply ends the turn instead of
     /// drawing a "continue with tools" note. The finish gates and the Q&A route still apply.
     pub chat_mode: bool,
-    /// An editor session (the ACP server): standard agent-turn semantics instead of the
-    /// unattended batch harness. The turn ends when the model replies in text without a
-    /// tool call or calls `finish`; `finish` is accepted as is (no delivery, test, artefact,
-    /// plan or self-check gate: those exist for batch tasks and would run the user's own
-    /// test suite and bounce the turn); no "continue" notes; every turn takes the task
-    /// prompt and the full tool set (no Q&A route, so an instruction phrased as a question
-    /// can still write files); no parallel dispatch into the user's project. The safety
-    /// gate, the duplicate-call and failure ladders and compaction are unchanged.
-    pub interactive: bool,
+    /// What the harness does around the model this turn ([`TurnPolicy`]): whether text
+    /// ends the turn, whether `finish` meets the delivery gates, whether a question is
+    /// routed away from the producing tools, whether a plan may be dispatched. The default
+    /// is [`TurnPolicy::unattended`], Mingbird's batch harness; the ACP server sets
+    /// [`TurnPolicy::coding`] and the web UI's chat [`TurnPolicy::general`]. A child run
+    /// is always unattended. The safety gate, the duplicate-call and failure ladders and
+    /// compaction do not depend on the policy.
+    pub policy: TurnPolicy,
     /// Where the loop's own files go: `todo.json`, the backups edits leave behind, the
     /// trash of deleted files and the image queue. `None` is the workdir itself (the CLI,
     /// Mingbird's layout). An embedding whose workdir is the user's project sets
@@ -145,7 +148,7 @@ impl RunParams {
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
             prune_keep: env_parse("AGENT_PRUNE_KEEP")?.unwrap_or(0),
             chat_mode: false,
-            interactive: false,
+            policy: TurnPolicy::unattended(),
             harness_dir: None,
             profile,
         })
@@ -174,7 +177,7 @@ impl RunParams {
             sleep_scale: 1.0,
             prune_keep: 0,
             chat_mode: false,
-            interactive: false,
+            policy: TurnPolicy::unattended(),
             harness_dir: None,
             profile,
         }

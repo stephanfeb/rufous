@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use boubou_core::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
-use boubou_core::agent::{Agent, AgentEvent, RunParams, ToolRunner};
+use boubou_core::agent::{Agent, AgentEvent, RunParams, ToolRunner, TurnPolicy};
 use boubou_core::guards::budget::{elapsed_meta_path, load_elapsed, save_elapsed};
 use boubou_core::guards::idle::{QA_IDLE_CAP, QA_IDLE_NUDGE};
 use boubou_core::ollama::{FunctionCall, Message, Role, ToolCall};
@@ -2352,13 +2352,13 @@ fn prune_keep_zero_is_the_default_and_disables_pruning() {
     assert!(out.iter().all(|m| !m.content.starts_with("[earlier]")));
 }
 
-// ---- interactive (editor) semantics, review 2026-10-29 ----
+// ---- the coding/general policy (editor and chat semantics), review 2026-10-29 ----
 
 #[test]
 fn interactive_text_reply_ends_the_turn_without_a_harness_note() {
     let d = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.interactive = true;
+    params.policy = TurnPolicy::coding();
     let mut a = Agent::new(
         params,
         Responder {
@@ -2389,7 +2389,7 @@ fn interactive_finish_is_accepted_without_gates() {
     let d = tempfile::tempdir().expect("tmp");
     // A bare finish with nothing delivered: gate 1 bounces it in task mode.
     let mut a = agent_with(d.path(), &[], "", "");
-    a.params.interactive = true;
+    a.params.policy = TurnPolicy::coding();
     let out = a.run(start(TASK), None, None).expect("loop");
     assert!(
         user_msgs(&out, "finish was rejected").is_empty(),
@@ -2413,7 +2413,7 @@ fn interactive_question_keeps_the_task_prompt_and_file_tools() {
         "[created notes.md]",
     )];
     let mut a = agent_for(d.path(), &calls);
-    a.params.interactive = true;
+    a.params.policy = TurnPolicy::coding();
     let out = a
         .run(start("What is the next item to work on ?"), None, None)
         .expect("loop");
@@ -2432,7 +2432,7 @@ fn interactive_question_keeps_the_task_prompt_and_file_tools() {
 fn interactive_two_empty_replies_end_the_turn() {
     let d = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.interactive = true;
+    params.policy = TurnPolicy::coding();
     let mut a = Agent::new(
         params,
         Responder {
@@ -2457,7 +2457,7 @@ fn a_relocated_harness_dir_takes_the_plan_and_the_session_snapshot_follows() {
     let h = tempfile::tempdir().expect("tmp");
     let sdir = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.interactive = true;
+    params.policy = TurnPolicy::coding();
     params.harness_dir = Some(h.path().to_path_buf());
     let mut tools = Executor::with_policy(d.path(), SafetyPolicy::default());
     tools.harness_dir = h.path().to_path_buf();
