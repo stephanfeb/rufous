@@ -8,7 +8,7 @@ Labels, by what the loop must do, not by surface form:
   task       needs the task loop: run_bash, files written or edited, a deliverable, a plan.
   follow_up  a short steer on work already under way (continuation, correction, confirmation).
 
-Sources: candidates.json (collected from the user's sessions, LRAB prompts, probe prompts and
+Sources: candidates.json (collected from the user's sessions, English only (Boubou targets en_UK), LRAB prompts, probe prompts and
 the test corpora; labelled here by index) plus authored cases that over-sample the heuristic's
 0.5 defaults (short messages, long cue-free messages) and its known blind spots (questions that
 contain task verbs). `uncertain` marks cases where a reasonable labeller could disagree.
@@ -69,22 +69,21 @@ def load_shadow(sessions_dir):
 Q, T, F = "question", "task", "follow_up"
 # index in candidates.json -> (label, uncertain)
 collected = {
-    0: (Q, False), 1: (T, False), 2: (Q, True), 3: (T, False), 4: (T, False), 5: (T, False),
-    6: (T, False), 7: (Q, False), 8: (Q, True), 9: (F, False), 10: (Q, True), 11: (Q, False),
-    12: (Q, False), 13: (Q, False), 14: (Q, False), 15: (Q, False), 16: (Q, False), 17: (T, False),
-    18: (Q, False), 19: (F, True), 20: (T, False), 21: (Q, False), 22: (Q, False), 23: (T, False),
-    24: (T, False), 25: (T, False),
-    **{i: (T, False) for i in range(26, 64)},          # LRAB prompts, probe tasks
-    64: (T, False), 65: (Q, True), 66: (Q, False), 67: (T, False), 68: (T, False), 69: (T, False),
-    70: (T, False), 71: (Q, False), 72: (Q, True), 73: (T, False), 74: (T, False), 75: (T, True),
-    76: (T, False), 77: (Q, False), 78: (Q, False), 79: (Q, False), 80: (Q, False), 81: (F, False),
-    # 82, 84, 85, 86 are harness-note fixtures, skipped
-    83: (T, True), 87: (F, True), 88: (T, False), 89: (T, True), 90: (Q, False), 91: (Q, False),
-    92: (T, False), 93: (T, False), 94: (Q, False), 95: (T, False), 96: (T, False), 97: (F, False),
-    98: (Q, False), 99: (T, False), 100: (Q, False), 102: (F, True), 103: (T, False),
+    0: (Q, False), 1: (Q, True), 2: (T, False), 3: (T, False), 4: (T, False),
+    5: (T, False), 6: (Q, False), 7: (Q, True), 8: (F, False), 9: (Q, True), 10: (Q, False),
+    11: (Q, False), 12: (Q, False), 13: (Q, False), 14: (Q, False), 15: (Q, False), 16: (T, False),
+    17: (Q, False), 18: (F, True), 19: (T, False), 20: (Q, False), 21: (Q, False),
+    **{i: (T, False) for i in range(22, 60)},          # LRAB prompts, probe tasks
+    60: (T, False), 61: (Q, True), 62: (Q, False), 63: (T, False), 64: (T, False), 65: (T, False),
+    66: (T, False), 67: (Q, False), 68: (Q, True), 69: (T, False), 70: (T, False), 71: (T, True),
+    72: (T, False), 73: (Q, False), 74: (Q, False), 75: (Q, False), 76: (Q, False), 77: (F, False),
+    # 78, 80, 81, 82 are harness-note fixtures, skipped
+    79: (T, True), 83: (F, True), 84: (T, False), 85: (T, True), 86: (Q, False), 87: (Q, False),
+    88: (T, False), 89: (T, False), 90: (Q, False), 91: (T, False), 92: (T, False), 93: (F, False),
+    94: (Q, False), 95: (T, False), 96: (Q, False), 98: (F, True), 99: (T, False),
 }
 # progress flag for the test-corpus follow-ups whose fixture carried it
-progress_override = {81: True, 97: True, 102: True, 87: True}
+progress_override = {77: True, 93: True, 98: True, 83: True}
 
 authored = []
 def a(text, label, has_progress=False, uncertain=False, group=""):

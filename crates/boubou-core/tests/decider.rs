@@ -131,15 +131,16 @@ fn heuristic_confidence_is_one_on_a_rule_and_half_on_a_default() {
     assert_eq!(h.rule, "trailing `?`");
     let h = intent_heuristic(&[Message::user("hello there")], false);
     assert_eq!(h.rule, "greeting `hello`");
-    // A greeting decides a short message only: a task that names hello.txt is a task
-    // (three labelled cases).
+    // A greeting decides a short message only: a long instruction that happens to contain
+    // "hello" is a task.
     let h = intent_heuristic(
         &[Message::user(
-            "在工作目录创建 hello.txt,内容为 hello boubou,然后 finish。",
+            "Put the line hello boubou into greeting.txt, then confirm it with cat greeting.txt",
         )],
         false,
     );
     assert_eq!(h.intent, Intent::Task);
+    assert!(!h.rule.starts_with("greeting"), "{}", h.rule);
     // Polite openers are transparent; a request with a question mark is a request.
     let h = intent_heuristic(
         &[Message::user(
