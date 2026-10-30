@@ -1277,7 +1277,7 @@ Mean 0.64 against 0.72 with the kernel on, 15 minutes against 6.
 | ED-04 | 0.21 / 0.89 | 0.32 / 0.32 |
 | ED-05 | 1.00 / 0.79 | 1.00 / 1.00 |
 | mean | 0.72 | 0.64 |
-| finish accepted after a failing last check | 0 of 10 | 6 of 10 |
+| finish accepted after a failing last check | 0 of 10 | 6 of 10 (2 claimed success outright, 4 hedged it) |
 
 Cell by cell, from the harness lines and the score details. ED-01: the raw model made the
 one-line fix with `edit_file` in four or five calls and ran the tests itself, faster than
@@ -1299,10 +1299,58 @@ idle; the probe's 0.79 was the referee not finding the mechanism named, noise at
 
 Reading. On this model and these five briefs the kernel is worth 0.08 of mean score and
 nine minutes, and the log lines say which parts earned it. The finish gates: six of ten
-kernel-off cells ended with a success claim over a failing last check, none did with the
-gates on. The failure ladder: without the three-failure `edit_file` disable and the redirect
+kernel-off cells finished over a failing last check, none did with the gates on; two of the
+six summaries claimed success outright ("Fixed … so that 250 is 'standard' and 1000 is
+'premium'"), the other four opened with "Fixed" or "Renamed" and admitted the failing tests
+in a later clause, which the claims gate lets through by design as an honest report.
+(Corrected 2026-10-31: the first version of this entry called all six false.) The failure ladder: without the three-failure `edit_file` disable and the redirect
 hints the model loops on exact-match misses (ED-02 unattended, ED-04 coding). The ≤4B rule
 cuts both ways: its whole-file rewrites won ED-02 and ED-04 unattended and lost ED-03 and
 ED-04 coding to collateral, so it is not settled by this arm and needs its own single-switch
 run (`AGENT_ABLATION=small_model`), as does `finish_gate` alone. The earlier reading that the
 kernel sat idle on the surface tiers held for qwen3.5:9b; for a 2B model it did not.
+
+## tier6_editor with gemma4:e2b, the ≤4B edit rule alone switched off (2026-10-31)
+
+`AGENT_ABLATION=small_model`, every other compensation on, same axes; results in
+`bench/results/surface_editor/gemma_e2b_small_model_off`, every transcript logging
+`[ablation] off: small_model`. Mean 0.69 in 8 minutes, against 0.72 with the rule on and 0.64
+with the whole kernel off.
+
+| task | rule on (probe) coding / unattended | rule off coding / unattended | kernel off |
+|---|---|---|---|
+| ED-01 | 1.00 / 1.00 | 0.00 / 0.57 | 1.00 / 1.00 |
+| ED-02 | 1.00 / 1.00 | 1.00 / 1.00 | 0.71 / 0.43 |
+| ED-03 | 0.29 / 0.00 | 0.00 / 0.29 | 0.29 / 0.29 |
+| ED-04 | 0.21 / 0.89 | 1.00 / 1.00 | 0.32 / 0.32 |
+| ED-05 | 1.00 / 0.79 | 1.00 / 1.00 | 1.00 / 1.00 |
+| mean | 0.72 | 0.69 | 0.64 |
+| finish over a failing last check | 0 | 2 (ED-01 both) | 6 |
+
+What the rule off changed. ED-04, the three-file rename, went to 1.00 under both presets:
+with `edit_file` available the model renamed in place (coding: four edits landed, two
+exact-match misses, tests green; unattended: three edits, tests green) where the whole-file
+rewrites under the rule had destroyed collateral (coding 0.21) or needed an `append_file`
+rescue (unattended 0.89). ED-02 stayed at 1.00 both ways, one edit and a passing re-run.
+ED-01 went the other way, but not because of the edit protocol: coding worked entirely in an
+invented `workdir/` subdirectory (seven `create_file` calls to `workdir/slug.py`, the real
+file untouched, finish "Verified by running python test_slug.py" over three exit-1 runs,
+accepted because the `coding` preset has no finish gates by policy); unattended landed a
+wrong edit on the real file, finished admitting "tests still failed", was sent back by the
+pre-delivery check, missed the old text three times, rewrote the file whole and finished
+again with the same admission (4 of 6 tests). ED-03 coding did the `workdir/` thing again,
+no edit involved. The ladders that were on held: the three-failure `edit_file` disable never
+fired because no cell failed three times in a row, and the duplicate block and corrector
+absorbed ED-01 coding's repeated reads.
+
+Reading. At n=1 the ≤4B rule is a wash on mean (0.72 against 0.69) and decisive per task in
+both directions: it costs the multi-file rename and buys nothing on the one-line fixes,
+where the raw edit lands first time. There is no evidence here that a 2B model "cannot do
+the exact-match protocol": 11 of 17 edits landed, and the misses were followed by a
+successful rewrite, not a stall. The recurring quirk across all four gemma runs is the
+invented `workdir/` path (one cell in the probe, one in the invalid arm, two here, none with
+the kernel off): the system prompt names the working directory by its absolute path, whose
+last segment is `workdir`, and the model then addresses files as `workdir/x`. That is a
+kernel-shaped compensation to design (bead `boubou-8e6`), the edit rule is not. Bead for the rule's
+fate: keep it only if a wider run (several models at 2–4B, n≥3) shows a mean gain; on this
+evidence it should go.
