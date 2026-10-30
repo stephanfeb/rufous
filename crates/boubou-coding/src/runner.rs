@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use boubou_kernel::agent::session;
-use boubou_kernel::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner, TurnPolicy};
+use boubou_kernel::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner};
 use boubou_kernel::config::Config;
 use boubou_kernel::ollama::Message;
 use boubou_kernel::safety::{ConfirmRequest, Confirmer, Gate, SafetyPolicy, Verdict};
@@ -149,7 +149,7 @@ pub fn turn_params(
     num_ctx: Option<u32>,
 ) -> boubou_kernel::Result<RunParams> {
     let mut params = RunParams::from_env(model, cwd)?;
-    params.policy = TurnPolicy::coding();
+    params.policy = crate::harness::policy();
     params.harness_dir = Some(session::harness_dir(sessions_dir, session));
     if let Some(n) = num_ctx {
         params.num_ctx = n;
@@ -168,7 +168,8 @@ impl AgentFactory for StandardFactory {
         )?;
         let mut agent = Agent::standard(params, &self.cfg)?
             .with_sink(setup.sink)
-            .with_stop(setup.stop);
+            .with_stop(setup.stop)
+            .with_builtin_skills(crate::harness::skills());
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), setup.confirmer);
         agent.checkpoint = Some(session::state_path(&setup.sessions_dir, &setup.session));
         agent.sessions_dir = setup.sessions_dir;

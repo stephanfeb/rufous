@@ -23,7 +23,7 @@ use agent_client_protocol::{Channel, Client, ConnectTo, Responder};
 use boubou_coding::runner::{AgentFactory, TurnRunner, TurnSetup};
 use boubou_coding::BoubouAcp;
 use boubou_kernel::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
-use boubou_kernel::agent::{Agent, RunParams, ToolRunner, TurnPolicy};
+use boubou_kernel::agent::{Agent, RunParams, ToolRunner};
 use boubou_kernel::ollama::Message;
 use boubou_kernel::safety::{ConfirmRequest, Confirmer, Verdict};
 use serde_json::{json, Value};
@@ -125,7 +125,7 @@ impl AgentFactory for ScriptedFactory {
     fn new_turn(&self, setup: TurnSetup) -> boubou_kernel::Result<Box<dyn TurnRunner>> {
         self.turns.fetch_add(1, Ordering::SeqCst);
         let mut params = RunParams::plain(setup.model, &setup.cwd);
-        params.policy = TurnPolicy::coding();
+        params.policy = boubou_coding::harness::policy();
         let backend = Scripted {
             calls: self.script.clone(),
             i: 0,
@@ -571,7 +571,7 @@ fn an_editor_turn_is_interactive_keeps_its_files_beside_the_session_and_takes_th
         Some(32_768),
     )
     .expect("params");
-    assert_eq!(p.policy, TurnPolicy::coding());
+    assert_eq!(p.policy, boubou_coding::harness::policy());
     assert_eq!(p.num_ctx, 32_768);
     assert_eq!(
         p.harness_dir.as_deref(),

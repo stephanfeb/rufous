@@ -68,6 +68,7 @@ fn project_system_md_appends_or_replaces() {
     let d = tempfile::tempdir().expect("tmp");
     let wd = d.path();
     let opts = |skills: Vec<(String, String)>| PromptOptions {
+        base: None,
         workdir: Some(wd),
         system_file: None,
         unattended: false,
@@ -110,6 +111,7 @@ fn project_system_md_appends_or_replaces() {
     // The explicit override file still wins the base; the project text is not lost.
     write(wd, "override.txt", "OVERRIDE PROMPT");
     let p = prompt::system_prompt(&PromptOptions {
+        base: None,
         workdir: Some(wd),
         system_file: Some(&wd.join("override.txt")),
         unattended: false,
@@ -261,4 +263,48 @@ fn question_turns_carry_the_project_instructions() {
         out[0].content
     );
     let _ = json!(null);
+}
+
+#[test]
+fn built_in_skills_sit_below_every_directory_and_load_from_memory() {
+    // Refactor step 11: a product compiles its skills in. They list and load like files,
+    // prefill on their triggers, and a user's file of the same name shadows one.
+    const LEDGER: &str = "---\nname: ledger\ndescription: Reconcile a ledger\ntriggers: ledger\n---\nBuilt-in steps.\n";
+    const TIDY: &str = "---\nname: tidy\ndescription: Tidy a folder\n---\nBuilt-in tidy.\n";
+    let ledger = Skill::embedded(LEDGER).expect("skill");
+    assert_eq!(ledger.name, "ledger");
+    assert_eq!(ledger.triggers, ["ledger"]);
+    assert_eq!(ledger.path, Path::new("<built-in>/ledger.md"));
+    assert_eq!(ledger.load().expect("body"), "Built-in steps.\n");
+    assert!(Skill::embedded("no frontmatter").is_err());
+
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path();
+    skill(&wd.join("skills"), "tidy", "");
+    let builtin = vec![ledger, Skill::embedded(TIDY).expect("skill")];
+    let set = SkillSet::discover([wd.join("skills")]).with_builtin(builtin.clone());
+    assert_eq!(set.len(), 2);
+    assert_eq!(
+        set.get("tidy").expect("tidy").path,
+        wd.join("skills").join("tidy.md"),
+        "the workdir's file wins over the built-in of the same name"
+    );
+    assert_eq!(set.get("ledger").expect("ledger").embedded, Some(LEDGER));
+
+    // Through the agent: the built-in prefills on its trigger and the tool loads it.
+    let mut a = Agent::new(RunParams::plain("gemma4:12b", wd), Finish, OkTools)
+        .with_skill_dirs(vec![wd.join("skills")])
+        .with_builtin_skills(builtin);
+    let m = a.task_messages("reconcile the ledger for March");
+    assert!(
+        m[0].content.contains("### SKILL: ledger\nBuilt-in steps."),
+        "{}",
+        m[0].content
+    );
+    let mut ex = boubou_kernel::exec::Executor::new(wd);
+    ex.set_builtin_skills(vec![Skill::embedded(LEDGER).expect("skill")]);
+    let listed = ex.run_tool("skills", &json!({"action": "list"}));
+    assert!(listed.contains("ledger: Reconcile a ledger"), "{listed}");
+    let loaded = ex.run_tool("skills", &json!({"action": "load", "name": "ledger"}));
+    assert_eq!(loaded, "### SKILL: ledger\nBuilt-in steps.\n");
 }

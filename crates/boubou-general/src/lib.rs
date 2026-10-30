@@ -1,6 +1,8 @@
-//! The general-purpose harness, today the local web UI (`webui/server.py` in Mingbird): a
-//! loopback HTTP server that serves the
-//! single-page frontend and the `/api/*` contract it speaks, over the in-process agent loop.
+//! The general-purpose harness over the small-model kernel. [`harness`] is what makes it
+//! its own: the `general` turn policy, its task prompt and the skills built into it.
+//! [`chat`] is the harness at a terminal (`boubou chat`). The rest is the local web UI
+//! (`webui/server.py` in Mingbird): a loopback HTTP server that serves the single-page
+//! frontend and the `/api/*` contract it speaks, over the in-process agent loop.
 //!
 //! Endpoints (unchanged from Mingbird so the page works as is):
 //! `GET /`, `/api/status`, `/api/sessions`, `/api/session?name=`, `/api/plan`, `/api/events`
@@ -12,7 +14,9 @@
 //! SSE event types (`tok`, `think`, `ask`, `dispatch`, `ctx`, `note`, `exit`).
 
 pub mod api;
+pub mod chat;
 pub mod events;
+pub mod harness;
 pub mod prefs;
 pub mod runner;
 pub mod state;

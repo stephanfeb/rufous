@@ -35,19 +35,18 @@ is a `git subtree split` per crate directory when the time comes.
 
 | Crate | Holds | Rule |
 |---|---|---|
-| `boubou-kernel` | the model boundary, the ladders, salvage, coercion, compaction, the safety rings, profiles, the executor, config, sessions, tools, MCP, web search, memory, `TurnPolicy` | depends on no product crate; its public API is what the kernel repository will publish |
-| `boubou-general` | the general-purpose product: the web UI today; the chat CLI, the `general` preset's prompts and skills to follow | depends on the kernel (and the voice adapter) only |
-| `boubou-coding` | the coding product: the ACP server; the `coding` preset's prompts and skills to follow | depends on the kernel only |
+| `boubou-kernel` | the model boundary, the ladders, salvage, coercion, compaction, the safety rings, profiles, the executor, config, sessions, tools, MCP, web search, memory, `TurnPolicy` with the `unattended`, `child` and `conversation` behaviours and the kernel's task prefill | depends on no product crate; its public API is what the kernel repository will publish |
+| `boubou-general` | the general-purpose product: `harness` (the `general` preset, its task prompt, its skills under `skills/`), the web UI, the terminal chat (`chat`) | depends on the kernel (and the voice adapter) only |
+| `boubou-coding` | the coding product: `harness` (the `coding` preset, its task prompt, its skills under `skills/`), the ACP server | depends on the kernel only |
 | `boubou-voice` | the speech-to-text adapter | product-neutral; goes with the kernel or the general product at the split |
 | `boubou-cli` | the `boubou` binary wiring the crates together, `run` for the batch harness and the bench | the only crate that sees everything |
 | `boubou-app` | the Tauri shell around `boubou-general` | goes with the general product |
 
 Still to place: the `unattended` preset and the parallel dispatch machinery are Mingbird's
 batch harness, used by `boubou run` and the bench. They stay in the kernel until a product
-wants them or neither does, and then move to the bench or a crate of their own. The skills
-split by product (`bug_fix`, `code_review`, `refactor` to coding; `file_organizer`,
-`web_research`, `doc_digest` to general); the bench stays beside the kernel with a product arm
-each.
+wants them or neither does, and then move to the bench or a crate of their own. `boubou run`
+and the bench see both products' skills through the CLI, the one crate that sees everything;
+the bench stays beside the kernel with a product arm each.
 
 The repositories split when two of these three hold:
 
@@ -61,8 +60,8 @@ The repositories split when two of these three hold:
 `RunParams::interactive` boolean. The loop takes its policy from `RunParams::turn_policy`,
 which is `child` whenever the sandbox flag `child_mode` is set and `policy` otherwise. At
 the start of a turn the loop calls `policy.turn(intent, ablated)` once and gets a `Turn`:
-the `Route` (task, question, follow-up), the `Prompt` that frames the turn (task, chat,
-child), the `Gates` this turn runs (the policy's, none on the question route or under the
+the `Route` (task, question, follow-up), the `Prompt` that frames the turn (the task prompt
+on a given prefill, chat, child), the `Gates` this turn runs (the policy's, none on the question route or under the
 ablations) and the switches derived from the route (`working`, `dispatch`). From there the
 loop reads those names and never recombines the inputs; the system prompt is built in one
 place from `Turn::prompt`, and each gate block asks `turn.gates.has(Gate::…)`.
@@ -71,7 +70,7 @@ place from `Turn::prompt`, and each gate block asks `turn.gates.has(Gate::…)`.
 |---|---|---|
 | `text_ends_turn` | a text reply with no tool call ends the turn; two empty replies end it | continue note; context reset after repeated empty replies |
 | `gates` | the set of finish gates `finish` must pass, one `Gate` each: delivery, tests, claims, claimed files, named files, plan files, plan sync, re-read, wrap-up | empty: `finish` accepted as is |
-| `prompt` | the system prompt framing a task turn: the task prompt, or a child's sandbox prompt | (the question route takes the chat prompt whatever this says) |
+| `prompt` | the system prompt framing a task turn: the task prompt built on the prefill the policy carries (the kernel's `TASK_BASE`, or a product's own text), or a child's sandbox prompt | (the question route takes the chat prompt whatever this says) |
 | `consult_decider` | the decider reads the opening message; its verdict is logged and recorded in the labelling sidecar | the decider is not called |
 | `intent_routing` | a question takes the Q&A prompt and loses the producing tools; a follow-up ends once acted on and reported | every turn takes the task prompt and the full tool set |
 | `parallel_dispatch` | a plan with enough simple items is farmed out to sandboxed children when `parallel` is configured | nothing is dispatched |
@@ -82,12 +81,16 @@ Presets and who sets them:
 |---|---|---|---|---|---|
 | `unattended` | off | all nine | on | on | `boubou run`, the web UI with `batch: true`; the default |
 | `child` | off | the five delivery gates, no plan bookkeeping | off (no decider either) | off | a dispatched child, through `RunParams::turn_policy` whenever the sandbox flag is set |
-| `general` | on | none | off | off | the web UI's chat (`boubou serve`, `boubou-app`) and `boubou chat` |
-| `coding` | on | none | off | off | the ACP server (`boubou acp`, Zed) |
+| `conversation` | on | none | off | off | nobody directly: the kernel's conversational semantics, which the product presets are built on |
+| `general` (`boubou-general::harness`) | on | none | off | off | the web UI's chat (`boubou serve`, `boubou-app`) and `boubou chat` |
+| `coding` (`boubou-coding::harness`) | on | none | off | off | the ACP server (`boubou acp`, Zed) |
 
-`general` and `coding` are equal field for field today: they are the two behaviours the loop
-already had, given names. A unit test in `policy.rs` asserts the equality so that the first
-divergence is a deliberate, documented change (step 9 below) and not drift.
+`general` and `coding` are each `TurnPolicy { name, prompt, ..conversation() }` in their
+product crate, with their own copy of the task prefill. The copies equal the kernel's
+`TASK_BASE` today, and the presets differ in name and prompt only: a test in each product
+crate pins its prompt to the kernel's, and one in `boubou-cli`, the crate that sees both,
+pins the presets to each other, so that the first divergence is a deliberate, documented
+change (step 10 below) and not drift.
 
 ## What is still entangled
 
@@ -114,7 +117,7 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 | 8 | Kernel boundary inside `boubou-kernel`: the ladders, compaction, retry, the corrector ledger and salvage are modules the policy-driven loop calls (`agent/ladders.rs`, `guards/leak.rs`) | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | done |
 | 9 | Sessions record the policy they ran under (`policy` in `<name>.meta.json`, a key Mingbird's merge preserves) | a resumed session keeps its policy or says it changed: the loop logs `[policy] session X ran under A; this turn runs under B` and the meta follows the turn that ran | done |
 | 10 | `general` and `coding` diverge where measurement says so | the equality test is replaced by one that states the difference and why | open |
-| 11 | The chat CLI, the prompts and the skills move into the product crates | `boubou-cli` holds wiring and `run` only; each product crate owns its preset's prompts and skills | open |
+| 11 | The chat CLI, the prompts and the skills move into the product crates | `boubou-cli` holds wiring and `run` only; each product crate owns its preset's prompts and skills (`harness.rs` and `skills/` in `boubou-general` and `boubou-coding`; skills compiled in, `Skill::embedded`) | done |
 | 12 | Repositories split: kernel, general-purpose agent, coding agent | each product repository depends on a published kernel version; two of the three signals above hold | open |
 
 Steps 3 to 7 can land in any order and each one is a single commit with the workspace tests

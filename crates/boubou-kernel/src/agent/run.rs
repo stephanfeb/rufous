@@ -45,6 +45,7 @@ use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
+use crate::skills::{Skill, SkillSet};
 use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
 use crate::tools::{is_mcp_tool, is_well_formed_tool_name, required_args, resolve_alias};
 use crate::{text, Error, Result};
@@ -169,6 +170,8 @@ pub trait ToolRunner {
     fn set_slim_output(&mut self, _on: bool) {}
     /// The agent's stop flag: raised, a running command is terminated and the tool returns.
     fn set_stop(&mut self, _flag: Arc<AtomicBool>) {}
+    /// The skills compiled into the product, for the `skills` tool's listing and loading.
+    fn set_builtin_skills(&mut self, _skills: Vec<Skill>) {}
     /// `mcp_tool_defs`: flattened `server.tool` definitions for the routed categories.
     fn mcp_tool_defs(
         &self,
@@ -193,6 +196,9 @@ impl ToolRunner for Executor {
     }
     fn set_stop(&mut self, flag: Arc<AtomicBool>) {
         self.stop = Some(flag);
+    }
+    fn set_builtin_skills(&mut self, skills: Vec<Skill>) {
+        self.builtin_skills = skills;
     }
     fn mcp_tool_defs(
         &self,
@@ -269,8 +275,15 @@ type Sink = Box<dyn FnMut(AgentEvent) + Send>;
 /// by [`Agent::task_messages`] (a fresh run) and the per-turn rebuild in [`Agent::run`]
 /// (a continued session), so the prompt is a function of this turn's route, never of what
 /// the previous turn happened to leave in the history.
-fn task_system(params: &RunParams, skill_dirs: &[PathBuf], sink: &mut Sink, task: &str) -> String {
-    let set = crate::skills::SkillSet::discover(skill_dirs);
+fn task_system(
+    base: &'static str,
+    params: &RunParams,
+    skill_dirs: &[PathBuf],
+    builtin: &[Skill],
+    sink: &mut Sink,
+    task: &str,
+) -> String {
+    let set = SkillSet::discover(skill_dirs).with_builtin(builtin.iter().cloned());
     let mut skills = Vec::new();
     for s in set.for_task_capped(task, params.profile.max_prefill_skills) {
         match s.load() {
@@ -289,6 +302,7 @@ fn task_system(params: &RunParams, skill_dirs: &[PathBuf], sink: &mut Sink, task
         )));
     }
     let opts = prompt::PromptOptions {
+        base: Some(base),
         workdir: Some(&params.workdir),
         system_file: params.system_file.as_deref(),
         unattended: params.unattended,
@@ -304,11 +318,12 @@ fn system_for(
     which: Prompt,
     params: &RunParams,
     skill_dirs: &[PathBuf],
+    builtin: &[Skill],
     sink: &mut Sink,
     task: &str,
 ) -> String {
     match which {
-        Prompt::Task => task_system(params, skill_dirs, sink, task),
+        Prompt::Task(base) => task_system(base, params, skill_dirs, builtin, sink, task),
         Prompt::Chat => prompt::chat_system(Some(&params.workdir)),
         Prompt::Child => prompt::child_system(Some(&params.workdir)),
     }
@@ -340,6 +355,9 @@ pub struct Agent<B, T> {
     /// Where skills are discovered for prefill, in precedence order (`<workdir>/skills`,
     /// `<agent_home>/skills`, `<install_dir>/skills`); tests narrow it.
     pub skill_dirs: Vec<PathBuf>,
+    /// The skills compiled into the product ([`Agent::with_builtin_skills`]), below the
+    /// directories; the same list goes to the tool runner for the `skills` tool.
+    pub builtin_skills: Vec<Skill>,
     /// System One decider (`decider.rs`): heuristics only unless `config.json` says otherwise.
     pub decider: LayeredDecider,
 }
@@ -432,8 +450,18 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             parallel: None,
             engine: String::new(),
             skill_dirs,
+            builtin_skills: Vec::new(),
             decider: LayeredDecider::off(),
         }
+    }
+
+    /// The skills built into the product (each product crate's `harness::skills()`): listed
+    /// and loadable by the `skills` tool and matched for prefill like a directory's, below
+    /// every directory so a user's file of the same name wins.
+    pub fn with_builtin_skills(mut self, skills: Vec<Skill>) -> Self {
+        self.tools.set_builtin_skills(skills.clone());
+        self.builtin_skills = skills;
+        self
     }
 
     /// Replace the decider (tests; embedding with a scripted decision model).
@@ -488,7 +516,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // The opening turn of a fresh run is a task; the policy says which prompt frames it
         // (a dispatched child gets its sandbox prompt).
         let which = self.params.turn_policy().turn(Intent::Task, false).prompt;
-        let sys = system_for(which, &self.params, &self.skill_dirs, &mut self.sink, task);
+        let sys = system_for(
+            which,
+            &self.params,
+            &self.skill_dirs,
+            &self.builtin_skills,
+            &mut self.sink,
+            task,
+        );
         vec![Message::system(sys), Message::user(task)]
     }
 
@@ -514,6 +549,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             parallel,
             engine: _,
             skill_dirs,
+            builtin_skills,
             decider,
         } = self;
         let model = params.model.as_str();
@@ -672,7 +708,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 first_user_text(&messages),
                 qa::task_routing_text(&messages)
             );
-            let sys = system_for(turn.prompt, params, skill_dirs, sink, &skill_text);
+            let sys = system_for(
+                turn.prompt,
+                params,
+                skill_dirs,
+                builtin_skills,
+                sink,
+                &skill_text,
+            );
             let mut m = vec![Message::system(sys)];
             m.extend(messages.into_iter().filter(|m| m.role != Role::System));
             messages = m;

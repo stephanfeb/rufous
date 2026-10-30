@@ -9,7 +9,7 @@ A local-model autonomous agent, written in Rust. Boubou is the successor to
   (the file tools are always there);
   skills are listed by name and loaded only when used; a skill with `triggers:` or `autoload:` in its
   frontmatter is prefilled for matching tasks, and a `SYSTEM.md` in the working directory adds
-  per-folder instructions (see `skills/README.md`).
+  per-folder instructions (see `docs/skills.md`).
 
 The name: the Southern Boubou, *Laniarius ferrugineus*, is a rust-coloured African bush-shrike
 that sings in duet. *Ferrugineus* means "rusty".
@@ -113,12 +113,14 @@ A second Ctrl-C quits at once.
 ```
 crates/boubou-kernel   the small-model agent loop and the product-neutral parts: protocol, tools,
                        safety, config, skills, MCP, Ollama/OpenAI clients, the turn policies
-crates/boubou-general  general-purpose harness: the local web UI (`boubou serve`)
-crates/boubou-coding   coding harness: the Agent Client Protocol server (`boubou acp`)
+crates/boubou-general  general-purpose harness: the `general` policy, its prompt and skills (`skills/`),
+                       the local web UI (`boubou serve`), the terminal chat (`boubou chat`)
+crates/boubou-coding   coding harness: the `coding` policy, its prompt and skills (`skills/`),
+                       the Agent Client Protocol server (`boubou acp`)
 crates/boubou-voice    speech-to-text adapter (sherpa-onnx, Ollama audio fallback)
 crates/boubou-cli      `boubou` binary: wires the crates together, plus `run` for the batch harness
 crates/boubou-app      Tauri shell around boubou-general (not built by default)
-skills/              built-in skills, carried over from Mingbird unchanged
+docs/skills.md       the skills directories, precedence, and how to write one
 docs/PORTING.md      Python → Rust module map and port status
 docs/changelog.md    dated engineering log (what shipped, what was measured)
 docs/refactor.md     kernel-and-policies refactor: intent and progress

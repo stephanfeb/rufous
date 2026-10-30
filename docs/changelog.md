@@ -942,3 +942,23 @@ the policy (web chat: the batch toggle; `boubou run`/`chat`; the editor: `coding
 kernel only says when a resume changes harness. The web UI's session list carries the name
 as `policy`. Tests: `session::a_session_records_the_policy_it_ran_under`,
 `agent_loop::a_session_resumed_under_another_policy_says_so`.
+
+## Products own their prompts and skills (refactor step 11, 2026-10-30)
+
+Each product crate has a `harness` module: its preset, its task prompt and its skills.
+`boubou-general::harness::policy()` is `general`, `boubou-coding::harness::policy()` is
+`coding`; both are `TurnPolicy { name, prompt, ..TurnPolicy::conversation() }`, the kernel's
+new name for the conversational semantics the two used to share as kernel presets. The task
+prompt travels in the policy (`Prompt::Task(base)`): the kernel's own prefill is
+`prompt::TASK_BASE`, and each product carries a copy it owns; the copies equal the kernel's
+text today, pinned by a test in each product crate until step 10 changes one on evidence.
+The built-in skills left the repository root for `crates/boubou-general/skills/` (doc_digest,
+file_organizer, markdown_report, web_research) and `crates/boubou-coding/skills/` (the ten
+about code) and are compiled in (`Skill::embedded`, `SkillSet::with_builtin`,
+`Agent::with_builtin_skills`), below every directory so a user's file of the same name wins.
+Before this the built-in skills were found only in a `skills/` directory beside the binary,
+which a cargo build never has, so a plain `target/release/boubou` listed none; now an editor
+session sees the coding skills, the web UI and `boubou chat` the general-purpose ones, and
+`boubou run`, `boubou skills` and `boubou doctor` both sets. The chat REPL moved to
+`boubou-general::chat`; `boubou-cli` keeps the wiring (engine, event printer, Ctrl-C) and
+`run`. `skills/README.md` is now `docs/skills.md`. 489 tests.

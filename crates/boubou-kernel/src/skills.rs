@@ -8,7 +8,10 @@
 //! towards a domain: put the skill in `<workdir>/skills/` and it applies to that folder only.
 //!
 //! Lookup order (first match wins): `<workdir>/skills`, `<agent_home>/skills`,
-//! `<install_dir>/skills`.
+//! `<install_dir>/skills`, then the skills built into the product ([`Skill::embedded`],
+//! [`SkillSet::with_builtin`]): each product crate compiles its own `skills/*.md` in, so a
+//! binary carries the skills of the harness it is, and a user's file of the same name
+//! shadows a built-in one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +30,8 @@ pub struct Skill {
     pub triggers: Vec<String>,
     /// In effect for every task found from its directory.
     pub autoload: bool,
+    /// The full text of a skill compiled into the binary; `None` for one read from disk.
+    pub embedded: Option<&'static str>,
 }
 
 /// Directory of the running binary: built-in skills live in `<install_dir>/skills`.
@@ -41,7 +46,20 @@ impl Skill {
     /// Parse frontmatter only; the body stays on disk until `load`.
     pub fn from_path(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
-        let (meta, _) = split_frontmatter(&text).ok_or_else(|| Error::SkillFormat {
+        Self::parse(&text, path)
+    }
+
+    /// A skill compiled into a product crate (`include_str!`): the body stays in memory and
+    /// the path reads `<built-in>/<name>.md`, for listings only.
+    pub fn embedded(text: &'static str) -> Result<Self> {
+        let mut skill = Self::parse(text, Path::new("<built-in>"))?;
+        skill.path = PathBuf::from(format!("<built-in>/{}.md", skill.name));
+        skill.embedded = Some(text);
+        Ok(skill)
+    }
+
+    fn parse(text: &str, path: &Path) -> Result<Self> {
+        let (meta, _) = split_frontmatter(text).ok_or_else(|| Error::SkillFormat {
             path: path.to_path_buf(),
             reason: "missing `---` frontmatter".into(),
         })?;
@@ -69,6 +87,7 @@ impl Skill {
             path: path.to_path_buf(),
             triggers,
             autoload,
+            embedded: None,
         })
     }
 
@@ -81,12 +100,18 @@ impl Skill {
                 .any(|t| task_lower.contains(t.as_str()))
     }
 
-    /// Full instructions (frontmatter stripped).
+    /// Full instructions (frontmatter stripped), from memory for a built-in skill.
     pub fn load(&self) -> Result<String> {
+        let body = |text: &str| {
+            split_frontmatter(text)
+                .map(|(_, body)| body.trim_start().to_string())
+                .unwrap_or_else(|| text.to_string())
+        };
+        if let Some(text) = self.embedded {
+            return Ok(body(text));
+        }
         let text = std::fs::read_to_string(&self.path).map_err(|e| Error::io(&self.path, e))?;
-        Ok(split_frontmatter(&text)
-            .map(|(_, body)| body.trim_start().to_string())
-            .unwrap_or(text))
+        Ok(body(&text))
     }
 
     /// The one line that goes into the prompt.
@@ -149,7 +174,17 @@ impl SkillSet {
         set
     }
 
-    /// Standard three-level lookup.
+    /// The skills built into the product, below every directory: a file of the same name
+    /// anywhere on disk wins.
+    pub fn with_builtin(mut self, skills: impl IntoIterator<Item = Skill>) -> Self {
+        for skill in skills {
+            self.by_name.entry(skill.name.clone()).or_insert(skill);
+        }
+        self
+    }
+
+    /// Standard three-level directory lookup; the product adds its built-in skills with
+    /// [`Self::with_builtin`].
     pub fn standard(workdir: &Path, agent_home: &Path, install_dir: &Path) -> Self {
         Self::discover([
             workdir.join("skills"),

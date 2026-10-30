@@ -83,7 +83,11 @@ fn skills_lists_a_workspace_skill() {
     .expect("write");
     let o = boubou(d.path(), &ws, &["skills", ws.to_str().expect("utf8")]);
     assert!(o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("my_skill"), "{}", text(&o));
+    let t = text(&o);
+    assert!(t.contains("my_skill"), "{t}");
+    // The skills built into the products are listed too: the binary carries them, with no
+    // `skills/` directory beside it.
+    assert!(t.contains("web_research:") && t.contains("bug_fix:"), "{t}");
 }
 
 #[test]

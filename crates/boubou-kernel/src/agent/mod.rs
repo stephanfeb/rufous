@@ -41,7 +41,7 @@ use crate::{Error, Result};
 pub use chat::{ChatBackend, ChatError, ChatResponse, DynBackend, OllamaBackend, StreamPiece};
 pub use face::ToolFace;
 pub use openai::OpenAiBackend;
-pub use policy::{Gate, Gates, TurnPolicy};
+pub use policy::{Gate, Gates, Prompt, TurnPolicy};
 pub use run::{Agent, ToolRunner};
 
 pub const DEFAULT_NUM_CTX: u32 = 131_072;
@@ -97,8 +97,9 @@ pub struct RunParams {
     /// What the harness does around the model this turn ([`TurnPolicy`]): whether text
     /// ends the turn, whether `finish` meets the delivery gates, whether a question is
     /// routed away from the producing tools, whether a plan may be dispatched. The default
-    /// is [`TurnPolicy::unattended`], Mingbird's batch harness; the ACP server sets
-    /// [`TurnPolicy::coding`], the web UI's chat and `boubou chat` [`TurnPolicy::general`].
+    /// is [`TurnPolicy::unattended`], Mingbird's batch harness; each product sets its own
+    /// preset built on [`TurnPolicy::conversation`] (`harness::policy()` in `boubou-coding`
+    /// for the ACP server, in `boubou-general` for the web UI's chat and `boubou chat`).
     /// A child runs [`TurnPolicy::child`] (see [`Self::turn_policy`]). The safety gate, the
     /// duplicate-call and failure ladders and compaction do not depend on the policy.
     pub policy: TurnPolicy,

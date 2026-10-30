@@ -1,13 +1,19 @@
-//! System prompts (`SYSTEM`, `CHAT_SYSTEM`, `system_prompt()`) and the platform block
+//! System prompts (`TASK_BASE`, `CHAT_SYSTEM`, `system_prompt()`) and the platform block
 //! (`platform_profile.prompt_block`). The structure is Mingbird's; the text is Boubou's
 //! own English. Dynamic lines are added at run time so the factory prefill stays
 //! byte-stable.
+//!
+//! `TASK_BASE` is the kernel's task prefill, the one the unattended harness runs. A product
+//! supplies its own base through its turn policy (`Prompt::Task(base)`); [`system_prompt`]
+//! builds the same way around either, so a product edits its text, not the assembly.
 
 use std::path::Path;
 
 use crate::text::read_text;
 
-const SYSTEM_BASE: &str = r#"You are an autonomous AI agent in a workspace directory.
+/// The kernel's task prefill. `{PLATFORM_LINE}` and `{USER_HOME}` are filled by
+/// [`fill_base`]; a product's base may use the same placeholders.
+pub const TASK_BASE: &str = r#"You are an autonomous AI agent in a workspace directory.
 JUDGE INTENT FIRST - decide what the user wants before deciding how to act:
 - Small talk, greetings, introducing yourself, general knowledge questions (e.g. "hello", "who are you", "what can you do", "what's the weather like"):
   ANSWER IN PLAIN TEXT. Never call a tool, never create a todo, never create a file or run a command. Then call finish.
@@ -32,8 +38,13 @@ pub const CHAT_SYSTEM: &str = "You are Boubou, a local AI assistant, chatting wi
 - Use tools only when you genuinely need to look something up: read a file, search, or run a command that reports state (git status, ls, the project's own CLI); otherwise answer in plain text.
 - Stop when you have answered. No repetition, no showing off, no filler like \"how can I help you today\".";
 
-/// The static task prefill with the home directory and platform line filled in.
+/// The kernel's task prefill with the home directory and platform line filled in.
 pub fn system_base() -> String {
+    fill_base(TASK_BASE)
+}
+
+/// A task prefill with its `{PLATFORM_LINE}` and `{USER_HOME}` placeholders filled in.
+pub fn fill_base(base: &str) -> String {
     let home = dirs::home_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "~".to_string());
@@ -42,8 +53,7 @@ pub fn system_base() -> String {
     } else {
         PLATFORM_LINE_POSIX
     };
-    SYSTEM_BASE
-        .replace("{PLATFORM_LINE}", line)
+    base.replace("{PLATFORM_LINE}", line)
         .replace("{USER_HOME}", &home)
 }
 
@@ -173,6 +183,9 @@ fn push_project(base: &mut String, project: Option<&(String, bool)>) {
 /// Options for [`system_prompt`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptOptions<'a> {
+    /// The task prefill to build on, placeholders unfilled; `None` is the kernel's
+    /// [`TASK_BASE`]. A product's turn policy carries its own.
+    pub base: Option<&'a str>,
     /// Absolute workdir, injected as the dynamic "current working directory" line.
     pub workdir: Option<&'a Path>,
     /// `AGENT_SYSTEM_FILE`: replaces the static prefill when it exists.
@@ -198,7 +211,7 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
     let (mut base, project_used) = match (override_text, &project) {
         (Some(t), _) => (t, false),
         (None, Some((t, true))) => (t.clone(), true),
-        _ => (system_base(), false),
+        _ => (fill_base(opts.base.unwrap_or(TASK_BASE)), false),
     };
     if !project_used {
         push_project(&mut base, project.as_ref());

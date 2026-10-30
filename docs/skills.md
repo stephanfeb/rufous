@@ -6,7 +6,8 @@ A Boubou "skill" is an operating manual for the model (a .md file). Normally the
 Lookup order (on a name clash, the earlier one wins):
 1. `<workdir>/skills/` -- skills specific to the current task
 2. `~/.ollama_agent/skills/` -- global skills you installed yourself (recommended location)
-3. `<install dir>/skills/` -- built-in skills shipped with the install (coding-oriented plus general-purpose)
+3. `<install dir>/skills/` -- a `skills/` directory beside the binary, if you keep one there
+4. the skills built into the product -- compiled into the binary from `crates/boubou-general/skills/` (documents, folders, research) and `crates/boubou-coding/skills/` (code); the `boubou` binary carries both sets, an editor session sees the coding ones, the web UI and `boubou chat` the general-purpose ones
 
 ## Installing your own skill
 Put a .md file in `~/.ollama_agent/skills/` with two lines of metadata at the top:

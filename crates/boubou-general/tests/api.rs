@@ -737,7 +737,7 @@ fn a_chat_turn_is_interactive_unless_batch_mode_is_on() {
     use boubou_general::runner::params_from_prefs;
     let d = tempfile::tempdir().expect("tmp");
     let p = params_from_prefs("m", d.path(), d.path(), &prefs::load(d.path())).expect("params");
-    assert_eq!(p.policy, TurnPolicy::general(), "default");
+    assert_eq!(p.policy, boubou_general::harness::policy(), "default");
     let mut on = prefs::load(d.path());
     on.insert("batch".into(), json!(true));
     let p = params_from_prefs("m", d.path(), d.path(), &on).expect("params");
@@ -748,7 +748,7 @@ fn a_chat_turn_is_interactive_unless_batch_mode_is_on() {
         params_from_prefs("m", d.path(), d.path(), &off)
             .expect("params")
             .policy,
-        TurnPolicy::general()
+        boubou_general::harness::policy()
     );
 
     // The preference round-trips through the API and the status endpoint.

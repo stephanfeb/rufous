@@ -935,7 +935,7 @@ fn general_policy_text_reply_ends_the_turn_even_for_a_task_shaped_message() {
     // message reads like a task, and nothing is appended for the next turn to see.
     let d = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.policy = TurnPolicy::general();
+    params.policy = TurnPolicy::conversation();
     let mut a = Agent::new(
         params,
         Responder {
@@ -2360,7 +2360,7 @@ fn prune_keep_zero_is_the_default_and_disables_pruning() {
 fn interactive_text_reply_ends_the_turn_without_a_harness_note() {
     let d = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.policy = TurnPolicy::coding();
+    params.policy = TurnPolicy::conversation();
     let mut a = Agent::new(
         params,
         Responder {
@@ -2391,7 +2391,7 @@ fn interactive_finish_is_accepted_without_gates() {
     let d = tempfile::tempdir().expect("tmp");
     // A bare finish with nothing delivered: gate 1 bounces it in task mode.
     let mut a = agent_with(d.path(), &[], "", "");
-    a.params.policy = TurnPolicy::coding();
+    a.params.policy = TurnPolicy::conversation();
     let out = a.run(start(TASK), None, None).expect("loop");
     assert!(
         user_msgs(&out, "finish was rejected").is_empty(),
@@ -2414,8 +2414,8 @@ fn the_sandbox_flag_pins_the_child_policy() {
     let d = tempfile::tempdir().expect("tmp");
     let mut p = RunParams::plain("small:2b", d.path());
     assert_eq!(p.turn_policy(), TurnPolicy::unattended());
-    p.policy = TurnPolicy::coding();
-    assert_eq!(p.turn_policy(), TurnPolicy::coding());
+    p.policy = TurnPolicy::conversation();
+    assert_eq!(p.turn_policy(), TurnPolicy::conversation());
     p.child_mode = true;
     assert_eq!(p.turn_policy(), TurnPolicy::child());
 }
@@ -2449,31 +2449,35 @@ fn a_session_resumed_under_another_policy_says_so() {
     };
     let sdir = d.path().join("sessions");
 
-    let mut out = run_under(TurnPolicy::general(), start("hi there"));
+    let mut out = run_under(TurnPolicy::conversation(), start("hi there"));
     assert!(
         changed(&logs).is_empty(),
         "a fresh session has no previous policy"
     );
     assert_eq!(
         boubou_kernel::agent::session::recorded_policy(&sdir, "s9").as_deref(),
-        Some("general")
+        Some("conversation")
     );
 
     out.push(Message::user("and again"));
-    let mut out = run_under(TurnPolicy::general(), out);
+    let mut out = run_under(TurnPolicy::conversation(), out);
     assert!(changed(&logs).is_empty(), "same policy: nothing to say");
 
     out.push(Message::user("now from the editor"));
-    let out = run_under(TurnPolicy::coding(), out);
+    let editor = TurnPolicy {
+        name: "editor",
+        ..TurnPolicy::conversation()
+    };
+    let out = run_under(editor, out);
     let said = changed(&logs);
     assert_eq!(said.len(), 1, "{said:#?}");
     assert_eq!(
         said[0],
-        "[policy] session s9 ran under general; this turn runs under coding"
+        "[policy] session s9 ran under conversation; this turn runs under editor"
     );
     assert_eq!(
         boubou_kernel::agent::session::recorded_policy(&sdir, "s9").as_deref(),
-        Some("coding"),
+        Some("editor"),
         "the meta follows the turn that ran"
     );
     assert!(out.len() > 3);
@@ -2516,7 +2520,7 @@ fn a_preset_lists_its_gates_one_by_one() {
     let mut a = agent_with(d.path(), &[], "", "Task complete.");
     a.params.policy = TurnPolicy {
         gates: Gates::NONE.with(Gate::NamedFiles),
-        ..TurnPolicy::coding()
+        ..TurnPolicy::conversation()
     };
     let out = a.run(start(task), None, None).expect("loop");
     let named = user_msgs(&out, "the task names these files");
@@ -2536,7 +2540,7 @@ fn a_preset_lists_its_gates_one_by_one() {
     // The same run under the plain coding preset: no gate at all.
     let d = setup();
     let mut a = agent_with(d.path(), &[], "", "Task complete.");
-    a.params.policy = TurnPolicy::coding();
+    a.params.policy = TurnPolicy::conversation();
     let out = a.run(start(task), None, None).expect("loop");
     assert!(user_msgs(&out, "the task names these files").is_empty());
     assert_eq!(
@@ -2556,7 +2560,7 @@ fn interactive_question_keeps_the_task_prompt_and_file_tools() {
         "[created notes.md]",
     )];
     let mut a = agent_for(d.path(), &calls);
-    a.params.policy = TurnPolicy::coding();
+    a.params.policy = TurnPolicy::conversation();
     let out = a
         .run(start("What is the next item to work on ?"), None, None)
         .expect("loop");
@@ -2575,7 +2579,7 @@ fn interactive_question_keeps_the_task_prompt_and_file_tools() {
 fn interactive_two_empty_replies_end_the_turn() {
     let d = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.policy = TurnPolicy::coding();
+    params.policy = TurnPolicy::conversation();
     let mut a = Agent::new(
         params,
         Responder {
@@ -2600,7 +2604,7 @@ fn a_relocated_harness_dir_takes_the_plan_and_the_session_snapshot_follows() {
     let h = tempfile::tempdir().expect("tmp");
     let sdir = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.policy = TurnPolicy::coding();
+    params.policy = TurnPolicy::conversation();
     params.harness_dir = Some(h.path().to_path_buf());
     let mut tools = Executor::with_policy(d.path(), SafetyPolicy::default());
     tools.harness_dir = h.path().to_path_buf();

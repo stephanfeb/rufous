@@ -18,7 +18,7 @@ use crate::mcp::{self, McpRegistry};
 use crate::memory;
 use crate::parallel::{ChildSandbox, ParallelConfig};
 use crate::safety::{resolve_path, safe_path, Gate, SafetyPolicy};
-use crate::skills::SkillSet;
+use crate::skills::{Skill, SkillSet};
 use crate::text::{self, clen, head};
 use crate::todo::run_todo;
 use crate::tools::{
@@ -93,6 +93,8 @@ pub struct Executor {
     pub bash_timeout: Duration,
     pub agent_home: PathBuf,
     pub install_dir: PathBuf,
+    /// The skills compiled into the product ([`Skill::embedded`]), below the directories.
+    pub builtin_skills: Vec<Skill>,
     /// Network side of the web tools (search backends, fetch, result cache).
     pub web: Web,
     /// MCP servers and their probed manifest; an empty registry when none are configured.
@@ -145,6 +147,7 @@ impl Executor {
             mcp: Arc::new(McpRegistry::new(&agent_home(), mcp::McpConfig::new())),
             agent_home: agent_home(),
             install_dir,
+            builtin_skills: Vec::new(),
             child: None,
             child_terminated: None,
         }
@@ -691,7 +694,8 @@ impl Executor {
     // ---- meta tools ----
 
     fn skills(&self, action: SkillsAction, name: Option<&str>) -> String {
-        let set = SkillSet::standard(&self.workdir, &self.agent_home, &self.install_dir);
+        let set = SkillSet::standard(&self.workdir, &self.agent_home, &self.install_dir)
+            .with_builtin(self.builtin_skills.iter().cloned());
         let listing = || {
             if set.is_empty() {
                 "(none)".to_string()
@@ -707,7 +711,7 @@ impl Executor {
             SkillsAction::Load => {
                 let name = name.unwrap_or_default();
                 match set.get(name) {
-                    Ok(skill) => match text::read_text(&skill.path) {
+                    Ok(skill) => match skill.load() {
                         Ok(body) => format!("### SKILL: {name}\n{body}"),
                         Err(e) => format!("[tool error: {e}]"),
                     },

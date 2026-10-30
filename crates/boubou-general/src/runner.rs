@@ -163,7 +163,7 @@ pub fn params_from_prefs(
     p.policy = if prefs.get("batch").and_then(Value::as_bool) == Some(true) {
         TurnPolicy::unattended()
     } else {
-        TurnPolicy::general()
+        crate::harness::policy()
     };
     if prefs.get("sys_enable").and_then(Value::as_bool) == Some(true) {
         let f = home.join("system_override.txt");
@@ -215,7 +215,7 @@ impl Spawner for AgentSpawner {
         );
         let sink_bus = bus.clone();
         let mut agent = match Agent::standard(params, &req.config) {
-            Ok(a) => a,
+            Ok(a) => a.with_builtin_skills(crate::harness::skills()),
             Err(e) => {
                 bus.note(format!("[error] {e}"));
                 return;

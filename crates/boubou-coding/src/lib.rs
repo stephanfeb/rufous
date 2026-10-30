@@ -1,5 +1,6 @@
 //! The coding harness: Boubou as an [Agent Client Protocol](https://agentclientprotocol.com)
-//! agent in an editor.
+//! agent in an editor. [`harness`] is what makes it its own: the `coding` turn policy, its
+//! task prompt and the skills built into it; the rest is the protocol server.
 //!
 //! An editor (Zed, JetBrains, Neovim) spawns `boubou acp --model <tag>` and speaks JSON-RPC
 //! 2.0 over stdio. One Boubou session per ACP session, working directory = the session's
@@ -18,6 +19,7 @@
 //! `mcp.json`). stdout belongs to the protocol; diagnostics go to stderr via `tracing`.
 
 pub mod bridge;
+pub mod harness;
 pub mod runner;
 
 use std::collections::HashMap;
