@@ -131,6 +131,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                         if !req.cwd.is_absolute() {
                             return responder.respond_with_error(
                                 Error::invalid_params().data(serde_json::json!({
+                    let sessions_dir = sessions_dir.clone();
                                     "message": "cwd must be an absolute path"
                                 })),
                             );
@@ -142,7 +143,11 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 "session/new mcpServers ignored: Boubou uses its own mcp.json"
                             );
                         }
-                        let name = runner::session_name(chrono::Local::now());
+                        let name = runner::unique_session_name(
+                            &sessions_dir,
+                            chrono::Local::now(),
+                            |n| lock(&sessions).values().any(|s| s.name == n),
+                        );
                         let id = SessionId::new(name.clone());
                         let st = SessionState {
                             cwd: req.cwd.clone(),

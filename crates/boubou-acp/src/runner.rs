@@ -7,7 +7,7 @@
 //! the production factory is [`StandardFactory`] (the configured engine, the real tool
 //! executor, the safety gate with an [`AcpConfirmer`]); tests script one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -153,4 +153,64 @@ impl AgentFactory for StandardFactory {
 /// uses, so the session rail lists editor conversations next to chat ones.
 pub fn session_name(now: chrono::DateTime<chrono::Local>) -> String {
     now.format("acp_%m%d_%H%M%S").to_string()
+}
+
+/// A session name nothing else uses: not a live session (`taken`) and not a set of files
+/// under `sessions_dir`. Two `session/new` in the same second (an editor opening several
+/// threads, a restart) would otherwise share one `acp_MMDD_HHMMSS` and overwrite each
+/// other's transcript and checkpoint; the second one gets `_2`, the third `_3`.
+pub fn unique_session_name(
+    sessions_dir: &Path,
+    now: chrono::DateTime<chrono::Local>,
+    taken: impl Fn(&str) -> bool,
+) -> String {
+    let base = session_name(now);
+    let used = |n: &str| taken(n) || session_on_disk(sessions_dir, n);
+    if !used(&base) {
+        return base;
+    }
+    (2..)
+        .map(|i| format!("{base}_{i}"))
+        .find(|n| !used(n))
+        .expect("an unused suffix exists")
+}
+
+/// Any file the loop writes for a session of this name.
+fn session_on_disk(sessions_dir: &Path, name: &str) -> bool {
+    [
+        ".json",
+        ".meta.json",
+        ".state.json",
+        ".transcript.jsonl",
+        ".files",
+    ]
+    .iter()
+    .any(|s| sessions_dir.join(format!("{name}{s}")).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_sessions_in_the_same_second_get_different_names() {
+        let d = tempfile::tempdir().expect("tmp");
+        let now = chrono::Local::now();
+        let base = session_name(now);
+        // Nothing live, nothing on disk: the plain name.
+        assert_eq!(unique_session_name(d.path(), now, |_| false), base);
+        // A live session with that name: the next suffix.
+        let live = base.clone();
+        assert_eq!(
+            unique_session_name(d.path(), now, |n| n == live),
+            format!("{base}_2")
+        );
+        // Files from an earlier process count too, whichever of them survived.
+        std::fs::write(d.path().join(format!("{base}.json")), "[]").expect("w");
+        std::fs::create_dir_all(d.path().join(format!("{base}_2.files"))).expect("d");
+        assert_eq!(
+            unique_session_name(d.path(), now, |_| false),
+            format!("{base}_3")
+        );
+    }
 }
