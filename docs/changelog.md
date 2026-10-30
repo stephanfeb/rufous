@@ -1015,3 +1015,41 @@ and never overwrites one the agent wrote. `test_an_untouched_fixture_scores_noth
 holds all ten tasks at 0.0 against Mingbird's scorer; the pressure-tier checkers regenerate
 byte-for-byte in behaviour (empty `require`). The run is to be repeated with the rebuilt binary.
 
+## First step 10 measurement: coding vs unattended on tier6_editor (2026-10-30)
+
+`bench/results/surface_editor`: qwen3.5:9b, ctx 32k, one replication, `boubou run --policy
+coding` against `unattended`, the five editor briefs, scored with the gated checkers above.
+
+| task | coding | unattended | coding calls/wall | unattended calls/wall/refusals |
+|---|---|---|---|---|
+| ED-01 fix failing test | 1.00 | 1.00 | 10 / 46s | 27 / 124s / 3 |
+| ED-02 fix plus fix_note.md | 1.00 | 1.00 | 11 / 55s | 18 / 85s / 3 |
+| ED-03 add function with tests | 0.71 | timeout (20 min, 89 calls, 9 compactions) | 30 / 300s | — |
+| ED-04 rename across files | 1.00 | 1.00 | 15 / 46s | 55 / 186s / 4 |
+| ED-05 explain, change nothing | 1.00 | 1.00 | 1 / 31s | 19 / 212s / 3 |
+
+Mean 0.94 coding against 0.80 unattended (timeout as 0). Coding never lost a task, used a third
+of the calls and a third of the wall time, and had no finish refusals; ED-05 was answered from a
+single read_file with the explanation as the turn's text.
+
+What the unattended refusals were: every one was the test guard. The fixtures' test files are
+plain `test_` functions with their own `__main__` runner; the guard's `unittest discover`
+fallback finds no TestCase, prints NO TESTS RAN, exits non-zero, and the gate reads that as a
+failing suite while `python test_slug.py` is green. The model cannot satisfy the gate and is let
+through after three rejections (bd `boubou-j5s`; unittest exits 5 on no tests under Python 3.15).
+So this run does not yet show that dropping the test guard is right for `coding`; it shows the
+guard misfires on this test shape, which costs the unattended preset 2 to 4x the time. The
+measurement to repeat after the guard fix is the same command.
+
+What coding's named-deliverable question looks like: ED-02's `fix_note.md` was written under
+`coding` with no gate (`named_files_missing` empty), one data point for leaving the gate off.
+
+ED-03 is the small-model editor failure both presets share: under `coding` the model replaced
+`test_textfmt.py` wholesale with `create_file`, dropping the fixture's `_run` and `__main__`
+block, so `python test_textfmt.py` prints nothing and the checker reports the suite did not run;
+its own test expectations were also wrong ("The Cat And Dog"), though `title_case` itself passed
+the referee. Under `unattended` it spent twenty minutes and nine compactions oscillating
+between its implementation and a test expectation that contradicted the brief, with one
+duplicate edit blocked. Post-edit feedback (boubou-po1 item 3) and the edit tiers (boubou-bk9.3)
+are the mechanisms that address it; the named-file gate is not.
+
