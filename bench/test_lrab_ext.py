@@ -191,7 +191,7 @@ def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
     assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", None, None, None, set()) == "boubou_WF-01"
     assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", 16384, "off", 2, {"model"}) \
         == "boubou_WF-01_mqwen3.5-9b_c16k_toff_r2"
-    assert lrab_h2h.cell_axes("qwen3.5:9b", None, None) == {"model": "qwen3.5:9b", "ctx": int(os.environ.get("AGENT_CTX", "32768")), "think": "default", "policy": "unattended"}
+    assert lrab_h2h.cell_axes("qwen3.5:9b", None, None) == {"model": "qwen3.5:9b", "ctx": int(os.environ.get("AGENT_CTX", "32768")), "think": "default", "policy": "unattended", "workdir": "workdir"}
     # Two models × think on/off at one ctx: the summary labels rows by model and think only.
     for model, think, total in (("qwen3.5:9b", "on", 0.9), ("qwen3.5:9b", "off", 0.5),
                                 ("gemma4:12b", "on", 0.7), ("gemma4:12b", "off", 0.6)):
@@ -209,5 +209,5 @@ def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
     # A score.json from before axes were recorded still groups by its top-level ctx.
     old = {"task_id": "CP-01", "agent": "boubou", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
            "model": "qwen3.5:9b", "failure_mode": "completed", "process": {}}
-    assert lrab_h2h.axes_of(old) == {"model": "qwen3.5:9b", "ctx": 8192, "think": "default", "policy": "unattended"}
+    assert lrab_h2h.axes_of(old) == {"model": "qwen3.5:9b", "ctx": 8192, "think": "default", "policy": "unattended", "workdir": "workdir"}
     assert lrab_h2h.row_key(old, ["ctx"]) == "CP-01@8k"

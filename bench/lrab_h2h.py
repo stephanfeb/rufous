@@ -10,7 +10,11 @@ Mingbird's `_cmd_mingbird`, so the two arms differ only in the runtime under tes
 Usage (the mingbird arm needs `requests` and `beautifulsoup4` in the interpreter):
   uv run --with requests --with beautifulsoup4 python bench/lrab_h2h.py --model gemma4:e2b
   python bench/lrab_h2h.py --arms boubou --tasks WF-01,WF-07 --timeout-min 20
-  python bench/lrab_h2h.py --reps 3             # 3 replications, (task, arm) cells round-robin
+  python bench/lrab_h2h.py --runs 3             # 3 runs per cell (alias --reps), round-robin over (run, task, arm)
+  python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier6_editor \
+                           --policy coding --workdir-name proj
+                                                # the cell's working directory is <cell>/proj, so the model's
+                                                # system prompt names a directory not called "workdir"
   python bench/lrab_h2h.py --summary            # table from an existing results dir
   python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --ctx 16384,32768,65536
                                                 # Boubou-side tiers (context pressure), AGENT_CTX sweep
@@ -30,7 +34,18 @@ and in the run id (_m<tag>, _c16k, _t<on|off>, _p<policy>, each only when that a
 task@<the axes that vary in the results dir> and prints the constant ones once.
 Every cell also gets process metrics (tool calls, peak prompt tokens, guard firings, integrity;
 see process_metrics.py) under score.json["process"], and the summary reports per-arm means with
-a bootstrap 95% CI over tasks when there is more than one replication.
+a bootstrap 95% CI over tasks when there is more than one run per cell.
+
+--runs N (alias --reps) runs every cell N times (`_r<n>` in the run id, score.json["rep"]); the
+summary then shows each task as `mean [min–max] n=N` and each arm's mean once per run with the
+standard deviation across runs ("run means 0.70/0.47, sd 0.16"), which is the spread a
+comparison between two results dirs has to clear. The 2026-10-31 coding repeat moved a five-cell
+preset mean 0.70 → 0.47 under one configuration, so no mean claim is made from n=1.
+
+--workdir-name NAME (boubou arm only; default `workdir`) names the cell's working directory,
+the last segment of the absolute path the system prompt shows the model; recorded as axis
+`workdir`, in the run id as `_w<name>` when it is not the default, and the summary labels rows
+`dir=<name>` when it varies.
 
 --policy runs `boubou run --policy <name>` (boubou arm only): `unattended` is the batch harness,
 `general` and `coding` the product presets, under which a text reply ends the run. For every
@@ -353,15 +368,20 @@ def apply_hidden(score, task, workdir, overlay, scorer=None):
     return score
 
 
-def cell_axes(model, ctx, think, policy=None):
+DEFAULT_WORKDIR_NAME = "workdir"
+
+
+def cell_axes(model, ctx, think, policy=None, workdir_name=None):
     """The serving axes of one cell, as recorded in score.json["axes"]."""
     return {"model": model, "ctx": int(ctx) if ctx else int(os.environ.get("AGENT_CTX", "32768")),
-            "think": think or "default", "policy": policy or "unattended"}
+            "think": think or "default", "policy": policy or "unattended",
+            "workdir": workdir_name or DEFAULT_WORKDIR_NAME}
 
 
 def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge,
-                   task_root=LRAB, ctx=None, think=None, overlay=None, policy=None):
-    workdir = os.path.join(out_dir, "workdir")
+                   task_root=LRAB, ctx=None, think=None, overlay=None, policy=None,
+                   workdir_name=DEFAULT_WORKDIR_NAME):
+    workdir = os.path.join(out_dir, workdir_name)
     prepare_workdir(task, workdir, task_root)
     rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx, think, policy)
     with open(os.path.join(out_dir, "transcript.txt"), "w", encoding="utf-8") as f:
@@ -369,7 +389,7 @@ def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at
         if err:
             f.write("\n--- STDERR ---\n" + err)
     write_reply(workdir)  # every policy: unattended's `finish` summary is its reply
-    axes = cell_axes(model, ctx, think, policy)
+    axes = cell_axes(model, ctx, think, policy, workdir_name)
     base = {"task_id": task["id"], "agent": "boubou", "model": model,
             "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id,
             "ctx": axes["ctx"], "axes": axes}
@@ -439,9 +459,10 @@ def model_slug(model):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", model)
 
 
-def cell_run_id(arm, task_id, model, ctx, think, rep, swept, policy=None):
+def cell_run_id(arm, task_id, model, ctx, think, rep, swept, policy=None, workdir_name=None):
     """`<arm>_<task>` plus one suffix per swept axis (model when several models are listed,
-    ctx, think and policy when given on the command line) and `_r<n>` for replications."""
+    ctx, think and policy when given on the command line, the workdir name when it is not the
+    default) and `_r<n>` for the run number under --runs."""
     rid = f"{arm}_{task_id}"
     if "model" in swept:
         rid += f"_m{model_slug(model)}"
@@ -451,19 +472,22 @@ def cell_run_id(arm, task_id, model, ctx, think, rep, swept, policy=None):
         rid += f"_t{think}"
     if policy:
         rid += f"_p{policy}"
+    if workdir_name and workdir_name != DEFAULT_WORKDIR_NAME:
+        rid += f"_w{workdir_name}"
     if rep is not None:
         rid += f"_r{rep}"
     return rid
 
 
-AXES = ("model", "ctx", "think", "policy")
+AXES = ("model", "ctx", "think", "policy", "workdir")
 
 
 def axes_of(d):
     """A scored cell's axes, also for score.json written before axes were recorded."""
     a = d.get("axes") or {}
     return {"model": a.get("model", d.get("model")), "ctx": a.get("ctx", d.get("ctx")),
-            "think": a.get("think", "default"), "policy": a.get("policy", "unattended")}
+            "think": a.get("think", "default"), "policy": a.get("policy", "unattended"),
+            "workdir": a.get("workdir", DEFAULT_WORKDIR_NAME)}
 
 
 def axis_value(axis, value):
@@ -472,8 +496,13 @@ def axis_value(axis, value):
 
 
 def axis_label(axis, value):
-    """A row-label fragment: `16k`, `qwen3.5:9b`, `think=off` (think needs its name to read)."""
-    return f"think={value}" if axis == "think" else axis_value(axis, value)
+    """A row-label fragment: `16k`, `qwen3.5:9b`, `think=off`, `dir=proj` (think and the
+    workdir name need their names to read)."""
+    if axis == "think":
+        return f"think={value}"
+    if axis == "workdir":
+        return f"dir={value}"
+    return axis_value(axis, value)
 
 
 def row_key(d, varying=()):
@@ -507,6 +536,25 @@ def cell_reps(ds):
     return f"{m:.2f} [{min(v):.2f}–{max(v):.2f}] n={len(v)} ({'/'.join(modes)})"
 
 
+def run_means(rows, order, arm):
+    """Under --runs: the arm's mean over tasks for each run number, in run order. Empty when
+    no cell carries a run number (a single run per cell)."""
+    by_run = {}
+    for t in order:
+        for d in rows[t].get(arm, []):
+            if "rep" in d:
+                by_run.setdefault(d["rep"], []).append(cell_total(d))
+    return [sum(v) / len(v) for _r, v in sorted(by_run.items())]
+
+
+def spread(values):
+    """Sample standard deviation; 0.0 below two values."""
+    if len(values) < 2:
+        return 0.0
+    m = sum(values) / len(values)
+    return (sum((x - m) ** 2 for x in values) / (len(values) - 1)) ** 0.5
+
+
 def bootstrap_ci(task_means, n=2000, seed=0):
     """95% CI of the arm mean, resampling tasks with replacement (tasks are the unit)."""
     if len(task_means) < 2:
@@ -535,7 +583,10 @@ def summary(results):
     arms = ["mingbird", "boubou"]
     order = sorted(rows, key=lambda x: (not x.startswith("WF"), x))
     lines = []
-    constant = [f"{k}={axis_value(k, next(iter(values[k])))}" for k in AXES if len(values[k]) == 1]
+    # The default workdir name is the layout, not a setting: printed only when it varies or
+    # was changed.
+    constant = [f"{k}={axis_value(k, next(iter(values[k])))}" for k in AXES if len(values[k]) == 1
+                and not (k == "workdir" and next(iter(values[k])) == DEFAULT_WORKDIR_NAME)]
     if constant:
         lines.append("axes: " + ", ".join(constant) + (f"; varying: {', '.join(varying)}" if varying else ""))
         lines.append("")
@@ -565,6 +616,9 @@ def summary(results):
         ci = bootstrap_ci(means)
         if ci and reps > len(v):
             line += f" 95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
+        rm = run_means(rows, order, a)
+        if len(rm) > 1:
+            line += (f"; run means {'/'.join(f'{x:.2f}' for x in rm)}, sd {spread(rm):.2f}")
         lines.append(line)
     # Process table: per-arm means over cells, then per task.
     have = [d for r in rows.values() for ds in r.values() for d in ds if "process" in d]
@@ -622,9 +676,13 @@ def main():
     ap.add_argument("--timeout-min", type=int, default=20)
     ap.add_argument("--kill-at-pct", type=int, default=None, help="force kill-resume at this %% of budget")
     ap.add_argument("--judge", default="", help="judge model; empty = deterministic scoring only")
-    ap.add_argument("--reps", type=int, default=1,
-                    help="replications per cell; cells run round-robin over (rep, task, arm) with the "
-                         "arm order alternating per task so machine drift cannot follow one arm")
+    ap.add_argument("--runs", "--reps", dest="reps", type=int, default=1,
+                    help="runs per cell (summary: mean [min–max] n=N per task, run means and sd per arm); "
+                         "cells run round-robin over (run, task, arm) with the arm order alternating per "
+                         "task so machine drift cannot follow one arm")
+    ap.add_argument("--workdir-name", default=DEFAULT_WORKDIR_NAME,
+                    help="name of the cell's working directory (boubou arm only): the last segment of the "
+                         "absolute path the system prompt shows the model; recorded as axis `workdir`")
     ap.add_argument("--hidden", default=HIDDEN_DIR,
                     help='dir of hidden scorer overlays (<task_id>/overlay.json); "" disables')
     ap.add_argument("--summary", action="store_true", help="only print the table for --results")
@@ -656,6 +714,11 @@ def main():
         sys.exit("--policy takes a comma list of " + ", ".join(POLICIES))
     if any(policies) and "mingbird" in arms:
         sys.exit("the mingbird arm has no turn policies, so --policy runs with --arms boubou only")
+    wname = a.workdir_name.strip()
+    if not wname or wname in (".", "..") or "/" in wname or "\\" in wname:
+        sys.exit("--workdir-name takes one plain directory name")
+    if wname != DEFAULT_WORKDIR_NAME and "mingbird" in arms:
+        sys.exit("Mingbird's runner lays out its own workdir, so --workdir-name runs with --arms boubou only")
     swept = {"model"} if len(models) > 1 else set()
     cells = []
     for rep in range(a.reps):
@@ -670,15 +733,16 @@ def main():
     for rep, model, think, ctx, policy, task_path, task, arm in cells:
         kill_at = a.kill_at_pct if a.kill_at_pct is not None else task.get("kill_at_pct")
         budget = a.timeout_min
-        run_id = cell_run_id(arm, task["id"], model, ctx, think, rep if a.reps > 1 else None, swept, policy)
+        run_id = cell_run_id(arm, task["id"], model, ctx, think, rep if a.reps > 1 else None, swept, policy,
+                             wname)
         out_dir = os.path.join(a.results, run_id)
         if os.path.exists(os.path.join(out_dir, "score.json")):
             print(f"skip {run_id} (scored)", flush=True)
             continue
         if a.dry_run:
-            axes_txt = " ".join(f"{k}={v}" for k, v in cell_axes(model, ctx, think, policy).items())
+            axes_txt = " ".join(f"{k}={v}" for k, v in cell_axes(model, ctx, think, policy, wname).items())
             if arm == "boubou":
-                cmd, env = boubou_cmd(os.path.join(out_dir, "workdir"), model, ctx, think, policy)
+                cmd, env = boubou_cmd(os.path.join(out_dir, wname), model, ctx, think, policy)
                 print(run_id, axes_txt, f"AGENT_THINK={env.get('AGENT_THINK', '(unset)')}", cmd)
             else:
                 print(run_id, axes_txt, "run_bench.py --agent mingbird --task", task_path)
@@ -687,12 +751,14 @@ def main():
         print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m model={model}"
               + (f" ctx={ctx}" if ctx else "") + (f" think={think}" if think else "")
               + (f" policy={policy}" if policy else "")
+              + (f" dir={wname}" if wname != DEFAULT_WORKDIR_NAME else "")
+              + (f" run={rep}" if a.reps > 1 else "")
               + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
         t0 = time.time()
         overlay = load_overlay(a.hidden, task["id"])
         if arm == "boubou":
             sc = run_boubou_arm(task_path, task, model, out_dir, run_id, budget, kill_at, a.judge,
-                                task_root, ctx, think, overlay, policy)
+                                task_root, ctx, think, overlay, policy, wname)
         else:
             with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:
                 sc = run_mingbird_arm(task_path, task, model, a.results, run_id, budget, kill_at, a.judge, log,
@@ -701,7 +767,7 @@ def main():
                 apply_hidden(sc, task, os.path.join(out_dir, "workdir"), overlay)
         if sc:
             # Axes are recorded for both arms (Mingbird's runner knows nothing of them).
-            sc["axes"] = cell_axes(model, ctx, think, policy)
+            sc["axes"] = cell_axes(model, ctx, think, policy, wname)
             sc["ctx"] = sc["axes"]["ctx"]
             if a.reps > 1:
                 sc["rep"] = rep

@@ -48,6 +48,10 @@ missing_debug_implementations = "warn"
 all = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 
+[profile.dev]
+# One dSYM per artefact instead of ~1,400 loose .o files per build: stale sets were 56 GB on 2026-10-31.
+split-debuginfo = "packed"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

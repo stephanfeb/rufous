@@ -1462,3 +1462,85 @@ the edit rule decides. Open question kept: the cells asked for `workdir` exactly
 both the basename and the plain noun, so whether the model copies the directory's name or
 says "workdir" regardless is still not separable; a run with a workdir named otherwise would
 tell.
+
+## Bench: `--runs` and `--workdir-name` (2026-10-31, bead boubou-z6k)
+
+`--reps` already ran every cell N times and showed `mean [min–max] n=N` per task; what the
+ablation entries needed and did not have was the spread of an arm's mean across runs, the
+number a difference between two results dirs has to clear. The driver now takes `--runs N`
+(`--reps` stays as an alias), and the arm line reads `run means 0.70/0.47, sd 0.21` whenever
+cells carry a run number. `--workdir-name NAME` (boubou arm only) lays the cell out under
+`<cell>/NAME`, so the last segment of the absolute path the system prompt shows the model is
+a word of the operator's choosing; it is recorded as axis `workdir`, enters the run id as
+`_w<name>` when it is not the default, labels rows `dir=<name>` when it varies, and stays out of
+the constant-axes line when it is the default (layout, not a setting). Tests:
+`bench/test_runs_axis.py` (run id and axis, per-task spread and per-arm run means from a
+synthetic results dir, two names in one dir, the dry-run layout, the one-segment check). 54
+bench tests. No loop change.
+
+The two runs these make possible, both yours to start: the probe configuration at `--runs 3`
+(the baseline every arm is compared with), and the same with `--workdir-name proj`, which says
+whether the gemma4:e2b path rule is covering a copied name or a fixed word.
+
+## Three-run baseline, gemma4:e2b tier6_editor (2026-10-31, `gemma_e2b_x3`)
+
+The probe configuration (kernel on, path rule on, coding and unattended) at `--runs 3`: 30
+cells, 31 min, mean 0.748, run means 0.66/0.80/0.78, sd 0.07. The two earlier single runs of
+this configuration (0.72, 0.76) sit inside that spread, and so does every arm measured so far
+(kernel off 0.64 is the only one more than one sd below the mean, and even that is one run).
+Per task, `mean [min–max]`:
+
+| task | coding | unattended |
+|---|---|---|
+| ED-01 | 1.00 [1.00–1.00] | 1.00 [1.00–1.00] |
+| ED-02 | 1.00 [1.00–1.00] | 1.00 [1.00–1.00] |
+| ED-03 | 0.57 [0.29–0.71] | 0.67 [0.29–1.00] |
+| ED-04 | 0.18 [0.00–0.32] | 0.25 [0.21–0.32] |
+| ED-05 | 1.00 [1.00–1.00] | 0.81 [0.43–1.00] |
+
+ED-01, ED-02 and ED-05 coding are solid at 1.00 three times each; ED-03 and ED-04 carry the
+whole spread. ED-04 (the rename) lost all six cells to the same mechanism: with `edit_file`
+hidden by the ≤4B rule the model rewrote `repo.py` whole with `create_file`, then used
+`append_file` on `service.py` (a full second copy appended under the old one, so `fetchAll`
+stays) in four of the six, or looped on BSD-rejected `sed -i` in the sixth; the smallest
+possible edit was never available to it. The `small_model` ablation arm scored this cell
+1.00/1.00 with real edits. That is the rule's bill at n=3 on its deciding cell, with no cell
+in the folder where it won anything. ED-03's spread is model-shaped: whole-file rewrites of
+`textfmt.py` up to nine times a cell while chasing the referee's capitalisation cases.
+
+The path rule fired in 18 of 30 cells, always on the first call and always the same way:
+`list_dir("workdir")` rebased to `.`; no cell asked for a file under `workdir/`, so nothing
+ever had to be rewritten after the opening listing. 18 of 30 is the rate at which this model
+addresses the working directory by its basename, which is also the plain word; the
+`--workdir-name proj` run is what separates the two readings, and with the rule firing in
+most cells the answer decides whether the rule covers real project directories or only this
+bench's.
+
+## The directory's name, not the word (2026-10-31, `gemma_e2b_proj`)
+
+The probe configuration with `--workdir-name proj`, one run: the cells sit under `<cell>/proj`
+and the only `workdir` the model can see is nowhere. gemma4:e2b asked for `proj` (two opening
+listings) and `proj/slug.py` (two reads); it never said `workdir`. So the quirk is a copy of
+the directory's basename into a path, and the profile rule `rebase_workdir_prefix`, which keys
+on the basename, covers a real project directory the same as it covers this bench's. The rule
+fired in 3 of 10 cells (4 firings) against 18 of 30 in the three-run baseline; one run, so
+the rate is not a reading. 10 cells 0.839, 23 min, inside the baseline spread.
+
+The cells, with the baseline's three-run mean for the same task and policy:
+
+| task | coding (baseline) | unattended (baseline) |
+|---|---|---|
+| ED-01 | 0.57 (1.00) | 1.00 (1.00) |
+| ED-02 | 1.00 (1.00) | 1.00 (1.00) |
+| ED-03 | 1.00 (0.57) | 0.71 (0.67) |
+| ED-04 | 1.00 (0.18) | 0.32 (0.25) |
+| ED-05 | 1.00 (1.00) | 0.79 (0.81) |
+
+ED-04 coding at 1.00 is the first time the rename passed with the ≤4B rule on; ED-04
+unattended was the familiar loss, forty-odd BSD-rejected `sed -i` calls, the corrector's
+give-up, 23 empty turns and three resets, 608 s. ED-05 unattended did not run: a `cargo clean`
+of mine (meant to clear 56 GB of stale debug objects, see the `[profile.dev]` note in
+`Cargo.toml`) removed `target/release/boubou` under the driver between cells, so the folder
+exists with no transcript; the cell was run on its own after the rebuild: 0.79 in 22 s, the
+explanation accepted at the second finish, `reply.md` missing the scorer's phrasing, the
+baseline's own mean for that cell.
