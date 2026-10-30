@@ -12,10 +12,8 @@ pub const ARTIFACT_EXTS: [&str; 18] = [
     ".html", ".yaml", ".yml", ".svg", ".tex", ".tsv", ".log",
 ];
 
-static FILE_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Za-z0-9_\-\x{4e00}-\x{9fff}][A-Za-z0-9_\-\x{4e00}-\x{9fff}]*\.[A-Za-z0-9]{2,5}")
-        .expect("regex")
-});
+static FILE_TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9_\-]+\.[A-Za-z0-9]{2,5}").expect("regex"));
 
 fn all_basenames_lower(dir: &Path, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -34,7 +32,7 @@ fn all_basenames_lower(dir: &Path, out: &mut Vec<String>) {
 /// `_missing_files_in_text`: artifact-looking tokens in `text` that do not exist under
 /// `workdir`. A token counts as present if the relative path exists, a file with that
 /// basename exists anywhere below, or an existing basename is a suffix of the token
-/// (a verb can be glued onto a filename with no space in some scripts, e.g. a CJK prefix on `plot.png`).
+/// (a word glued onto the filename with no space between them).
 pub fn missing_files_in_text(text: &str, workdir: &Path) -> Vec<String> {
     let mut toks: Vec<String> = FILE_TOKEN
         .find_iter(text)

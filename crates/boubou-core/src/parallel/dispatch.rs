@@ -783,7 +783,7 @@ pub fn child_summary(child_dir: &Path) -> String {
 }
 
 static CLAIM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"[A-Za-z0-9_\-\x{4e00}-\x{9fff}]+\.[A-Za-z0-9]{2,5}").expect("regex")
+    regex::Regex::new(r"[A-Za-z0-9_\-]+\.[A-Za-z0-9]{2,5}").expect("regex")
 });
 const CLAIM_EXTS: [&str; 18] = [
     ".md", ".txt", ".png", ".jpg", ".jpeg", ".csv", ".py", ".json", ".docx", ".xlsx", ".pdf",

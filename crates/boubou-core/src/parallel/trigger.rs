@@ -18,9 +18,8 @@ use super::probe::{CapacityPlan, CapacityPlanner};
 use super::sandbox::{norm_command, norm_path, RuleSet, DEFAULT_SENSITIVE_DIR_PATTERNS};
 use crate::todo::atomic_write_json;
 
-static FILE_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Za-z0-9_\-\x{4e00}-\x{9fff}]+\.[A-Za-z0-9]{2,5}").expect("regex")
-});
+static FILE_TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9_\-]+\.[A-Za-z0-9]{2,5}").expect("regex"));
 const ARTIFACT_EXTS: [&str; 15] = [
     ".md", ".txt", ".csv", ".json", ".py", ".yaml", ".yml", ".html", ".tsv", ".log", ".tex",
     ".svg", ".rst", ".ini", ".toml",

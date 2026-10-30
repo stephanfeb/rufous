@@ -1,6 +1,6 @@
 //! `agent_loop`: the harness around the model. Every guard here exists because a real
-//! model session failed in a specific way; the Chinese message strings are Mingbird's and
-//! are pinned by the ported tests, so change them together with the tests.
+//! model session failed in a specific way; the message strings are pinned by the ported
+//! tests, so change them together with the tests.
 //!
 //! Shape: up to `max_iterations` turns. Each turn: flush transcript → dedupe tail →
 //! assemble the tool face → pre-call token estimate (compaction ladder) → model call

@@ -214,14 +214,14 @@ fn hint_hit(hint: &str, low: &str) -> bool {
     CACHE.get(hint).is_some_and(|re| re.is_match(low))
 }
 
-/// A message whose last non-blank character is a question mark (ASCII or full-width),
-/// ignoring trailing quotes and brackets. "Are you capable of software development ?" is a
+/// A message whose last non-blank character is a question mark, ignoring trailing quotes
+/// and brackets. "Are you capable of software development ?" is a
 /// question even with the space before the mark.
 pub fn ends_with_question(text: &str) -> bool {
     text.trim_end()
         .trim_end_matches(['"', '\'', ')', ']', '*', '_'])
         .trim_end()
-        .ends_with(['?', '\u{ff1f}'])
+        .ends_with('?')
 }
 
 /// `_has_task_progress`: has this conversation already done real work (a mutating or

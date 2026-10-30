@@ -43,8 +43,7 @@ pub fn memory_store(agent_home: &Path, text: &str) -> String {
 }
 
 fn words(s: &str) -> BTreeSet<String> {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[\w\u4e00-\u9fff]+").expect("regex"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").expect("regex"));
     RE.find_iter(&s.to_lowercase())
         .map(|m| m.as_str().to_string())
         .collect()

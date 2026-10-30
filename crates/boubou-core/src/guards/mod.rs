@@ -46,20 +46,13 @@ pub fn semantically_empty(text: &str) -> bool {
     BLOCK.replace_all(text, "").trim().is_empty()
 }
 
-/// `_estimate_tokens`: ~2 tokens per CJK char, ~3 chars per token otherwise. Overestimates
-/// on purpose: compacting early is cheap, overflowing the context is fatal.
+/// `_estimate_tokens`: ~3 chars per token. Overestimates on purpose: compacting early is
+/// cheap, overflowing the context is fatal.
 pub fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         return 0;
     }
-    let cjk = text
-        .chars()
-        .filter(|&c| {
-            ('\u{4e00}'..='\u{9fff}').contains(&c) || ('\u{3400}'..='\u{4dbf}').contains(&c)
-        })
-        .count();
-    let other = text.chars().count() - cjk;
-    cjk * 2 + other / 3 + 1
+    text.chars().count() / 3 + 1
 }
 
 /// `_format_bash_out`: the receipt for a command. With `small_model`, long output keeps
