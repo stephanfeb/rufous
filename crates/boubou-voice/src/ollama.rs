@@ -3,12 +3,12 @@
 
 use std::time::Duration;
 
-use boubou_core::ollama_proc::block_on_fresh;
+use boubou_kernel::ollama_proc::block_on_fresh;
 use serde_json::{json, Value};
 
 /// Standard base64 (the core crate's encoder, shared with image attachments).
 pub fn base64(bytes: &[u8]) -> String {
-    boubou_core::text::base64_encode(bytes)
+    boubou_kernel::text::base64_encode(bytes)
 }
 
 async fn post_json(url: String, body: Value, timeout: Duration) -> Result<Value, String> {

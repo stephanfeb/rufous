@@ -15,7 +15,7 @@ default = []
 sherpa = ["dep:sherpa-onnx"]
 
 [dependencies]
-boubou-core.workspace = true
+boubou-kernel.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true

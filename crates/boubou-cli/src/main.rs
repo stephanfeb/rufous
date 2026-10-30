@@ -9,28 +9,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use boubou_core::agent::chat::model_can_think;
-use boubou_core::agent::openai;
-use boubou_core::agent::session::{self, load_checkpoint, load_session, sessions_dir};
-use boubou_core::agent::{Agent, AgentEvent, RunParams};
-use boubou_core::config::{agent_home, config_path, Config};
-use boubou_core::guards::budget::{
+use boubou_kernel::agent::chat::model_can_think;
+use boubou_kernel::agent::openai;
+use boubou_kernel::agent::session::{self, load_checkpoint, load_session, sessions_dir};
+use boubou_kernel::agent::{Agent, AgentEvent, RunParams};
+use boubou_kernel::config::{agent_home, config_path, Config};
+use boubou_kernel::guards::budget::{
     elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
 };
-use boubou_core::ollama::{Client, Message};
-use boubou_core::ollama_proc::OllamaProc;
-use boubou_core::parallel::{
+use boubou_kernel::ollama::{Client, Message};
+use boubou_kernel::ollama_proc::OllamaProc;
+use boubou_kernel::parallel::{
     env_snapshot, format_capacity_table, progress_line, CapacityPlanner, ParallelConfig,
     ResourceProbe, SEVERE_EXIT_CODE,
 };
-use boubou_core::skills::SkillSet;
-use boubou_core::text::read_text;
-use boubou_core::todo::todo_file;
-use boubou_core::{mcp, tools};
+use boubou_kernel::skills::SkillSet;
+use boubou_kernel::text::read_text;
+use boubou_kernel::todo::todo_file;
+use boubou_kernel::{mcp, tools};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "boubou", version = boubou_core::VERSION, about = "Boubou · local-model autonomous agent")]
+#[command(name = "boubou", version = boubou_kernel::VERSION, about = "Boubou · local-model autonomous agent")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -241,7 +241,7 @@ fn main() -> Result<()> {
             {
                 eprintln!("[boubou acp] could not start ollama; run `ollama serve` first");
             }
-            let agent = boubou_acp::BoubouAcp::standard(cfg.clone(), agent_home(), model, ctx);
+            let agent = boubou_coding::BoubouAcp::standard(cfg.clone(), agent_home(), model, ctx);
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(agent.serve_stdio())
                 .map_err(|e| anyhow::anyhow!("acp: {e}"))?;
@@ -249,16 +249,16 @@ fn main() -> Result<()> {
         Cmd::Serve { port, workdir } => {
             let wd = match workdir {
                 Some(w) => std::path::absolute(w)?,
-                None => boubou_web::state::default_workdir(),
+                None => boubou_general::state::default_workdir(),
             };
-            let state = std::sync::Arc::new(boubou_web::AppState::new(agent_home(), wd));
+            let state = std::sync::Arc::new(boubou_general::AppState::new(agent_home(), wd));
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async move {
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                let (local, server) = boubou_web::bind(addr, state).await?;
+                let (local, server) = boubou_general::bind(addr, state).await?;
                 println!(
                     "Boubou Web UI {}: http://{local}  (local only)",
-                    boubou_core::VERSION
+                    boubou_kernel::VERSION
                 );
                 server.await
             })?;
@@ -270,7 +270,7 @@ fn main() -> Result<()> {
         } => {
             let args: serde_json::Value =
                 serde_json::from_str(&args).context("parsing tool arguments as JSON")?;
-            let mut ex = boubou_core::exec::Executor::new(std::path::absolute(workdir)?)
+            let mut ex = boubou_kernel::exec::Executor::new(std::path::absolute(workdir)?)
                 .with_configured_mcp();
             println!("{}", ex.run_tool(&name, &args));
         }
@@ -327,7 +327,7 @@ fn cli_budget(raw: Option<&str>) -> Option<f64> {
 }
 
 fn budget_label(src: BudgetSource, minutes: f64) -> String {
-    let v = boubou_core::text::fmt_g(minutes);
+    let v = boubou_kernel::text::fmt_g(minutes);
     match src {
         BudgetSource::Prompt => format!("time limit of {v} min found in the prompt"),
         BudgetSource::Cli => format!("CLI time limit {v} min"),
@@ -418,7 +418,7 @@ fn run_task(
     }
     match agent.run(msgs, session, budget_sec) {
         Ok(_) => Ok(()),
-        Err(boubou_core::Error::ChildTerminated(reason)) => {
+        Err(boubou_kernel::Error::ChildTerminated(reason)) => {
             // The child sandbox fuse: the dispatcher reads exit 53 and falls back without a retry.
             println!("[child-mode] serious violation, circuit broken: {reason}");
             std::process::exit(SEVERE_EXIT_CODE);
@@ -558,9 +558,9 @@ fn decide(
     model: Option<&str>,
     timeout_ms: u64,
 ) -> Result<()> {
-    use boubou_core::decider::{intent_question, intent_state, OllamaSystemOne};
-    use boubou_core::guards::qa::intent_heuristic;
-    use boubou_core::ollama::{Message, SystemOneAnswer};
+    use boubou_kernel::decider::{intent_question, intent_state, OllamaSystemOne};
+    use boubou_kernel::guards::qa::intent_heuristic;
+    use boubou_kernel::ollama::{Message, SystemOneAnswer};
     use std::io::{BufRead, Write};
 
     let input: Box<dyn BufRead> = match file {
@@ -620,7 +620,7 @@ fn decide(
 
 async fn doctor(cfg: &Config) -> Result<()> {
     let home = agent_home();
-    println!("boubou {}", boubou_core::VERSION);
+    println!("boubou {}", boubou_kernel::VERSION);
     println!("agent home   : {}", home.display());
     println!(
         "config       : {} ({})",
@@ -682,18 +682,18 @@ async fn doctor(cfg: &Config) -> Result<()> {
     }
 
     match cfg.decider.mode {
-        boubou_core::decider::DeciderMode::Off => println!(
+        boubou_kernel::decider::DeciderMode::Off => println!(
             "decider      : off (config `decider.mode`: shadow | on; model {})",
             cfg.decider.model
         ),
         mode => {
-            let b = boubou_core::decider::OllamaSystemOne::new(
+            let b = boubou_kernel::decider::OllamaSystemOne::new(
                 cfg.ollama_host(),
                 cfg.decider.model.clone(),
                 std::time::Duration::from_millis(cfg.decider.timeout_ms.max(1)),
             );
-            let h = boubou_core::guards::qa::intent_heuristic(
-                &[boubou_core::ollama::Message::user(
+            let h = boubou_kernel::guards::qa::intent_heuristic(
+                &[boubou_kernel::ollama::Message::user(
                     "Are you capable of software development ?",
                 )],
                 false,
@@ -701,10 +701,10 @@ async fn doctor(cfg: &Config) -> Result<()> {
             let mut qs = std::collections::BTreeMap::new();
             qs.insert(
                 "intent".to_string(),
-                boubou_core::decider::intent_question(),
+                boubou_kernel::decider::intent_question(),
             );
             let t = std::time::Instant::now();
-            match b.ask(&boubou_core::decider::intent_state(&h), qs) {
+            match b.ask(&boubou_kernel::decider::intent_state(&h), qs) {
                 Ok(a) => println!(
                     "decider      : {mode:?} · {} ok ({} ms) probe answer: {:?}",
                     cfg.decider.model,

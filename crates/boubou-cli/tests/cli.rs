@@ -42,7 +42,7 @@ fn help_lists_every_subcommand() {
         );
     }
     let o = boubou(d.path(), d.path(), &["--version"]);
-    assert!(text(&o).contains(boubou_core::VERSION));
+    assert!(text(&o).contains(boubou_kernel::VERSION));
 }
 
 #[test]

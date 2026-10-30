@@ -195,7 +195,7 @@ fn real_transcription_when_model_present() {
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_default();
-    let bases = boubou_voice::stt_bases(&install, &boubou_core::config::agent_home());
+    let bases = boubou_voice::stt_bases(&install, &boubou_kernel::config::agent_home());
     let Some(dir) = stt_model_dir("en", &bases).filter(|d| stt_files(d).is_some()) else {
         eprintln!("skip: en STT model not installed");
         return;

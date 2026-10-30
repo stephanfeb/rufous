@@ -111,9 +111,13 @@ A second Ctrl-C quits at once.
 ## Layout
 
 ```
-crates/boubou-core   protocol, config, skills, MCP config, Ollama client, agent surface
-crates/boubou-cli    `boubou` binary
-crates/boubou-app    Tauri shell embedding webui/index.html (not built by default)
+crates/boubou-kernel   the small-model agent loop and the product-neutral parts: protocol, tools,
+                       safety, config, skills, MCP, Ollama/OpenAI clients, the turn policies
+crates/boubou-general  general-purpose harness: the local web UI (`boubou serve`)
+crates/boubou-coding   coding harness: the Agent Client Protocol server (`boubou acp`)
+crates/boubou-voice    speech-to-text adapter (sherpa-onnx, Ollama audio fallback)
+crates/boubou-cli      `boubou` binary: wires the crates together, plus `run` for the batch harness
+crates/boubou-app      Tauri shell around boubou-general (not built by default)
 skills/              built-in skills, carried over from Mingbird unchanged
 docs/PORTING.md      Python → Rust module map and port status
 docs/changelog.md    dated engineering log (what shipped, what was measured)

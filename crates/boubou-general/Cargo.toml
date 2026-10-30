@@ -1,0 +1,33 @@
+[package]
+name = "boubou-general"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Boubou general-purpose harness: the local web UI (Mingbird's /api/* contract) over the kernel"
+
+[features]
+default = []
+# Local speech-to-text (sherpa-onnx native libs); `cargo build --features voice`.
+voice = ["boubou-voice/sherpa"]
+
+[dependencies]
+boubou-kernel.workspace = true
+boubou-voice.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -21,7 +21,7 @@ plenty; the window is printed in the first log line of every turn. The model can
 from `BOUBOU_MODEL`. Display names from `config.json` `models` are
 accepted. Ollama is started if it is down; an OpenAI-compatible or cloud engine in
 `config.json` is used as for the CLI. stdout carries the protocol, so all diagnostics go to
-stderr: `RUST_LOG=boubou_acp=info` shows the harness lines (`[decider]`, `[profile]`, gates).
+stderr: `RUST_LOG=boubou_coding=info` shows the harness lines (`[decider]`, `[profile]`, gates).
 
 ## Zed
 

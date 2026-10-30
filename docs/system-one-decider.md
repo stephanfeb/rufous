@@ -1,7 +1,7 @@
 # Design note: a System One decider for Boubou
 
 *Draft, 28 October 2026. Status as of 29 October 2026: step 1 of section 6 is implemented
-(`crates/boubou-core/src/decider.rs`, bead boubou-acy.1), see the addendum at the end. The
+(`crates/boubou-kernel/src/decider.rs`, bead boubou-acy.1), see the addendum at the end. The
 local backend is Ollama's native decision API rather than the Jev-compatible endpoint this note
 assumed; the llama-server logits spike (step 2) is dropped as unnecessary.*
 
@@ -56,7 +56,7 @@ Ranked by value against effort for Boubou:
 
 ## 3. Shape of the code
 
-A trait in `boubou-core`, deliberately tiny, mirroring the three primitives:
+A trait in `boubou-kernel`, deliberately tiny, mirroring the three primitives:
 
 ```rust
 /// A typed decision over a block of state. Implementations must be cheap enough to call

@@ -16,8 +16,8 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-boubou-core.workspace = true
-boubou-web.workspace = true
+boubou-kernel.workspace = true
+boubou-general.workspace = true
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true

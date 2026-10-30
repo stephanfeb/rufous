@@ -1,4 +1,4 @@
-//! Desktop shell: starts the local web UI server (`boubou-web`) on a free loopback port and
+//! Desktop shell: starts the local web UI server (`boubou-general`) on a free loopback port and
 //! opens a native window on it. The page and its `/api/*` contract are the same ones
 //! `boubou serve` exposes to a browser, so the shell adds only the window.
 
@@ -7,16 +7,16 @@
 use std::net::SocketAddr;
 use std::sync::{mpsc, Arc};
 
-use boubou_core::config::agent_home;
-use boubou_web::state::default_workdir;
-use boubou_web::AppState;
+use boubou_general::state::default_workdir;
+use boubou_general::AppState;
+use boubou_kernel::config::agent_home;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 /// Run the server on its own runtime thread; return the bound address once listening.
 fn start_server() -> std::io::Result<SocketAddr> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("boubou-web".into())
+        .name("boubou-general".into())
         .spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
@@ -27,7 +27,7 @@ fn start_server() -> std::io::Result<SocketAddr> {
             };
             rt.block_on(async move {
                 let state = Arc::new(AppState::new(agent_home(), default_workdir()));
-                match boubou_web::bind(SocketAddr::from(([127, 0, 0, 1], 0)), state).await {
+                match boubou_general::bind(SocketAddr::from(([127, 0, 0, 1], 0)), state).await {
                     Ok((local, server)) => {
                         let _ = tx.send(Ok(local));
                         if let Err(e) = server.await {

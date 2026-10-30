@@ -366,25 +366,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "boubou-acp"
-version = "0.2.0"
-dependencies = [
- "agent-client-protocol",
- "boubou-core",
- "chrono",
- "futures-util",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "boubou-app"
 version = "0.2.0"
 dependencies = [
- "boubou-core",
- "boubou-web",
+ "boubou-general",
+ "boubou-kernel",
  "serde",
  "serde_json",
  "tauri",
@@ -397,10 +383,10 @@ name = "boubou-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "boubou-acp",
- "boubou-core",
+ "boubou-coding",
+ "boubou-general",
+ "boubou-kernel",
  "boubou-voice",
- "boubou-web",
  "clap",
  "serde_json",
  "tempfile",
@@ -410,7 +396,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "boubou-core"
+name = "boubou-coding"
+version = "0.2.0"
+dependencies = [
+ "agent-client-protocol",
+ "boubou-kernel",
+ "chrono",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "boubou-general"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "boubou-kernel",
+ "boubou-voice",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "boubou-kernel"
 version = "0.2.0"
 dependencies = [
  "chrono",
@@ -435,30 +453,12 @@ dependencies = [
 name = "boubou-voice"
 version = "0.2.0"
 dependencies = [
- "boubou-core",
+ "boubou-kernel",
  "reqwest",
  "serde_json",
  "sherpa-onnx",
  "tempfile",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "boubou-web"
-version = "0.2.0"
-dependencies = [
- "axum",
- "boubou-core",
- "boubou-voice",
- "chrono",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tracing",
 ]
 
 [[package]]
