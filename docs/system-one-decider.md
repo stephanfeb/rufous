@@ -161,7 +161,7 @@ decider stays off by default.
 3. `LocalDecider` for a Jev-compatible endpoint; `doctor` probe; config section. Run JevK5
    GGUF locally, build the labelled set, measure (section 5).
 4. Adopt for intent if it passes acceptance. Then stuck detection, then the dispatch
-   classifier, each with its own measurement and its own `PORTING.md` entry.
+   classifier, each with its own measurement and its own `docs/changelog.md` entry.
 5. Compaction scoring as a separate design once the first three have shipped and we have the
    latency numbers on real hardware.
 
@@ -233,7 +233,7 @@ that comparison; the acceptance numbers in section 5 stand.
 ### Measurement, 29 October 2026
 
 `bench/decider_eval.py` over a 306-case labelled set (`bench/decider/intent_set.jsonl`; details
-in `PORTING.md`, bead boubou-acy.2): heuristic 76.5% vs d1:latest 81.4% on question-vs-not,
+in `docs/changelog.md`, bead boubou-acy.2): heuristic 76.5% vs d1:latest 81.4% on question-vs-not,
 shipped `on` policy 78.8%, reversal under rephrasing 35.9% vs 19.0%, p95 608 ms. Acceptance not
 met: the shipped policy loses 2.6 points of 3-class accuracy because the layering premise is
 inverted (the heuristic errs on rule hits, the model errs on the heuristic's defaults). On the

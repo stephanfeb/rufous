@@ -53,7 +53,8 @@ or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. `boubou acp --model 
 Neovim) can run Boubou as its agent: streamed text and thoughts, tool calls with status and diffs,
 the plan, and the safety gate's questions as the editor's permission dialog (see
 [docs/acp.md](docs/acp.md)). Next: voice model installer, Tauri bundling, the LRAB bench adapter.
-See [docs/PORTING.md](docs/PORTING.md).
+The Python → Rust module map is in [docs/PORTING.md](docs/PORTING.md); dated engineering
+notes are in [docs/changelog.md](docs/changelog.md).
 
 `run_python` and the three skills that depended on it (office_word, office_excel, image_batch)
 are not carried over; Boubou ships no Python runtime.
@@ -107,7 +108,8 @@ crates/boubou-core   protocol, config, skills, MCP config, Ollama client, agent 
 crates/boubou-cli    `boubou` binary
 crates/boubou-app    Tauri shell embedding webui/index.html (not built by default)
 skills/              built-in skills, carried over from Mingbird unchanged
-docs/PORTING.md      Python → Rust module map and remaining work
+docs/PORTING.md      Python → Rust module map and port status
+docs/changelog.md    dated engineering log (what shipped, what was measured)
 ```
 
 ## License

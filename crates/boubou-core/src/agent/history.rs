@@ -51,7 +51,7 @@ pub fn workdir_files_text(workdir: &Path, limit: usize) -> String {
 
 /// Recency pruning (bead boubou-65d.6): how many of the latest tool results stay verbatim
 /// when pruning is on (`AGENT_PRUNE_KEEP=5`). Off by default (`RunParams::prune_keep` 0):
-/// the first measurement (docs/PORTING.md, 2026-10-29) showed fewer compactions but no
+/// the first measurement (docs/changelog.md, 2026-10-29) showed fewer compactions but no
 /// score or wall-time gain at n=1.
 pub const PRUNE_KEEP: usize = 5;
 /// Pre-call estimate fraction of the context at which pruning runs (below the ladder's L1 at 0.60).
