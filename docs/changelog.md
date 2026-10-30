@@ -1085,3 +1085,35 @@ tool runner that can answer differently on the re-run. 500 Rust tests, clippy cl
 `coding` and `general` presets have no gates and are unaffected; `unattended` and `child`
 inherit it. tier6_editor unattended is to be run again; the before numbers are above.
 
+## tier6_editor again, under the replaced gate (2026-10-30, run 2)
+
+Same command, same model and context, binary at 7dd90bd. Run 1 is `surface_editor_run1_old_guard`.
+
+| task | coding run 1 → 2 | unattended run 1 → 2 | unattended calls / wall / refusals, run 1 → 2 |
+|---|---|---|---|
+| ED-01 | 1.00 → 1.00 | 1.00 → 1.00 | 27 / 124s / 3 → 9 / 26s / 0 |
+| ED-02 | 1.00 → 1.00 | 1.00 → 1.00 | 18 / 85s / 3 → 10 / 44s / 0 |
+| ED-03 | 0.71 → 1.00 | timeout → 0.57 | 89 / 1200s / 1 → 9 / 40s / 0 |
+| ED-04 | 1.00 → 1.00 | 1.00 → 1.00 | 55 / 186s / 4 → 12 / 31s / 0 |
+| ED-05 | 1.00 → 1.00 | 1.00 → 1.00 | 19 / 212s / 3 → 3 / 46s / 0 |
+
+Mean 1.00 coding, 0.91 unattended; whole run 10 minutes against 38. Finish refusals in the
+unattended column: 14 → 0. The gate fired once in ten cells, on ED-02 unattended, where the
+model edited rates.py after a green `python test_rates.py` and finished; the gate re-ran that
+command, it passed, the finish stood ("test guard: re-ran `python test_rates.py` after later
+changes: still passes"). No cell was asked for a check it had not run. Unattended is now
+faster than coding on every task, with fewer calls, which is the batch prompt's plan-first
+shape against the editor prompt's read-first one, not a gate effect.
+
+ED-03 unattended's 0.57 is a model error the gates are right to let through: `title_case`
+leaves a small word in the middle untouched instead of lowering it (`'ON THE ROAD'` →
+`'On THE Road'`), its own two tests only use lower-case input and pass, the suite is green, and
+the finish is honest. The referee's mixed-case case catches it. Nothing in the harness should;
+it is the measurement doing its job. One replication each, so the coding/unattended
+difference on ED-03 (1.00 against 0.57, 29 calls against 9) is sampling until repeated.
+
+Step 10 reading: with the gate telling the truth, the two presets score the same on four
+tasks and the remaining question for `coding` is no longer the test guard. The named-
+deliverable gate has not been needed in either run (ED-02's `fix_note.md` written under
+`coding` both times, `named_files_missing` empty everywhere).
+
