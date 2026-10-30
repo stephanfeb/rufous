@@ -326,13 +326,19 @@ impl ParallelDispatcher {
         run_dir.join(name)
     }
 
-    /// The child's environment: the parent's, plus the depth locks, minus the knobs that
-    /// only make sense for the parent (streaming, the parent's time budget).
+    /// The child's environment: the parent's, plus the depth locks and the planned context
+    /// window, minus the knobs that only make sense for the parent (streaming, the
+    /// parent's time budget).
     pub fn child_env(&self, depth: usize) -> HashMap<String, String> {
         let mut env = self.env.clone();
         env.insert("AGENT_CHILD_SANDBOX".to_string(), "1".to_string());
         env.insert("AGENT_PARALLEL".to_string(), "0".to_string());
         env.insert("MINGBIRD_DEPTH".to_string(), (depth + 1).to_string());
+        // The capacity planner costs each child's KV cache at `child_ctx`; the child must
+        // actually run there. Left unset it would inherit the parent's `AGENT_CTX` or the
+        // 128K default, 16x the budgeted memory for a 2B model (review 2026-10-29).
+        // Mingbird never set it either.
+        env.insert("AGENT_CTX".to_string(), self.cfg.child_ctx.to_string());
         env.remove("HUMMINGBIRD_DEPTH");
         env.remove("AGENT_STREAM");
         // The parent's 50/75/90% pacing is for the parent's budget; the child's real limit

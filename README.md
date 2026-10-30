@@ -33,8 +33,9 @@ the settings opts a session into the unattended task harness (finish gates, test
 Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, "child_model":
 "<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
 sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside
-the child directory, audit log, exit 53 on a severe violation). `boubou plan` shows what this
-machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
+the child directory, audit log, exit 53 on a severe violation); each child runs at
+`parallel.child_ctx`, the context window the capacity plan budgets for it. `boubou plan` shows
+what this machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
 automatically after four consecutive 500s), an OpenAI-compatible local server (LM Studio,
 llama-server) or a cloud provider. Model-specific settings come from a per-model profile
 (`think`, `temperature`, hidden tools, prefill cap, the gemma4 finish-prose rescue, a

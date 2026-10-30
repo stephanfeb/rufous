@@ -216,6 +216,24 @@ fn children_env_and_command() {
 }
 
 #[test]
+fn a_child_runs_at_the_context_window_the_planner_budgeted() {
+    let mut parent = HashMap::new();
+    parent.insert("AGENT_CTX".to_string(), "131072".to_string());
+    let c = ParallelConfig {
+        child_ctx: 8192,
+        ..cfg()
+    };
+    let env = ParallelDispatcher::new(c).with_env(parent).child_env(0);
+    assert_eq!(env["AGENT_CTX"], "8192");
+    // The default budget too, with no parent value to override.
+    let env = ParallelDispatcher::new(cfg()).child_env(0);
+    assert_eq!(
+        env["AGENT_CTX"],
+        ParallelConfig::default().child_ctx.to_string()
+    );
+}
+
+#[test]
 fn child_env_strips_parent_time_budget() {
     let mut parent = HashMap::new();
     parent.insert("AGENT_TIME_BUDGET_SEC".to_string(), "5400".to_string());
