@@ -36,6 +36,17 @@ fn serve_tags(listener: TcpListener, stop: Arc<AtomicBool>, delay: Duration) {
     });
 }
 
+/// Every test that binds a loopback port holds this. `free_port` hands a port back by
+/// closing its listener, so two tests running at once can be given the same number, and a
+/// test that checks a closed port can find another test's server on it (seen as a failure
+/// in a different test on each run). Cargo runs test binaries one after another, so one
+/// lock for this file is enough.
+fn ports() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn free_port() -> SocketAddr {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
@@ -68,6 +79,7 @@ fn proc_for(addr: SocketAddr, exe: &str) -> OllamaProc {
 
 #[test]
 fn the_hosts_port_is_what_gets_probed() {
+    let _ports = ports();
     assert_eq!(
         host_addr("http://127.0.0.1:11434"),
         Some("127.0.0.1:11434".parse().expect("addr"))
@@ -87,6 +99,7 @@ fn the_hosts_port_is_what_gets_probed() {
 #[cfg(unix)]
 #[test]
 fn a_bound_port_that_is_not_answering_yet_is_waited_for_not_spawned_over() {
+    let _ports = ports();
     let d = tempfile::tempdir().expect("tmp");
     let (exe, marker) = marker_exe(d.path());
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -106,6 +119,7 @@ fn a_bound_port_that_is_not_answering_yet_is_waited_for_not_spawned_over() {
 #[cfg(unix)]
 #[test]
 fn restart_lets_a_supervised_server_come_back_before_starting_its_own() {
+    let _ports = ports();
     let d = tempfile::tempdir().expect("tmp");
     let (exe, marker) = marker_exe(d.path());
     let addr = free_port();
@@ -144,6 +158,7 @@ fn restart_lets_a_supervised_server_come_back_before_starting_its_own() {
 #[cfg(unix)]
 #[test]
 fn restart_starts_its_own_server_only_once_the_grace_period_has_passed() {
+    let _ports = ports();
     let d = tempfile::tempdir().expect("tmp");
     let (exe, marker) = marker_exe(d.path());
     let addr = free_port();
@@ -170,6 +185,7 @@ fn restart_starts_its_own_server_only_once_the_grace_period_has_passed() {
 #[cfg(unix)]
 #[test]
 fn the_server_boubou_started_is_killed_by_handle() {
+    let _ports = ports();
     use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().expect("tmp");
     let exe = d.path().join("ollama");
