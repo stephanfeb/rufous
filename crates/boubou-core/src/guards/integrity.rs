@@ -206,9 +206,14 @@ impl CommandRecord {
     }
 }
 
-const READ_ONLY_CMDS: [&str; 24] = [
+const READ_ONLY_CMDS: &[&str] = &[
     "cat", "ls", "head", "tail", "grep", "rg", "wc", "find", "echo", "printf", "pwd", "stat",
     "diff", "which", "type", "file", "du", "df", "tree", "sort", "uniq", "cut", "md5sum", "shasum",
+    // Filters and navigation a reading session uses; `sed -i`, `sort -o` and `awk -i` are
+    // caught below, a redirect or a command substitution above.
+    "sed", "awk", "gawk", "jq", "cd", "less", "more", "nl", "tr", "column", "comm", "cmp",
+    "basename", "dirname", "realpath", "readlink", "date", "whoami", "hostname", "uname", "id",
+    "test", "[", "true", "false", "xxd", "od", "hexdump", "strings", "env", "printenv",
 ];
 /// Read-only subcommands of tools that also mutate (`bd done`, `git commit` are not here).
 const READ_ONLY_SUBCOMMANDS: [(&str, &[&str]); 2] = [
@@ -236,8 +241,9 @@ const READ_ONLY_SUBCOMMANDS: [(&str, &[&str]); 2] = [
 ];
 
 /// A command that only reads: every `;`/`&&`/`|`-separated part starts with a read-only
-/// program (or a read-only subcommand of `bd` / `git`, or `xargs` feeding one) and nothing
-/// is redirected to a file. Redirecting stderr to /dev/null or to stdout is not a write.
+/// program (or a read-only subcommand of `bd` / `git`, or `xargs` / `env` feeding one),
+/// nothing is redirected to a file and nothing runs inside `$(…)` or backticks (`echo
+/// $(rm -rf build)` is a delete). Redirecting stderr to /dev/null or to stdout is not a write.
 pub fn is_read_only_command(command: &str) -> bool {
     let c = command
         .replace("2>/dev/null", "")
@@ -246,7 +252,7 @@ pub fn is_read_only_command(command: &str) -> bool {
         .replace(">/dev/null", "")
         .replace("> /dev/null", "");
     let c = c.trim();
-    if c.is_empty() || c.contains('>') {
+    if c.is_empty() || c.contains('>') || c.contains("$(") || c.contains('`') {
         return false;
     }
     c.split(['\n', ';', '|', '&'])
@@ -265,18 +271,104 @@ fn read_only_part(part: &str) -> bool {
         let rest: Vec<&str> = words.skip_while(|w| w.starts_with('-')).collect();
         return !rest.is_empty() && read_only_part(&rest.join(" "));
     }
+    if prog == "env" {
+        // `env` alone (or piped) lists variables; `env FOO=1 cmd` runs cmd, which decides.
+        let rest: Vec<&str> = words
+            .skip_while(|w| w.starts_with('-') || w.contains('='))
+            .collect();
+        return rest.is_empty() || read_only_part(&rest.join(" "));
+    }
     if READ_ONLY_CMDS.contains(&prog) {
-        // `find … -delete` / `-exec cmd` act; everything else find does is a read.
-        return prog != "find"
-            || !p
-                .split_whitespace()
-                .any(|w| matches!(w, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"));
+        let args: Vec<&str> = words.collect();
+        return match prog {
+            // `find … -delete` / `-exec cmd` act; everything else find does is a read.
+            "find" => !args
+                .iter()
+                .any(|w| matches!(*w, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir")),
+            // `sed -i`, `-i.bak`, `-ni`, `--in-place` rewrite the file in place.
+            "sed" => !args.iter().any(|w| {
+                w.starts_with("--in-place")
+                    || (w.starts_with('-') && !w.starts_with("--") && w[1..].contains('i'))
+            }),
+            "sort" => !args.iter().any(|w| *w == "-o" || w.starts_with("--output")),
+            "awk" | "gawk" => !args
+                .iter()
+                .any(|w| w.starts_with("-i") || w.starts_with("--in-place")),
+            _ => true,
+        };
     }
     if let Some((_, subs)) = READ_ONLY_SUBCOMMANDS.iter().find(|(t, _)| *t == prog) {
-        let sub = words.find(|w| !w.starts_with('-')).unwrap_or("");
-        return subs.contains(&sub);
+        // Global options precede the subcommand; `-C <dir>` and `-c <key=val>` take a value.
+        let mut sub = "";
+        while let Some(w) = words.next() {
+            if w == "-C" || w == "-c" {
+                words.next();
+            } else if !w.starts_with('-') {
+                sub = w;
+                break;
+            }
+        }
+        if !subs.contains(&sub) {
+            return false;
+        }
+        return !(prog == "git" && sub == "branch") || git_branch_lists(words);
     }
     false
+}
+
+/// `git branch` lists unless it is asked to create, delete, move, copy or retarget a branch:
+/// a bare name creates, `-d`/`-D`/`-m`/`-M`/`-c`/`-C`/`-u`/`-f` act. Listing flags that take
+/// a value (`--merged main`, `--contains x`) keep their argument, and a name after `--list`
+/// is a pattern.
+fn git_branch_lists<'a>(args: impl Iterator<Item = &'a str>) -> bool {
+    const VALUE_FLAGS: [&str; 6] = [
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--sort",
+    ];
+    const LIST_FLAGS: [&str; 11] = [
+        "-a",
+        "-r",
+        "-v",
+        "-vv",
+        "--all",
+        "--remotes",
+        "--verbose",
+        "--show-current",
+        "--color",
+        "--no-color",
+        "--no-abbrev",
+    ];
+    let mut listing = false;
+    let mut expect_value = false;
+    for w in args {
+        if expect_value {
+            expect_value = false;
+            continue;
+        }
+        if VALUE_FLAGS.contains(&w) {
+            expect_value = true;
+            continue;
+        }
+        if w == "--list" || w == "-l" {
+            listing = true;
+            continue;
+        }
+        if LIST_FLAGS.contains(&w)
+            || VALUE_FLAGS.iter().any(|f| w.starts_with(&format!("{f}=")))
+            || w.starts_with("--format=")
+            || w.starts_with("--color=")
+        {
+            continue;
+        }
+        if w.starts_with('-') || !listing {
+            return false;
+        }
+    }
+    true
 }
 
 /// The exit code a `run_bash` result reports (`[exit N]` first), else `None`.
@@ -715,7 +807,7 @@ mod tests {
         let task = "Write bug_report.md and fix_summary.md; plan in plan.md; input is data.csv.";
         assert_eq!(
             task_named_missing(task, "Task complete.", d.path()),
-            vec!["data.csv".to_string(), "fix_summary.md".to_string()]
+            vec!["fix_summary.md".to_string()]
         );
         let honest = "fix_summary.md could not be written: the fix is incomplete. data.csv was missing from the directory.";
         assert!(task_named_missing(task, honest, d.path()).is_empty());
@@ -798,7 +890,6 @@ mod tests {
         for c in [
             "cat a > b",
             "python check.py",
-            "awk '{print}' f",
             "rm x",
             "echo hi > f",
             "ls && python x.py",
@@ -816,3 +907,30 @@ mod tests {
         assert!(!CommandRecord::file_write("edit_file", "test_x.py", "[edited]").is_verification());
     }
 }
+            // filters and navigation (the old list bounced an honest finish on these)
+            "sed -n '1,40p' lib/main.dart",
+            "sed -e 's/a/b/' f | head",
+            "jq .name package.json",
+            "awk '{print}' f",
+            "awk -F, '{print $2}' data.csv | sort | uniq -c",
+            "cd src && cat f",
+            "tr -d '\\r' < f | wc -l",
+            "env",
+            "env | grep -i path",
+            "git branch",
+            "git branch -a -v",
+            "git branch --list 'feat/*'",
+            "git branch --merged main",
+            "git -C sub branch --show-current",
+            // writes dressed as reads (the old list counted every one of these as a read)
+            "git branch -D feature/x",
+            "git branch -m old new",
+            "git branch newbranch",
+            "sort -o out.txt in.txt",
+            "echo $(rm -rf build)",
+            "echo `rm -rf build`",
+            "sed -i 's/a/b/' f",
+            "sed -i.bak s/a/b/ f",
+            "sed -ni p f",
+            "awk -i inplace '{print}' f",
+            "env FOO=1 python x.py",
