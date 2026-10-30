@@ -169,6 +169,8 @@ pub trait ToolRunner {
     fn run_tool(&mut self, name: &str, args: &Value) -> String;
     /// `_SLIM_OUTPUT_MODE`: trim long command output (set once per run).
     fn set_slim_output(&mut self, _on: bool) {}
+    /// The profile's workdir-prefix rule ([`Executor::rebase_workdir_prefix`]), set once per run.
+    fn set_rebase_workdir_prefix(&mut self, _on: bool) {}
     /// The agent's stop flag: raised, a running command is terminated and the tool returns.
     fn set_stop(&mut self, _flag: Arc<AtomicBool>) {}
     /// The skills compiled into the product, for the `skills` tool's listing and loading.
@@ -194,6 +196,9 @@ impl ToolRunner for Executor {
     }
     fn set_slim_output(&mut self, on: bool) {
         self.slim_output = on;
+    }
+    fn set_rebase_workdir_prefix(&mut self, on: bool) {
+        self.rebase_workdir_prefix = on;
     }
     fn set_stop(&mut self, flag: Arc<AtomicBool>) {
         self.stop = Some(flag);
@@ -773,6 +778,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let anti_loop = !params.ablated(ablation::ANTI_LOOP);
         let salvage_on = !params.ablated(ablation::SALVAGE);
         tools.set_slim_output(params.slim_output);
+        tools.set_rebase_workdir_prefix(
+            params.profile.rebase_workdir_prefix && !params.ablated(ablation::PATH_REBASE),
+        );
         if small_model {
             face.disabled.insert("edit_file".to_string());
         }
@@ -1419,6 +1427,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     text::head(&sig_json, 60),
                     text::head(&res, 90)
                 );
+                if let Some((from, to)) = crate::exec::rebased_path(&res) {
+                    log!("[{i}] 📁 path rebased: {from} → {to}");
+                }
                 sink(AgentEvent::ToolResult {
                     name: name.clone(),
                     args: args_v.clone(),

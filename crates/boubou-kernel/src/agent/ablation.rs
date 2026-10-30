@@ -37,6 +37,9 @@ pub const ANTI_LOOP: &str = "anti_loop";
 pub const SALVAGE: &str = "salvage";
 /// The ≤4B protocol: `edit_file` hidden from the first step and the shell-teaching hint.
 pub const SMALL_MODEL: &str = "small_model";
+/// The profile's workdir-prefix rule: a path under an invented subdirectory named like the
+/// working directory is left as given (gemma4:e2b, bead boubou-8e6).
+pub const PATH_REBASE: &str = "path_rebase";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -50,6 +53,7 @@ pub const KERNEL: &[&str] = &[
     ANTI_LOOP,
     SALVAGE,
     SMALL_MODEL,
+    PATH_REBASE,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

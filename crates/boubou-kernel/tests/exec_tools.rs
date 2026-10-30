@@ -1,7 +1,7 @@
 //! Port of `tests/test_safety_net.py` (ring 4: overwrite guard, trash, `~` teach-back) and
 //! `tests/test_crawl_guard.py` (read_file byte budget), plus executor plumbing.
 
-use boubou_kernel::exec::{CrawlConfig, Executor, TRASH_DIR};
+use boubou_kernel::exec::{rebase_workdir_prefix, rebased_path, CrawlConfig, Executor, TRASH_DIR};
 use boubou_kernel::safety::SafetyPolicy;
 use serde_json::json;
 
@@ -510,4 +510,122 @@ fn list_dir_hides_the_harness_files_in_the_workdir_layout() {
     }
     assert!(d.path().join("a.py.bak").exists() && d.path().join(TRASH_DIR).exists());
     assert_eq!(e.run_tool("list_dir", &json!({"path": "."})), "a.py");
+}
+
+// ---- the workdir-prefix rule (profile `rebase_workdir_prefix`, bead boubou-8e6) ----
+
+/// An executor whose workdir is a directory literally named `workdir`, as the bench lays
+/// cells out, with one fixture file at its root.
+fn ex_named_workdir(rule_on: bool) -> (tempfile::TempDir, Executor) {
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().join("workdir");
+    std::fs::create_dir(&wd).expect("mkdir");
+    std::fs::write(wd.join("slug.py"), "def slugify(t):\n    return t\n").expect("fixture");
+    let mut e = Executor::with_policy(&wd, SafetyPolicy::default());
+    e.rebase_workdir_prefix = rule_on;
+    (d, e)
+}
+
+#[test]
+fn the_rule_rewrites_only_a_missing_first_segment_named_like_the_workdir() {
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().join("proj");
+    std::fs::create_dir(&wd).expect("mkdir");
+    assert_eq!(
+        rebase_workdir_prefix(&wd, "proj/a.py").as_deref(),
+        Some("a.py")
+    );
+    assert_eq!(
+        rebase_workdir_prefix(&wd, "proj/src/a.py").as_deref(),
+        Some("src/a.py")
+    );
+    assert_eq!(rebase_workdir_prefix(&wd, "proj").as_deref(), Some("."));
+    assert_eq!(
+        rebase_workdir_prefix(&wd, "./proj/a.py").as_deref(),
+        Some("a.py")
+    );
+    assert_eq!(rebase_workdir_prefix(&wd, "a.py"), None, "no prefix");
+    assert_eq!(
+        rebase_workdir_prefix(&wd, "other/a.py"),
+        None,
+        "another first segment"
+    );
+    assert_eq!(
+        rebase_workdir_prefix(&wd, "project/a.py"),
+        None,
+        "a longer name is not the name"
+    );
+    let abs = wd.join("proj").join("a.py");
+    assert_eq!(
+        rebase_workdir_prefix(&wd, abs.to_str().expect("utf8")),
+        None,
+        "absolute"
+    );
+    // A real subdirectory of that name (a package named like its repository) is left alone.
+    std::fs::create_dir(wd.join("proj")).expect("mkdir");
+    assert_eq!(rebase_workdir_prefix(&wd, "proj/a.py"), None);
+}
+
+#[test]
+fn with_the_rule_on_an_invented_workdir_prefix_reaches_the_real_file_and_says_so() {
+    let (_d, mut e) = ex_named_workdir(true);
+    let out = e.run_tool("read_file", &json!({"path": "workdir/slug.py"}));
+    assert!(out.contains("def slugify"), "{out}");
+    assert!(
+        out.contains("(path rebased: workdir/slug.py → slug.py;"),
+        "{out}"
+    );
+    assert!(out.contains("has no `workdir/` subdirectory"), "{out}");
+    assert_eq!(rebased_path(&out), Some(("workdir/slug.py", "slug.py")));
+
+    let out = e.run_tool("list_dir", &json!({"path": "workdir"}));
+    assert!(out.starts_with("slug.py"), "{out}");
+    assert_eq!(rebased_path(&out), Some(("workdir", ".")));
+
+    let out = e.run_tool(
+        "create_file",
+        &json!({"path": "workdir/new.py", "content": "x = 1\n"}),
+    );
+    assert!(out.starts_with("[created new.py"), "{out}");
+    assert!(e.workdir.join("new.py").exists());
+    assert!(
+        !e.workdir.join("workdir").exists(),
+        "no subdirectory was created"
+    );
+
+    let out = e.run_tool(
+        "edit_file",
+        &json!({"path": "workdir/slug.py", "old": "return t", "new": "return t.lower()"}),
+    );
+    assert!(out.starts_with("[edited slug.py"), "{out}");
+    assert!(std::fs::read_to_string(e.workdir.join("slug.py"))
+        .expect("read")
+        .contains("lower()"));
+
+    // A plain path carries no clause.
+    let out = e.run_tool("read_file", &json!({"path": "slug.py"}));
+    assert_eq!(rebased_path(&out), None);
+    assert!(!out.contains("path rebased"), "{out}");
+}
+
+#[test]
+fn with_the_rule_off_the_invented_prefix_is_not_found_as_before() {
+    let (_d, mut e) = ex_named_workdir(false);
+    let out = e.run_tool("read_file", &json!({"path": "workdir/slug.py"}));
+    assert_eq!(out, "[not found: workdir/slug.py]");
+    let out = e.run_tool(
+        "create_file",
+        &json!({"path": "workdir/new.py", "content": "x = 1\n"}),
+    );
+    assert!(out.starts_with("[created workdir/new.py"), "{out}");
+    assert!(e.workdir.join("workdir").join("new.py").exists());
+}
+
+#[test]
+fn a_real_subdirectory_named_like_the_workdir_is_used_as_written() {
+    let (_d, mut e) = ex_named_workdir(true);
+    std::fs::create_dir(e.workdir.join("workdir")).expect("mkdir");
+    std::fs::write(e.workdir.join("workdir").join("inner.txt"), "inner").expect("fixture");
+    let out = e.run_tool("read_file", &json!({"path": "workdir/inner.txt"}));
+    assert_eq!(out, "inner");
 }

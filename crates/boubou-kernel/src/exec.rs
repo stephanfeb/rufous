@@ -30,6 +30,45 @@ use crate::Error;
 
 /// Recycle bin inside the workspace. Kept as Mingbird's name so old workspaces stay readable.
 pub const TRASH_DIR: &str = ".mingbird_trash";
+
+/// Opens the clause a file tool's result carries when the workdir-prefix rule rewrote its
+/// path; [`rebased_path`] reads it back for the harness log.
+pub const PATH_REBASED_MARK: &str = "(path rebased: ";
+
+fn first_segment(path: &str) -> &str {
+    path.split(['/', '\\']).next().unwrap_or(path)
+}
+
+/// The workdir-prefix rule ([`crate::profile::ModelProfile::rebase_workdir_prefix`]): for
+/// a relative `path` whose first segment is `workdir`'s own name, when `<workdir>/<name>`
+/// is not a directory, the path with that segment removed (`"."` when nothing is left).
+/// `None` when the rule does not apply: an absolute path, another first segment, or a real
+/// subdirectory of that name (a package named like its repository is common).
+pub fn rebase_workdir_prefix(workdir: &Path, path: &str) -> Option<String> {
+    if Path::new(path).is_absolute() {
+        return None;
+    }
+    let name = workdir.file_name()?.to_str()?;
+    let trimmed = path.trim_start_matches("./");
+    let first = first_segment(trimmed);
+    if first.is_empty() || first != name || workdir.join(first).is_dir() {
+        return None;
+    }
+    let rest = trimmed[first.len()..].trim_start_matches(['/', '\\']);
+    Some(if rest.is_empty() {
+        ".".to_string()
+    } else {
+        rest.to_string()
+    })
+}
+
+/// `(as given, as used)` from a tool result that carries [`PATH_REBASED_MARK`].
+pub fn rebased_path(res: &str) -> Option<(&str, &str)> {
+    let i = res.rfind(PATH_REBASED_MARK)? + PATH_REBASED_MARK.len();
+    let body = res[i..].split(';').next()?;
+    let (from, to) = body.split_once(" → ")?;
+    Some((from.trim(), to.trim()))
+}
 /// Under a relocated harness directory: previous versions of edited files, mirrored by
 /// their path in the workdir (`backups/lib/a.py.bak`).
 pub const BACKUP_DIR: &str = "backups";
@@ -88,6 +127,11 @@ pub struct Executor {
     pub crawl: HashMap<String, CrawlEntry>,
     /// `_SLIM_OUTPUT_MODE`: trim long command output to its tail.
     pub slim_output: bool,
+    /// Profile rule ([`crate::profile::ModelProfile::rebase_workdir_prefix`]): a relative
+    /// path whose first segment is the workdir's own name, when no such subdirectory
+    /// exists, is taken relative to the workdir. Applied once, in [`Self::dispatch`], to
+    /// every file tool; the result carries [`PATH_REBASED_MARK`].
+    pub rebase_workdir_prefix: bool,
     /// Advanced tools the model has enabled, in enable order.
     pub enabled: Vec<String>,
     pub bash_timeout: Duration,
@@ -135,6 +179,7 @@ impl Executor {
             crawl_cfg: CrawlConfig::default(),
             crawl: HashMap::new(),
             slim_output: false,
+            rebase_workdir_prefix: false,
             stop: None,
             enabled: Vec::new(),
             bash_timeout: Duration::from_secs(
@@ -248,6 +293,73 @@ impl Executor {
     }
 
     fn dispatch(&mut self, inv: ToolInvocation) -> String {
+        let (inv, rebased) = self.rebase_invocation(inv);
+        let mut res = self.dispatch_inner(inv);
+        if let Some((from, to)) = rebased {
+            res.push_str(&format!(
+                " {PATH_REBASED_MARK}{from} → {to}; this directory has no `{}/` subdirectory, paths are relative to it)",
+                first_segment(&from)
+            ));
+        }
+        res
+    }
+
+    /// The one seam for the workdir-prefix rule: the path argument of a file tool, rewritten
+    /// when the rule fires, with `(as given, as used)` for the result and the log.
+    fn rebase_invocation(&self, inv: ToolInvocation) -> (ToolInvocation, Option<(String, String)>) {
+        if !self.rebase_workdir_prefix {
+            return (inv, None);
+        }
+        let rebase = |p: &str| -> Option<String> { rebase_workdir_prefix(&self.workdir, p) };
+        macro_rules! with_path {
+            ($variant:ident { $path:ident $(, $f:ident)* }) => {{
+                let $path = $path;
+                match rebase(&$path) {
+                    Some(to) => {
+                        let from = $path.clone();
+                        (ToolInvocation::$variant { $path: to.clone() $(, $f)* }, Some((from, to)))
+                    }
+                    None => (ToolInvocation::$variant { $path $(, $f)* }, None),
+                }
+            }};
+        }
+        match inv {
+            ToolInvocation::CreateFile {
+                path,
+                content,
+                replace,
+            } => {
+                with_path!(CreateFile {
+                    path,
+                    content,
+                    replace
+                })
+            }
+            ToolInvocation::ReadFile {
+                path,
+                start_line,
+                end_line,
+            } => {
+                with_path!(ReadFile {
+                    path,
+                    start_line,
+                    end_line
+                })
+            }
+            ToolInvocation::EditFile { path, old, new } => with_path!(EditFile { path, old, new }),
+            ToolInvocation::AppendFile { path, content } => {
+                with_path!(AppendFile { path, content })
+            }
+            ToolInvocation::DeleteFile { path } => with_path!(DeleteFile { path }),
+            ToolInvocation::ListDir { path } => with_path!(ListDir { path }),
+            ToolInvocation::SearchFiles { path, pattern } => {
+                with_path!(SearchFiles { path, pattern })
+            }
+            other => (other, None),
+        }
+    }
+
+    fn dispatch_inner(&mut self, inv: ToolInvocation) -> String {
         match inv {
             ToolInvocation::CreateFile {
                 path,

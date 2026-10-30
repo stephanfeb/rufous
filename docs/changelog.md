@@ -1403,3 +1403,62 @@ arm says most of that was the ladders.
 The `workdir/` path again: two more cells (ED-01 and ED-02 coding), six across five runs,
 bead boubou-8e6. It is now the largest single cause of lost cells for this model, ahead of
 anything the edit protocol or the gates did.
+
+## The workdir-prefix rule, gemma4:e2b's profile only (2026-10-31, bead boubou-8e6)
+
+Design (the bead carries the full paragraph). gemma4:e2b, and no other model in any result
+folder (qwen3.5:9b 56 cells, gemma4:12b the profile runs), addresses files under an invented
+subdirectory named like the working directory: its first call, before any tool result, is
+`list_dir("workdir")` or `read_file("workdir/slug.py")`, the only source being the system
+prompt's absolute path whose last segment is `workdir`; the `[not a dir: /abs/…/workdir]`
+answer echoes that path, `create_file` then makes the directory silently, and the model works
+in a copy and finishes "verified" against the untouched root tests. Eight cells across seven
+folders. The compensation is on the tool face and switched by the profile: a relative path
+whose first segment is the workdir's own name, when no such subdirectory exists, is taken
+relative to the workdir. The tool result says so in one clause (`(path rebased:
+workdir/slug.py → slug.py; this directory has no `workdir/` subdirectory, paths are relative
+to it)`) and the harness logs `📁 path rebased: … → …`, so the bench counts firings. It never
+fires on an absolute path, another first segment, or a real subdirectory of that name (a
+package named like its repository is common), and it is off for every other model. A prompt
+note was not chosen because a 2B model's compliance with a negative instruction is the thing
+that cannot be assumed and the planting line must stay for `run_bash`; a refusal was not
+chosen because the same model repeated `list_dir("workdir")` four times after four `[not a
+dir]` answers.
+
+Where. `ModelProfile::rebase_workdir_prefix` (built-in exact-tag entry `gemma4:e2b`, so e4b
+and 12b are untouched; `config.json` can set it for any model), `Executor::rebase_workdir_prefix`
+applied once in `dispatch` to the seven file tools through `rebase_invocation`, the
+`path_rebase` switch in `agent/ablation.rs` (part of `kernel`), and the loop's wiring
+`profile && !ablated`. Tests: `exec_tools.rs` (the rule's cases including the real
+subdirectory and the absolute path; read, list, create and edit through the rule; off
+behaves as before), `profile.rs` (e2b has it, 12b and e4b do not), `agent_loop.rs` (gemma4:e2b
+gets it from its profile until `path_rebase` is set). 512 Rust tests, clippy clean.
+
+Measurement (the probe configuration rerun, `bench/results/surface_editor/gemma_e2b_path_rebase`).
+The rule fired in four of ten cells, every time on the model's opening `list_dir("workdir")`,
+rebased to `.`; after that answer the model used root paths and no cell asked for a
+`workdir/x` file. No cell has a `workdir/` subdirectory at the end, against six cells lost to
+it in the five runs before. Mean 0.76, the highest of the six gemma4:e2b tier6 runs, with the
+run-to-run caveat of the entry above: the per-cell reading is what counts here, and it is
+that the specific loss is gone.
+
+| task | probe coding / unattended | rule on coding / unattended |
+|---|---|---|
+| ED-01 | 1.00 / 1.00 | 1.00 / 1.00 |
+| ED-02 | 1.00 / 1.00 | 1.00 / 1.00 |
+| ED-03 | 0.29 / 0.00 | 0.71 / 0.71 |
+| ED-04 | 0.21 / 0.89 | 0.21 / 0.21 |
+| ED-05 | 1.00 / 0.79 | 1.00 / 0.79 |
+
+Two cells worth the lines. ED-01 unattended (156 s): an untested rewrite failed its test, six
+empty turns and a hard reset, then "Fixed" over the failing test, refused twice by the claims
+gate ("`python test_slug.py` exited 1 but the summary reports success"), a third rewrite, the
+test run green, finish allowed: the gate changed the result from a false finish to 1.00.
+ED-04 unattended (200 s): the ≤4B rule's whole-file rewrite of `repo.py` again, then twelve
+`sed -i` calls that BSD `sed` rejects, the corrector's two verdicts (one of them `cat | sed`,
+which runs and changes nothing), the duplicate block, and a finish with the old name still
+in two files; the same loss as the finish_gate arm's ED-04, and the rename stays the cell
+the edit rule decides. Open question kept: the cells asked for `workdir` exactly, which is
+both the basename and the plain noun, so whether the model copies the directory's name or
+says "workdir" regardless is still not separable; a run with a workdir named otherwise would
+tell.

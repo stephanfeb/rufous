@@ -944,6 +944,63 @@ fn a_two_billion_model_is_refused_edit_file_until_the_small_model_rule_is_ablate
     }
 }
 
+// ---- the profile's workdir-prefix rule reaches the executor through the loop ----
+
+fn run_e2b_read(workdir: &Path, ablation: &[&str]) -> Vec<Message> {
+    use boubou_kernel::exec::Executor;
+    use boubou_kernel::safety::SafetyPolicy;
+    let mut params = RunParams::plain("gemma4:e2b", workdir);
+    params
+        .ablation
+        .extend(ablation.iter().map(|s| s.to_string()));
+    params.apply_profile(&Default::default());
+    let tools = Executor::with_policy(workdir, SafetyPolicy::default());
+    let mut a = Agent::new(
+        params,
+        Responder {
+            n: 0,
+            f: |n| match n {
+                1 => ChatResponse::call("", "read_file", json!({"path": "workdir/slug.py"})),
+                _ => ChatResponse::call("done", "finish", json!({"summary": "read it"})),
+            },
+        },
+        tools,
+    );
+    a.run(
+        start("What does slug.py do? Don't change any files."),
+        None,
+        None,
+    )
+    .expect("loop")
+}
+
+#[test]
+fn gemma_e2b_gets_the_workdir_prefix_rule_from_its_profile_until_it_is_ablated() {
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().join("workdir");
+    std::fs::create_dir(&wd).expect("mkdir");
+    std::fs::write(wd.join("slug.py"), "def slugify(t):\n    return t\n").expect("fixture");
+
+    let msgs = run_e2b_read(&wd, &[]);
+    let tool: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+    assert!(
+        tool[0].content.contains("def slugify"),
+        "{}",
+        tool[0].content
+    );
+    assert!(
+        tool[0]
+            .content
+            .contains("(path rebased: workdir/slug.py → slug.py;"),
+        "{}",
+        tool[0].content
+    );
+
+    let msgs = run_e2b_read(&wd, &["path_rebase"]);
+    let tool: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(tool[0].content, "[not found: workdir/slug.py]");
+}
+
 // ---- output cap: truncation feedback and the empty-turn ladder ----
 
 fn debris() -> ChatResponse {

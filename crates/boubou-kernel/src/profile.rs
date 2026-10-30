@@ -39,6 +39,12 @@ pub struct ModelProfile {
     /// any gate or corrector note would be. It lives in the system prompt, not the task turn,
     /// so Q&A routing and the gates' re-read of the task text stay unaffected.
     pub prompt_note: Option<String>,
+    /// A relative path whose first segment is the working directory's own name, when no
+    /// such subdirectory exists, is read as relative to the working directory (bead
+    /// boubou-8e6). gemma4:e2b takes the basename from the system prompt's absolute path
+    /// and addresses files as `workdir/x`; the tool result says what was done and the
+    /// harness logs it, so the bench counts firings.
+    pub rebase_workdir_prefix: bool,
     /// One line of evidence, shown in the run-start log.
     pub note: String,
 }
@@ -60,6 +66,7 @@ impl Default for ModelProfile {
             max_prefill_skills: MAX_PREFILL_SKILLS,
             finish_prose_rescue: false,
             prompt_note: None,
+            rebase_workdir_prefix: false,
             note: String::new(),
         }
     }
@@ -77,6 +84,7 @@ pub struct ProfileOverride {
     pub finish_prose_rescue: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_note: Option<String>,
+    pub rebase_workdir_prefix: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -102,6 +110,9 @@ impl ProfileOverride {
             // An empty string in config.json switches a built-in note off.
             p.prompt_note = (!t.trim().is_empty()).then(|| t.clone());
         }
+        if let Some(r) = self.rebase_workdir_prefix {
+            p.rebase_workdir_prefix = r;
+        }
         if let Some(n) = &self.note {
             p.note = n.clone();
         }
@@ -119,6 +130,17 @@ fn builtin() -> Vec<(&'static str, ProfileOverride)> {
                 note: Some(
                     "ends a text turn with `Finish: …` or a bare finish{summary: …} instead of the call \
                      (gemma4:e2b: probes_corrector2 t00; profiles loop t03/t04/t05 → 3/10 forced ends)"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        ),
+        (
+            "gemma4:e2b",
+            ProfileOverride {
+                rebase_workdir_prefix: Some(true),
+                note: Some(
+                    "addresses files under an invented subdirectory named like the working directory                      (`workdir/slug.py`), then works in the copy: 8 cells across 7 result folders of                      2026-10-30/31, none for qwen3.5:9b or gemma4:12b (bead boubou-8e6)"
                         .to_string(),
                 ),
                 ..Default::default()
@@ -210,6 +232,9 @@ impl ModelProfile {
         if self.finish_prose_rescue {
             parts.push("finish-prose rescue".to_string());
         }
+        if self.rebase_workdir_prefix {
+            parts.push("workdir-prefix rebase".to_string());
+        }
         if let Some(t) = &self.prompt_note {
             let kind = if t == HONEST_FAILURE_NUDGE {
                 "honest-failure nudge"
@@ -244,12 +269,15 @@ mod tests {
     #[test]
     fn exact_tag_refines_its_family() {
         let e2b = builtin_for("gemma4:e2b");
-        assert_eq!(e2b.name, "gemma4");
-        assert!(e2b.finish_prose_rescue);
+        assert_eq!(e2b.name, "gemma4:e2b");
+        assert!(e2b.finish_prose_rescue, "family setting kept");
+        assert!(e2b.rebase_workdir_prefix, "the e2b-only path rule");
         assert_eq!(e2b.think, None);
+        assert_eq!(e2b.describe(), "finish-prose rescue; workdir-prefix rebase");
         let big = builtin_for("gemma4:12b");
         assert_eq!(big.name, "gemma4:12b");
         assert!(big.finish_prose_rescue, "family setting kept");
+        assert!(!big.rebase_workdir_prefix, "no evidence for 12b");
         assert_eq!(big.think, Some(false));
         assert_eq!(big.prompt_note.as_deref(), Some(HONEST_FAILURE_NUDGE));
         let q = builtin_for("qwen3.5:9b");
@@ -270,6 +298,7 @@ mod tests {
             e4b.prompt_note, None,
             "the nudge is per tag, not per family"
         );
+        assert!(!e4b.rebase_workdir_prefix, "the path rule is per tag too");
     }
 
     #[test]
