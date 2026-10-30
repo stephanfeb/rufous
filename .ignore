@@ -1,0 +1,3 @@
+# Read by ripgrep, fd, ag: bench/results/ is 40+ MB of agent transcripts and bench cells
+# (gitignored). Searching the source must not pull harness nudges out of old runs.
+bench/results/
