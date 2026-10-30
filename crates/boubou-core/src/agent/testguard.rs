@@ -80,7 +80,7 @@ fn merged(run: &CommandRun) -> String {
 /// itself is unavailable. Returns the verdict and the precise-failure hint.
 pub fn run_test_guard(workdir: &Path) -> (TestVerdict, String) {
     let timeout = Duration::from_secs(300);
-    let pr = run_command("python -m pytest -q", workdir, timeout);
+    let pr = run_command("python -m pytest -q", workdir, timeout, None);
     if pr.timed_out {
         return (
             TestVerdict::Fail,
@@ -94,6 +94,7 @@ pub fn run_test_guard(workdir: &Path) -> (TestVerdict, String) {
             "python -m unittest discover -p \"test_*.py\"",
             workdir,
             timeout,
+            None,
         );
         if pr.timed_out {
             return (TestVerdict::Fail, "unittest timed out (>300s)".to_string());

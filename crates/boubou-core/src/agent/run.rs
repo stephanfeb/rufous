@@ -168,6 +168,8 @@ pub trait ToolRunner {
     fn run_tool(&mut self, name: &str, args: &Value) -> String;
     /// `_SLIM_OUTPUT_MODE`: trim long command output (set once per run).
     fn set_slim_output(&mut self, _on: bool) {}
+    /// The agent's stop flag: raised, a running command is terminated and the tool returns.
+    fn set_stop(&mut self, _flag: Arc<AtomicBool>) {}
     /// `mcp_tool_defs`: flattened `server.tool` definitions for the routed categories.
     fn mcp_tool_defs(
         &self,
@@ -189,6 +191,9 @@ impl ToolRunner for Executor {
     }
     fn set_slim_output(&mut self, on: bool) {
         self.slim_output = on;
+    }
+    fn set_stop(&mut self, flag: Arc<AtomicBool>) {
+        self.stop = Some(flag);
     }
     fn mcp_tool_defs(
         &self,
@@ -373,14 +378,24 @@ impl Agent<DynBackend, Executor> {
             agent.face.narrow_to(&allowed);
         }
         agent.decider = LayeredDecider::from_config(&cfg.decider, &host);
-        agent.parallel = Some(DispatchHook::new(pcfg, host).with_child_mode(child_mode));
+        agent.parallel = Some(
+            DispatchHook::new(pcfg, host)
+                .with_child_mode(child_mode)
+                .with_abort(agent.stop.clone()),
+        );
         Ok(agent)
     }
 }
 
 impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
-    pub fn new(params: RunParams, backend: B, tools: T) -> Self {
+    pub fn new(params: RunParams, mut backend: B, mut tools: T) -> Self {
         let home = crate::config::agent_home();
+        // One flag for everything a stop must reach: the loop, the in-flight stream, a
+        // running command and the dispatched children (`with_stop` swaps it for the
+        // caller's).
+        let stop = Arc::new(AtomicBool::new(false));
+        backend.set_cancel(stop.clone());
+        tools.set_stop(stop.clone());
         let skill_dirs = vec![
             params.workdir.join("skills"),
             home.join("skills"),
@@ -399,7 +414,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sessions_dir: session::sessions_dir(&home),
             checkpoint: None,
             sink: Box::new(|_| {}),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop,
             parallel: None,
             engine: String::new(),
             skill_dirs,
@@ -421,14 +436,19 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
     /// Attach the parallel-dispatch hook (tests inject a probe and spawner through it).
     pub fn with_parallel(mut self, hook: DispatchHook) -> Self {
-        self.parallel = Some(hook);
+        self.parallel = Some(hook.with_abort(self.stop.clone()));
         self
     }
 
-    /// Share a stop flag with the caller; the backend abandons an in-flight stream when it
-    /// is set, and the loop ends before the next turn.
+    /// Share a stop flag with the caller: the backend abandons an in-flight stream when it
+    /// is set, a running command and the dispatched children are terminated, and the loop
+    /// ends before the next turn, saving the session.
     pub fn with_stop(mut self, flag: Arc<AtomicBool>) -> Self {
         self.backend.set_cancel(flag.clone());
+        self.tools.set_stop(flag.clone());
+        if let Some(h) = self.parallel.as_mut() {
+            h.abort = flag.clone();
+        }
         self.stop = flag;
         self
     }

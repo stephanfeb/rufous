@@ -5,6 +5,8 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use boubou_core::agent::chat::model_can_think;
@@ -368,6 +370,7 @@ fn run_task(
 
     ensure_engine(cfg);
     let mut agent = Agent::standard(params, cfg)?.with_sink(print_event);
+    install_ctrl_c(agent.stop_flag());
     println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
     let session = opts.session.as_deref();
@@ -434,6 +437,8 @@ fn chat(
     let cli_tb = cli_budget(time_budget.as_deref());
     ensure_engine(cfg);
     let mut agent = Agent::standard(params, cfg)?.with_sink(print_event);
+    let stop = agent.stop_flag();
+    install_ctrl_c(stop.clone());
     println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
     let mut msgs = session
@@ -461,10 +466,38 @@ fn chat(
             break;
         }
         msgs.push(Message::user(user));
+        // A Ctrl-C ends the turn, not the conversation: the next prompt starts clean.
+        stop.store(false, Ordering::SeqCst);
         msgs = agent.run(msgs, session.as_deref(), cli_tb.map(|m| m * 60.0))?;
         println!();
     }
     Ok(())
+}
+
+/// Ctrl-C: the first press raises the agent's stop flag, so the loop ends after the current
+/// step with the session saved, a running command's process tree is terminated and
+/// dispatched children are killed (they run in their own process groups, which the
+/// terminal's signal does not reach). A second press exits at once.
+fn install_ctrl_c(stop: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        rt.block_on(async move {
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            stop.store(true, Ordering::SeqCst);
+            eprintln!(
+                "\n[stop] Ctrl-C: ending after the current step and saving the session (press again to quit now)"
+            );
+            let _ = tokio::signal::ctrl_c().await;
+            std::process::exit(130);
+        });
+    });
 }
 
 /// Mingbird's stdout protocol: streamed text as is, harness lines verbatim.

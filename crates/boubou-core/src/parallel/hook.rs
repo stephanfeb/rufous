@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -43,6 +44,11 @@ pub struct DispatchHook {
     pub probe: Option<Arc<dyn CapacityPlanner>>,
     pub spawner: Option<Arc<dyn Spawner>>,
     pub agent_exe: Option<PathBuf>,
+    /// The agent's stop flag: raised, the dispatcher kills its live children at the next
+    /// poll and hands the batch back. Each child runs in its own process group (so a
+    /// timeout can kill the whole tree), which is also why a terminal's Ctrl-C no longer
+    /// reaches them by itself; the CLI's handler raises this flag instead.
+    pub abort: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for DispatchHook {
@@ -65,7 +71,13 @@ impl DispatchHook {
             probe: None,
             spawner: None,
             agent_exe: None,
+            abort: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn with_abort(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.abort = flag;
+        self
     }
 
     pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
@@ -171,6 +183,7 @@ impl DispatchHook {
         let sink = events.clone();
         let mut dispatcher = ParallelDispatcher::new(cfg.clone())
             .with_env(self.env.clone())
+            .with_abort(self.abort.clone())
             .with_progress(Arc::new(move |ev| {
                 if let Ok(mut v) = sink.lock() {
                     v.push(ev);

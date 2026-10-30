@@ -90,7 +90,9 @@ boubou acp --model <model>      # Agent Client Protocol over stdio, for an edito
 
 Environment variables are inherited from Mingbird: `OLLAMA_HOST`, `OLLAMA_BIN`, `AGENT_CTX`,
 `AGENT_TEMP`, `AGENT_NUMPREDICT`, `AGENT_THINK`, `AGENT_SYSTEM_FILE`, `AGENT_SLIM_OUTPUT`,
-`AGENT_OFFLINE`.
+`AGENT_OFFLINE`. Ctrl-C in `run` or `chat` ends the run after the current step with the
+session saved; a running command's process tree and any dispatched children are terminated.
+A second Ctrl-C quits at once.
 
 ## Layout
 

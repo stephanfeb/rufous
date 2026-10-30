@@ -11,6 +11,33 @@ fn ex() -> (tempfile::TempDir, Executor) {
     (d, e)
 }
 
+#[test]
+fn a_raised_stop_flag_terminates_a_running_command() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    let (_d, mut e) = ex();
+    let stop = Arc::new(AtomicBool::new(false));
+    e.stop = Some(stop.clone());
+    let raiser = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::SeqCst);
+        })
+    };
+    let t0 = Instant::now();
+    let out = e.run_tool(
+        "run_bash",
+        &json!({"command": "echo started; sleep 30; echo late"}),
+    );
+    raiser.join().expect("raiser");
+    assert!(t0.elapsed() < Duration::from_secs(10), "{out}");
+    assert!(out.contains("started"), "{out}");
+    assert!(!out.contains("late"), "{out}");
+    assert!(out.contains("stopped by the user"), "{out}");
+}
+
 fn create(e: &mut Executor, path: &str, content: &str) -> String {
     e.run_tool("create_file", &json!({"path": path, "content": content}))
 }

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use boubou_core::parallel::dispatch::{ChildProcess, SpawnRequest};
@@ -382,6 +382,20 @@ fn timeout_kills_child() {
         res.fallback[0].1
     );
     assert!(*killed.lock().expect("killed"));
+}
+
+#[test]
+fn the_dispatcher_aborts_on_the_callers_flag() {
+    let d = tempfile::tempdir().expect("tmp");
+    let sp = success_spawner();
+    let flag = Arc::new(AtomicBool::new(false));
+    let disp = dispatcher(cfg(), sp.clone()).with_abort(flag.clone());
+    assert!(!disp.aborted());
+    flag.store(true, Ordering::SeqCst);
+    assert!(disp.aborted());
+    let res = disp.run(items(2), d.path(), &StubProbe(2), Some("m"), Some("r1"), 0);
+    assert!(res.aborted);
+    assert_eq!(sp.n(), 0);
 }
 
 #[test]

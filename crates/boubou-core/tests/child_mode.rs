@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use boubou_core::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
@@ -321,6 +322,57 @@ fn env_hard_gate_child_mode_and_receipt_all_block() {
     let (out, ev) = run_hook(&hook(enabled_cfg(), &[]), with_note.clone(), d.path());
     assert_eq!(out, with_note); // idempotent on resume, no second dispatch
     assert!(ev.is_empty());
+}
+
+#[test]
+fn the_agents_stop_flag_reaches_the_dispatch_hook_and_its_children() {
+    // Wired either way round: the hook attached after the flag, or the flag after the hook.
+    let d = tempfile::tempdir().expect("tmp");
+    let flag = Arc::new(AtomicBool::new(false));
+    let a = agent(d.path(), &[], false)
+        .with_stop(flag.clone())
+        .with_parallel(hook(enabled_cfg(), &[]));
+    assert!(Arc::ptr_eq(
+        &a.parallel.as_ref().expect("hook").abort,
+        &flag
+    ));
+    let a = agent(d.path(), &[], false)
+        .with_parallel(hook(enabled_cfg(), &[]))
+        .with_stop(flag.clone());
+    assert!(Arc::ptr_eq(
+        &a.parallel.as_ref().expect("hook").abort,
+        &flag
+    ));
+
+    // Raised, a dispatch that would otherwise run six children spawns none.
+    let todo: Vec<Value> = (1..=6)
+        .map(|i| json!({"item": format!("convert data{i}.csv to a markdown table"), "done": false}))
+        .collect();
+    std::fs::write(
+        d.path().join("todo.json"),
+        serde_json::to_string(&todo).expect("json"),
+    )
+    .expect("todo");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let mut a = agent(d.path(), &[], false)
+        .with_parallel(hook(enabled_cfg(), &[]))
+        .with_stop(flag.clone())
+        .with_sink(move |ev| sink.lock().expect("events").push(ev));
+    flag.store(true, Ordering::SeqCst);
+    let msgs = vec![
+        Message::system("sys"),
+        Message::user("Convert each data*.csv file in this directory to a markdown table."),
+    ];
+    a.run(msgs, None, None).expect("a stop is a clean exit");
+    assert!(!d.path().join("out_task01.md").exists(), "a child ran");
+    let ev = events.lock().expect("events");
+    assert!(ev.iter().any(
+        |e| matches!(e, AgentEvent::Dispatch(v) if v["phase"] == "done" && v["aborted"] == true)
+    ));
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Log(l) if l.contains("[stopped]"))));
 }
 
 #[test]

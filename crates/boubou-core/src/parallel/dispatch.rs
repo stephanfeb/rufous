@@ -302,6 +302,13 @@ impl ParallelDispatcher {
         self
     }
 
+    /// Abort on the caller's flag: the agent's stop flag, so a user stop (Ctrl-C in the
+    /// CLI, the web page's stop button) reaches the children.
+    pub fn with_abort(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.abort = flag;
+        self
+    }
+
     /// Share the abort flag (a GUI stop button sets it).
     pub fn abort_flag(&self) -> Arc<AtomicBool> {
         self.abort.clone()

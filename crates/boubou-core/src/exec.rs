@@ -5,6 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -100,6 +101,9 @@ pub struct Executor {
     pub child: Option<ChildSandbox>,
     /// Set once the child sandbox trips its fuse; the loop ends the run with exit 53.
     child_terminated: Option<String>,
+    /// The agent's stop flag: raised, a running command's process tree is terminated at
+    /// the next poll and the tool returns what it had.
+    pub stop: Option<Arc<AtomicBool>>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -129,6 +133,7 @@ impl Executor {
             crawl_cfg: CrawlConfig::default(),
             crawl: HashMap::new(),
             slim_output: false,
+            stop: None,
             enabled: Vec::new(),
             bash_timeout: Duration::from_secs(
                 std::env::var("AGENT_BASH_TIMEOUT")
@@ -637,10 +642,14 @@ impl Executor {
     fn run_bash(&mut self, command: &str) -> String {
         let cmd: &str = command;
         let snapped = bash_snapshot(cmd, &self.workdir, self.backup_root().as_deref());
-        let run = run_command(cmd, &self.workdir, self.bash_timeout);
-        if run.timed_out {
-            let secs = self.bash_timeout.as_secs();
-            let note = format!("\n[timed out after {secs}s: the limit was reached and the process tree was terminated]");
+        let run = run_command(cmd, &self.workdir, self.bash_timeout, self.stop.as_deref());
+        if run.timed_out || run.interrupted {
+            let note = if run.timed_out {
+                let secs = self.bash_timeout.as_secs();
+                format!("\n[timed out after {secs}s: the limit was reached and the process tree was terminated]")
+            } else {
+                "\n[stopped by the user: the process tree was terminated]".to_string()
+            };
             return format_bash_out(
                 if run.code == 0 { 1 } else { run.code },
                 &format!("{}{note}", head(&run.stdout, 4000)),
@@ -1014,11 +1023,19 @@ pub(crate) struct CommandRun {
     pub(crate) stdout: String,
     pub(crate) stderr: String,
     pub(crate) timed_out: bool,
+    /// The stop flag was raised while the command ran.
+    pub(crate) interrupted: bool,
 }
 
-/// Run through the platform shell with a wall-clock limit; on timeout the whole process
-/// tree is killed (orphaned grandchildren would otherwise hold the pipes open forever).
-pub(crate) fn run_command(cmd: &str, cwd: &Path, timeout: Duration) -> CommandRun {
+/// Run through the platform shell with a wall-clock limit; on timeout, or when `stop` is
+/// raised, the whole process tree is killed (orphaned grandchildren would otherwise hold
+/// the pipes open forever).
+pub(crate) fn run_command(
+    cmd: &str,
+    cwd: &Path,
+    timeout: Duration,
+    stop: Option<&AtomicBool>,
+) -> CommandRun {
     use std::process::{Command, Stdio};
     let mut command = if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -1049,6 +1066,7 @@ pub(crate) fn run_command(cmd: &str, cwd: &Path, timeout: Duration) -> CommandRu
                 stdout: String::new(),
                 stderr: format!("[spawn failed: {e}]"),
                 timed_out: false,
+                interrupted: false,
             }
         }
     };
@@ -1069,11 +1087,18 @@ pub(crate) fn run_command(cmd: &str, cwd: &Path, timeout: Duration) -> CommandRu
     let err_t = reader(None, child.stderr.take());
     let start = Instant::now();
     let mut timed_out = false;
+    let mut interrupted = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break Some(st),
             Ok(None) if start.elapsed() >= timeout => {
                 timed_out = true;
+                kill_tree(child.id());
+                let _ = child.kill();
+                break child.wait().ok();
+            }
+            Ok(None) if stop.is_some_and(|s| s.load(Ordering::Relaxed)) => {
+                interrupted = true;
                 kill_tree(child.id());
                 let _ = child.kill();
                 break child.wait().ok();
@@ -1090,6 +1115,7 @@ pub(crate) fn run_command(cmd: &str, cwd: &Path, timeout: Duration) -> CommandRu
         stdout,
         stderr,
         timed_out,
+        interrupted,
     }
 }
 
