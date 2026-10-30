@@ -909,34 +909,24 @@ fn a_duplicate_call_runs_again_when_the_loop_ladders_are_ablated() {
     assert!(user_msgs(&msgs, "Do not retry it unchanged").is_empty());
 }
 
-// ---- the ≤4B protocol and its switch ----
+// ---- no tool is withheld by parameter count ----
 
 #[test]
-fn a_two_billion_model_is_refused_edit_file_until_the_small_model_rule_is_ablated() {
-    // The rule: the loop hides edit_file from a ≤4B model and refuses the call if it is
-    // made anyway. Under the `small_model` switch (and under `kernel`) the same model is
-    // left the raw loop and the edit runs.
+fn a_two_billion_model_gets_edit_file_like_any_other() {
+    // Mingbird's `_small_model` hid edit_file from every ≤4B model before the first step.
+    // Measured (bead boubou-6uj), the rule lost the rename cell six times out of six and
+    // won nothing, so the loop no longer looks at the parameter count: the first edit_file
+    // call from a 2B model runs, and the tool is advertised to it on the flat path.
     let calls: Vec<Call> = vec![edit(1, true)];
-    let d = tempfile::tempdir().expect("tmp");
-    let msgs = agent_as(d.path(), &calls, "gemma4:e2b", &[])
-        .run(start(TASK), None, None)
-        .expect("loop");
-    let refused: Vec<&Message> = msgs
-        .iter()
-        .filter(|m| m.role == Role::Tool && m.content.starts_with("[tool edit_file is disabled"))
-        .collect();
-    assert_eq!(refused.len(), 1);
-    assert!(msgs.iter().all(|m| m.content != EDIT_OK));
-
-    for switches in [&["small_model"][..], &["kernel"][..]] {
+    for model in ["gemma4:e2b", "qwen3.5:4b", "gemma4:12b"] {
         let d = tempfile::tempdir().expect("tmp");
-        let msgs = agent_as(d.path(), &calls, "gemma4:e2b", switches)
+        let msgs = agent_as(d.path(), &calls, model, &[])
             .run(start(TASK), None, None)
             .expect("loop");
         assert!(
             msgs.iter()
                 .any(|m| m.role == Role::Tool && m.content == EDIT_OK),
-            "{switches:?}: the edit must run"
+            "{model}: the edit must run"
         );
         assert!(msgs
             .iter()

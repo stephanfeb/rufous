@@ -25,13 +25,6 @@ pub fn model_params_b(model: &str) -> Option<f64> {
         .and_then(|m| m.as_str().parse().ok())
 }
 
-/// Models at or below this many billion parameters get the small-model protocol.
-pub const SMALL_MODEL_MAX_B: f64 = 4.0;
-
-pub fn is_small_model(model: &str) -> bool {
-    model_params_b(model).unwrap_or(99.0) <= SMALL_MODEL_MAX_B
-}
-
 /// `_semantically_empty`: content with think-tag shells removed has no real text.
 /// A reply that *starts* with `<think>` and never closes it is truncation debris and
 /// counts as empty; text before a `<think>` is real content.

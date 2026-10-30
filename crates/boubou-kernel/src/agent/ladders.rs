@@ -186,11 +186,10 @@ pub struct CallLadders {
     /// cannot produce a different result.
     last_ran: Option<(String, String)>,
     dup_warns: usize,
-    /// The failure ladder: consecutive failures per tool, and how many redirect notes and
-    /// shell-teaching hints have gone out.
+    /// The failure ladder: consecutive failures per tool, and how many redirect notes have
+    /// gone out.
     fail_count: HashMap<String, usize>,
     redirect_warns: usize,
-    bash_teach_warns: usize,
     /// The missing-argument ladder, per tool.
     missing_arg_streak: HashMap<String, usize>,
     missing_arg_warns: usize,
@@ -290,15 +289,6 @@ impl CallLadders {
     /// The call ran (also for a call the corrector substituted).
     pub fn ran(&mut self, name: &str, sig: &str) {
         self.last_ran = Some((name.to_string(), sig.to_string()));
-    }
-
-    /// Whether the shell-teaching hint may go out (twice).
-    pub fn bash_teach(&mut self) -> bool {
-        if self.bash_teach_warns < 2 {
-            self.bash_teach_warns += 1;
-            return true;
-        }
-        false
     }
 
     /// The call failed; `missing_arg` is the required argument it lacked, if that is why.
@@ -789,7 +779,6 @@ mod tests {
                 streak: 2
             }
         );
-        assert!(l.bash_teach() && l.bash_teach() && !l.bash_teach());
         // Streaks: the note at five in a row (three times), the loop at eight with the same
         // exact call four times.
         let mut l = CallLadders::default();

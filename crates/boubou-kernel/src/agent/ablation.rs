@@ -8,8 +8,10 @@
 //! therefore carries a switch, each switch is listed here with the mechanism it turns off,
 //! and [`KERNEL_OFF`] is every switch at once: the only arm that measures the kernel, and it
 //! must be reachable for the models the kernel exists for. A compensation without a switch
-//! is a measurement the project cannot make, which is how the ≤4B edit rule
-//! ([`SMALL_MODEL`]) ran unmeasured from Mingbird's `_small_model` until 2026-10-30.
+//! is a measurement the project cannot make, which is how Mingbird's `_small_model` rule
+//! (`edit_file` hidden from every ≤4B model) ran unmeasured until 2026-10-30; measured under
+//! its switch `small_model`, it was a net loss and was removed (bead boubou-6uj), so that
+//! name is now reported as unknown and the folders recorded under it stay readable.
 //! Switching a compensation off leaves the model the raw loop, never a half state the loop
 //! then punishes: a tool the face will refuse is never advertised, on any path
 //! ([`super::face::ToolFace::active_defs`]).
@@ -35,8 +37,6 @@ pub const ANTI_LOOP: &str = "anti_loop";
 /// Format-leak salvage: a tool call the model wrote as text is not recovered, including
 /// the profile's finish-prose rescue.
 pub const SALVAGE: &str = "salvage";
-/// The ≤4B protocol: `edit_file` hidden from the first step and the shell-teaching hint.
-pub const SMALL_MODEL: &str = "small_model";
 /// The profile's workdir-prefix rule: a path under an invented subdirectory named like the
 /// working directory is left as given (gemma4:e2b, bead boubou-8e6).
 pub const PATH_REBASE: &str = "path_rebase";
@@ -52,7 +52,6 @@ pub const KERNEL: &[&str] = &[
     FLAT_PREFILL,
     ANTI_LOOP,
     SALVAGE,
-    SMALL_MODEL,
     PATH_REBASE,
 ];
 
@@ -94,8 +93,8 @@ mod tests {
         for f in KERNEL {
             assert!(covers(&k, f), "{f} must be off under kernel");
         }
-        assert!(covers(&list(&[SMALL_MODEL]), SMALL_MODEL));
-        assert!(!covers(&list(&[SMALL_MODEL]), ANTI_LOOP));
+        assert!(covers(&list(&[PATH_REBASE]), PATH_REBASE));
+        assert!(!covers(&list(&[PATH_REBASE]), ANTI_LOOP));
     }
 
     #[test]

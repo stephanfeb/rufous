@@ -769,11 +769,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     .any(|m| m.content.starts_with(DISPATCH_NOTE_MARK));
             }
         }
-        // The ≤4B protocol, inherited from Mingbird's `_small_model` and unmeasured there:
-        // edit_file hidden from the first step so the model rewrites whole files, and the
-        // shell-teaching hint. Its first measurement is the `small_model` ablation.
-        let small_model =
-            turn.working && guards::is_small_model(model) && !params.ablated(ablation::SMALL_MODEL);
+        // No tool is withheld by parameter count: Mingbird's `_small_model` hid edit_file
+        // from every ≤4B model and measured as a net loss (bead boubou-6uj, changelog
+        // 2026-10-31). A model that needs a tool withheld says so in its profile
+        // (`hide_tools`); one that fails a tool loses it through the failure ladder.
         // The call-pattern ladders below, all off under one switch.
         let anti_loop = !params.ablated(ablation::ANTI_LOOP);
         let salvage_on = !params.ablated(ablation::SALVAGE);
@@ -781,9 +780,6 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         tools.set_rebase_workdir_prefix(
             params.profile.rebase_workdir_prefix && !params.ablated(ablation::PATH_REBASE),
         );
-        if small_model {
-            face.disabled.insert("edit_file".to_string());
-        }
         let mut edit_guard = EditConvergenceGuard::default();
 
         // Time budget: explicit parameter beats the env fallback; resume continues the clock.
@@ -1867,15 +1863,6 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
                 // Failure ladder: same tool failing repeatedly → change strategy / disable.
                 if is_tool_error(&res) {
-                    if small_model
-                        && n == "run_bash"
-                        && res.to_lowercase().contains("not recognized")
-                        && calls.bash_teach()
-                    {
-                        messages.push(Message::user(
-                            "Hint: run_bash runs Windows shell (cmd) commands and cannot execute Python code directly. Do it this way: write the code to a .py file with create_file, then run it with run_bash: python filename.py",
-                        ));
-                    }
                     let failure = if anti_loop {
                         calls.on_failure(&name, missing_arg_key(&res))
                     } else {

@@ -9,9 +9,7 @@ use boubou_kernel::guards::leak::{parse_finish_prose, try_parse_tool_calls};
 use boubou_kernel::guards::qa::{
     has_task_progress, intent_heuristic, is_qa, task_original_text, Intent,
 };
-use boubou_kernel::guards::{
-    estimate_tokens, format_bash_out, is_small_model, model_params_b, semantically_empty,
-};
+use boubou_kernel::guards::{estimate_tokens, format_bash_out, model_params_b, semantically_empty};
 use boubou_kernel::ollama::Message;
 use boubou_kernel::todo::{save_todo, TodoItem};
 use boubou_kernel::tools;
@@ -39,13 +37,6 @@ fn params_parsing() {
     assert_eq!(model_params_b("gemma4:12b"), Some(12.0));
     assert_eq!(model_params_b("ornith-1.5:35b"), Some(35.0));
     assert_eq!(model_params_b("unknown-model"), None);
-}
-
-#[test]
-fn small_model_boundary() {
-    assert!(is_small_model("gemma4:e2b") && is_small_model("qwen3.5:4b"));
-    assert!(!is_small_model("gemma4:12b") && !is_small_model("ornith-1.5:35b"));
-    assert!(!is_small_model("unknown-model")); // unparseable → treated as large
 }
 
 // ---- _claimed_missing_files ----

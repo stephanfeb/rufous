@@ -1544,3 +1544,29 @@ of mine (meant to clear 56 GB of stale debug objects, see the `[profile.dev]` no
 exists with no transcript; the cell was run on its own after the rebuild: 0.79 in 22 s, the
 explanation accepted at the second finish, `reply.md` missing the scorer's phrasing, the
 baseline's own mean for that cell.
+
+## The ≤4B rule removed (2026-10-31, bead boubou-6uj)
+
+Mingbird's `_small_model` hid `edit_file` from every model parsed at four billion parameters
+or fewer before the first step, on the premise (its comment) that 2–4B models fail the exact
+`old_text` match, and added a Windows `cmd` teaching hint to failed shell commands; it was
+never measured there. Measured here under its switch: ED-04 lost all six baseline cells to the
+whole-file rewrites and appended copies the rule forced, scored 1.00/1.00 with the switch off,
+and no cell in any folder was won by it. Design: tool availability is not a function of
+parameter count. A model that needs a tool withheld says so in its profile on the exact tag
+with an evidence note (`hide_tools`, the way the gemma4:e2b path rule was placed); a model
+that fails a tool's contract gets a better tool (`bk9.3`, matching tiers and argument repair
+answer the premise directly) and meanwhile loses the tool through the failure ladder's
+three-failure `edit_file` disable, per run, on evidence. The blanket pre-emptive hide was
+redundant with both and a measured loss.
+
+Removed: the gate in `agent/run.rs` with both effects, `guards::is_small_model` and its
+threshold, the `small_model` ablation switch (nothing left under it; the name is now reported
+as unknown, so the folders recorded under it stay readable), `CallLadders::bash_teach`. Kept:
+the ladder's reactive disable, `kernel`. Tests: `a_two_billion_model_gets_edit_file_like_any_
+other` (gemma4:e2b, qwen3.5:4b, gemma4:12b all run their first edit); the switch-list tests
+on another switch. `format_bash_out`'s `small_model` parameter is fed the slim-output flag and
+was never this rule; left for a rename of its own. The after-measurement is the probe
+configuration at `--runs 3` against `gemma_e2b_x3`: ED-04 should rise, nothing else should
+move outside sd 0.07; qwen3.5:4b, now in the inventory and exactly on the old boundary, is the
+second model to run it on.
