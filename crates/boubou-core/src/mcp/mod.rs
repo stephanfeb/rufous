@@ -31,16 +31,16 @@ pub const CAT_WEB: &str = "web";
 pub const CAT_MEMORY: &str = "memory";
 pub const CAT_MCP: &str = "mcp";
 
-/// Canonical category for a tag written in `mcp.json`: case-insensitive English, plus the
-/// Chinese tag names Mingbird's configs use (the `\u{..}` escapes below), so an existing
-/// `mcp.json` keeps routing. Unknown tags return `None`.
+/// Canonical category for a tag written in `mcp.json`: case-insensitive English (`Files`,
+/// `network`). Unknown tags return `None`. (Mingbird's Chinese tag names are not accepted:
+/// Boubou is English-only.)
 pub fn normalise_category(tag: &str) -> Option<&'static str> {
     let t = tag.trim();
     Some(match t.to_ascii_lowercase().as_str() {
-        "files" | "file" | "\u{6587}\u{4ef6}" => CAT_FILES,
-        "code" | "\u{4ee3}\u{7801}" => CAT_CODE,
-        "web" | "network" | "\u{7f51}\u{7edc}" => CAT_WEB,
-        "memory" | "\u{8bb0}\u{5fc6}" => CAT_MEMORY,
+        "files" | "file" => CAT_FILES,
+        "code" => CAT_CODE,
+        "web" | "network" => CAT_WEB,
+        "memory" => CAT_MEMORY,
         "mcp" => CAT_MCP,
         _ => return None,
     })

@@ -166,7 +166,7 @@ impl McpRegistry {
     fn load_disk(&self) -> Option<(f64, Manifest)> {
         let raw = std::fs::read_to_string(&self.cache_file).ok()?;
         let mut d: DiskCache = serde_json::from_str(&raw).ok()?;
-        // A cache written with Mingbird's Chinese category names still routes.
+        // A cache written with differently cased or aliased category names still routes.
         for m in d.data.values_mut() {
             m.categories = super::normalise_categories(&m.categories);
             for t in &mut m.tools {

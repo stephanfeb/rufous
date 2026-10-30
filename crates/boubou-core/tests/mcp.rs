@@ -74,8 +74,8 @@ fn expose_parser_matches_mingbird() {
 #[test]
 fn server_categories_filter_unknown_tags_and_unknown_keys_are_ignored() {
     let c = cfg(
-        // Mingbird's Chinese tag for "web" (\u{7f51}\u{7edc}) and a capitalised English one both normalise.
-        json!({"command": "x", "categories": ["\u{7f51}\u{7edc}", "Files", "bogus"], "disabled": false, "type": "stdio"}),
+        // The `network` alias and a capitalised English tag both normalise.
+        json!({"command": "x", "categories": ["Network", "Files", "bogus"], "disabled": false, "type": "stdio"}),
     );
     assert_eq!(c.server_categories(), vec!["web", "files"]);
     assert_eq!(c.unknown_categories(), vec!["bogus"]);
