@@ -60,9 +60,10 @@ The repositories split when two of these three hold:
 `crates/boubou-kernel/src/agent/policy.rs`. `RunParams::policy` replaces the old
 `RunParams::interactive` boolean. A child run (`AGENT_CHILD_SANDBOX=1`) always runs
 `unattended`. At the start of a turn the loop calls `policy.turn(intent, child, ablated)`
-once and gets a `Turn`: the `Route` (task, question, follow-up) and the switches derived
-from it (`working`, `finish_gates`, `plan_gates`, `dispatch`). From there the loop reads
-those names and never recombines the inputs.
+once and gets a `Turn`: the `Route` (task, question, follow-up), the `Prompt` that frames
+the turn (task, chat, child) and the switches derived from the route (`working`,
+`finish_gates`, `plan_gates`, `dispatch`). From there the loop reads those names and never
+recombines the inputs; the system prompt is built in one place from `Turn::prompt`.
 
 | Field | On | Off |
 |---|---|---|
@@ -91,8 +92,6 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
   narrowed tool face are safety, and stay where they are; "never Q&A, never dispatch, batch
   gates" is a policy and is already expressed as `unattended`; the child system prompt is
   prompt selection (next item).
-- **Prompt selection** (`agent/prompt.rs`, chosen in `run.rs`): task, Q&A or child system
-  prompt, decided from `qa`, `child` and the profile rather than from the policy.
 - **The finish gates as one block**: `finish_gates` is all or nothing. The coding product
   will want some of them (a deliverable the user named is missing) and not others (running
   the project's test suite on every `finish`). Each gate needs a name and the policy a list.
@@ -113,7 +112,7 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 | 2 | Crates mirror the repositories: `boubou-core` → `boubou-kernel`, `boubou-web` → `boubou-general`, `boubou-acp` → `boubou-coding` | the workspace builds and tests under the new names; the kernel depends on no product crate | done |
 | 3 | `boubou chat` runs `general`; `chat_mode` removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | done |
 | 4 | The intent route is a value the policy derives from the decider's intent (`Route`, and `Turn` for the derived switches) | the route read in fewer than ten places in `run.rs`; no `!child && policy.x && intent == …` expressions | done |
-| 5 | System prompt chosen from the policy and the route | `run.rs` no longer branches on `child` or `qa` to pick a prompt | open |
+| 5 | System prompt chosen from the policy and the route (`Turn::prompt`, `Prompt::rebuild`) | `run.rs` no longer branches on `child` or `qa` to pick a prompt | done |
 | 6 | The finish gates are named units the policy lists | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | open |
 | 7 | `child_mode` split: sandbox and tool face stay as safety; the rest is `unattended` plus the child prompt | `run.rs` reads `child` only where the sandbox or the dispatch receipt needs it | open |
 | 8 | Kernel boundary inside `boubou-kernel`: the ladders, salvage, compaction and corrector are a module the policy-driven loop calls | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | open |

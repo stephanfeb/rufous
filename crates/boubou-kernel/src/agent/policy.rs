@@ -33,12 +33,50 @@ pub enum Route {
     FollowUp,
 }
 
+/// Which system prompt frames a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prompt {
+    /// The task prompt: the static prefill, the workdir's `SYSTEM.md`, the skills matched
+    /// on the task, the profile note, the platform block.
+    Task,
+    /// The chat prompt for the question route: answer briefly, tools only to look things up.
+    Chat,
+    /// A dispatched child's sandbox prompt: one mechanical task, no skills, no `SYSTEM.md`.
+    Child,
+}
+
+impl Prompt {
+    pub fn name(self) -> &'static str {
+        match self {
+            Prompt::Task => "task",
+            Prompt::Chat => "chat",
+            Prompt::Child => "child",
+        }
+    }
+
+    /// Whether the turn rebuilds its system prompt instead of keeping what the history
+    /// carries. The chat prompt is rebuilt every turn (a continued session would otherwise
+    /// keep the previous turn's task prompt). The task prompt is rebuilt only for a
+    /// continued session: a fresh run already carries it, and on a continued one the
+    /// previous turn may have left the chat prompt (bead boubou-c4b) and the skills are
+    /// matched on this turn's input too. A child's prompt is fixed.
+    pub fn rebuild(self, continued: bool) -> bool {
+        match self {
+            Prompt::Chat => true,
+            Prompt::Task => continued,
+            Prompt::Child => false,
+        }
+    }
+}
+
 /// What the harness does on one turn: the policy applied to the decider's intent, child
 /// mode and the bench's ablations, derived once by [`TurnPolicy::turn`] and read by name.
 /// The loop reads these fields; it never recombines the inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Turn {
     pub route: Route,
+    /// The system prompt that frames the turn.
+    pub prompt: Prompt,
     /// The model is working a task rather than answering: budget pacing, the stale-plan
     /// reminder, the plan note on compaction, small-model rewrite mode and the corrector
     /// apply.
@@ -133,8 +171,16 @@ impl TurnPolicy {
         let route = self.route(intent, child);
         let working = route != Route::Question;
         let finish_gates = working && self.finish_gates && !gates_ablated;
+        let prompt = if child {
+            Prompt::Child
+        } else if route == Route::Question {
+            Prompt::Chat
+        } else {
+            Prompt::Task
+        };
         Turn {
             route,
+            prompt,
             working,
             finish_gates,
             plan_gates: finish_gates && !child,
@@ -169,7 +215,7 @@ impl Default for TurnPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::{Intent, Route, Turn, TurnPolicy};
+    use super::{Intent, Prompt, Route, Turn, TurnPolicy};
 
     #[test]
     fn the_two_product_presets_are_equal_until_they_diverge() {
@@ -206,6 +252,7 @@ mod tests {
             u.turn(Intent::Task, false, false),
             Turn {
                 route: Route::Task,
+                prompt: Prompt::Task,
                 working: true,
                 finish_gates: true,
                 plan_gates: true,
@@ -217,6 +264,7 @@ mod tests {
             u.turn(Intent::Question, false, false),
             Turn {
                 route: Route::Question,
+                prompt: Prompt::Chat,
                 working: false,
                 finish_gates: false,
                 plan_gates: false,
@@ -232,6 +280,7 @@ mod tests {
             u.turn(Intent::Task, true, false),
             Turn {
                 route: Route::Task,
+                prompt: Prompt::Child,
                 working: true,
                 finish_gates: true,
                 plan_gates: false,
@@ -244,6 +293,27 @@ mod tests {
         // A conversation: working, nothing gated, nothing dispatched.
         let g = TurnPolicy::general().turn(Intent::Question, false, false);
         assert!(g.route == Route::Task && g.working && !g.finish_gates && !g.dispatch);
+    }
+
+    #[test]
+    fn the_prompt_follows_the_route_and_a_child_keeps_its_own() {
+        let u = TurnPolicy::unattended();
+        assert_eq!(u.turn(Intent::Task, false, false).prompt, Prompt::Task);
+        assert_eq!(u.turn(Intent::FollowUp, false, false).prompt, Prompt::Task);
+        assert_eq!(u.turn(Intent::Question, false, false).prompt, Prompt::Chat);
+        assert_eq!(u.turn(Intent::Question, true, false).prompt, Prompt::Child);
+        // A conversation or an editor turn: the task prompt for a question too, so an
+        // instruction phrased as a question keeps the producing tools.
+        assert_eq!(
+            TurnPolicy::general()
+                .turn(Intent::Question, false, false)
+                .prompt,
+            Prompt::Task
+        );
+        // Rebuilding: chat every turn, task on a continued session, child never.
+        assert!(Prompt::Chat.rebuild(false) && Prompt::Chat.rebuild(true));
+        assert!(!Prompt::Task.rebuild(false) && Prompt::Task.rebuild(true));
+        assert!(!Prompt::Child.rebuild(false) && !Prompt::Child.rebuild(true));
     }
 
     #[test]

@@ -25,7 +25,7 @@ use super::history::{
     prune_history, similar, workdir_files_text, PRUNE_AT,
 };
 use super::openai::OpenAiBackend;
-use super::policy::{Route, TurnPolicy};
+use super::policy::{Prompt, Route, TurnPolicy};
 use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
@@ -35,6 +35,7 @@ use crate::exec::Executor;
 use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
 use crate::guards::idle;
+use crate::guards::qa::Intent;
 use crate::guards::qa::DISPATCH_NOTE_MARK;
 use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
@@ -300,6 +301,22 @@ fn task_system(params: &RunParams, skill_dirs: &[PathBuf], sink: &mut Sink, task
     prompt::system_prompt(&opts)
 }
 
+/// The system prompt the turn's [`Prompt`] names. `task` is the text skills are matched on
+/// (the task prompt only).
+fn system_for(
+    which: Prompt,
+    params: &RunParams,
+    skill_dirs: &[PathBuf],
+    sink: &mut Sink,
+    task: &str,
+) -> String {
+    match which {
+        Prompt::Task => task_system(params, skill_dirs, sink, task),
+        Prompt::Chat => prompt::chat_system(Some(&params.workdir)),
+        Prompt::Child => prompt::child_system(Some(&params.workdir)),
+    }
+}
+
 /// The loop plus everything it owns between runs: tool face, transcript cursor, backend.
 pub struct Agent<B, T> {
     pub params: RunParams,
@@ -471,14 +488,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
     /// task (or that autoload) and the workdir's `SYSTEM.md` enter the system prompt here.
     /// A continued session rebuilds the prompt per turn in [`Agent::run`] from the route.
     pub fn task_messages(&mut self, task: &str) -> Vec<Message> {
-        if self.params.child_mode {
-            // A dispatched child: the minimal prompt, no platform block.
-            return vec![
-                Message::system(prompt::child_system(Some(&self.params.workdir))),
-                Message::user(task),
-            ];
-        }
-        let sys = task_system(&self.params, &self.skill_dirs, &mut self.sink, task);
+        // The opening turn of a fresh run is a task; the policy says which prompt frames it
+        // (a dispatched child gets its sandbox prompt).
+        let which = self
+            .params
+            .policy
+            .turn(Intent::Task, self.params.child_mode, false)
+            .prompt;
+        let sys = system_for(which, &self.params, &self.skill_dirs, &mut self.sink, task);
         vec![Message::system(sys), Message::user(task)]
     }
 
@@ -675,36 +692,31 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let plan_dir_for_notes: Option<&Path> = turn.working.then_some(hdir);
         let mut acted_this_turn = false;
         let mut follow_up_nudged = false;
-        // The system prompt follows the route, every turn. A continued session (the web UI
-        // appends the new user turn to the saved history) otherwise keeps whatever the
-        // previous turn left: after a question that is the chat prompt, and a task turn
-        // would then run "answer briefly, use tools only to look something up" under the
-        // task-mode guards and finish gates (bead boubou-c4b). A fresh run already carries
-        // the task prompt from `task_messages`; children keep their sandbox prompt.
+        // The system prompt follows the turn (`Turn::prompt`), rebuilt when the policy says
+        // so (`Prompt::rebuild`): a continued session (the web UI appends the new user turn
+        // to the saved history) would otherwise keep whatever the previous turn left.
         let continued = messages.iter().any(|m| m.role == Role::Assistant);
-        let cats: Option<BTreeSet<String>> = if turn.route == Route::Question {
-            let cs = prompt::chat_system(Some(workdir));
-            let mut m = vec![Message::system(cs)];
+        if turn.prompt.rebuild(continued) {
+            // Skills are matched on the opening task and on this turn's input, so a skill
+            // prefilled for the original brief stays and a new trigger can add one.
+            let skill_text = format!(
+                "{}\n{}",
+                first_user_text(&messages),
+                qa::task_routing_text(&messages)
+            );
+            let sys = system_for(turn.prompt, params, skill_dirs, sink, &skill_text);
+            let mut m = vec![Message::system(sys)];
             m.extend(messages.into_iter().filter(|m| m.role != Role::System));
             messages = m;
-            None
-        } else {
-            if !child && continued {
-                // Skills are matched on the opening task and on this turn's input, so a
-                // skill prefilled for the original brief stays and a new trigger can add one.
-                let skill_text = format!(
-                    "{}\n{}",
-                    first_user_text(&messages),
-                    qa::task_routing_text(&messages)
-                );
-                let sys = task_system(params, skill_dirs, sink, &skill_text);
-                let mut m = vec![Message::system(sys)];
-                m.extend(messages.into_iter().filter(|m| m.role != Role::System));
-                messages = m;
-                log!("[prompt] task prompt rebuilt for this turn of a continued session");
-            }
-            Some(face::route_categories(&qa::task_routing_text(&messages)))
-        };
+            log!(
+                "[prompt] {} prompt rebuilt for this turn",
+                turn.prompt.name()
+            );
+        }
+        // The tool face: the chat tool set on the question route, category routing on the
+        // task's text otherwise.
+        let cats: Option<BTreeSet<String>> = (turn.route != Route::Question)
+            .then(|| face::route_categories(&qa::task_routing_text(&messages)));
         // Parallel dispatch hook (harness layer; Q&A, children and editor turns skip it, the
         // hook itself re-checks the child, kill-switch and receipt gates). A fresh task with a
         // plan already on disk dispatches here; a resumed run (tool results in the history)
