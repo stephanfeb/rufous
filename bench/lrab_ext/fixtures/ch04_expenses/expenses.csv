@@ -1,0 +1,78 @@
+date,category,description,amount
+2026-01-02,travel,conference travel,318.00
+2026-01-03,office,printer paper,85.00
+2026-01-05,meals,late working dinner,149.50
+2026-01-05,office,desk lamp,318.00
+2026-01-11,software,error tracking,39.00
+2026-01-18,travel,taxi from airport,120.00
+2026-01-21,software,error tracking,149.50
+2026-01-24,meals,client dinner,210.00
+2026-02-11,travel,train to Manchester,318.00
+2026-02-15,meals,team lunch,24.50
+2026-02-16,travel,taxi from airport,24.50
+2026-02-20,software,CI minutes,85.00
+2026-02-21,office,desk lamp,85.00
+2026-02-22,office,coffee beans,149.50
+2026-02-24,meals,client dinner,85.00
+2026-02-25,software,design tool seats,318.00
+2026-03-03,meals,late working dinner,210.00
+2026-03-03,software,design tool seats,120.00
+2026-03-04,software,design tool seats,39.00
+2026-03-08,office,printer paper,85.00
+2026-03-14,meals,late working dinner,39.00
+2026-03-16,office,printer paper,318.00
+2026-03-19,travel,conference travel,85.00
+2026-03-19,travel,hotel for two nights,455.00
+2026-04-02,office,whiteboard markers,39.00
+2026-04-07,travel,flight to Berlin,39.00
+2026-04-08,travel,taxi from airport,149.50
+2026-04-12,office,desk lamp,149.50
+2026-04-15,meals,team lunch,455.00
+2026-04-17,software,IDE licences,120.00
+2026-04-27,meals,team lunch,210.00
+2026-04-27,software,error tracking,149.50
+2026-04-28,travel,taxi from airport,39.00
+2026-05-07,software,IDE licences,39.00
+2026-05-12,office,desk lamp,149.50
+2026-05-12,travel,taxi from airport,50.70
+2026-05-13,travel,taxi from airport,31.85
+2026-05-19,office,desk lamp,318.00
+2026-05-20,travel,hotel for two nights,413.40
+2026-05-23,travel,flight to Berlin,273.00
+2026-05-23,travel,hotel for two nights,110.50
+2026-05-24,meals,client dinner,455.00
+2026-05-24,software,error tracking,149.50
+2026-05-28,meals,client dinner,149.50
+2026-06-05,software,design tool seats,149.50
+2026-06-06,office,printer paper,149.50
+2026-06-06,travel,hotel for two nights,39.00
+2026-06-08,meals,team lunch,149.50
+2026-06-11,software,CI minutes,85.00
+2026-06-13,office,printer paper,24.50
+2026-06-18,meals,client dinner,24.50
+2026-06-22,travel,conference travel,210.00
+2026-06-27,travel,train to Manchester,210.00
+2026-07-02,meals,team lunch,149.50
+2026-07-03,travel,train to Manchester,39.00
+2026-07-06,meals,late working dinner,24.50
+2026-07-15,office,whiteboard markers,318.00
+2026-07-18,software,CI minutes,455.00
+2026-07-20,office,desk lamp,120.00
+2026-07-21,software,CI minutes,85.00
+2026-07-25,travel,hotel for two nights,120.00
+2026-08-05,travel,train to Manchester,120.00
+2026-08-09,travel,taxi from airport,39.00
+2026-08-10,software,CI minutes,120.00
+2026-08-16,software,design tool seats,24.50
+2026-08-18,office,whiteboard markers,455.00
+2026-08-20,office,desk lamp,210.00
+2026-08-22,meals,late working dinner,318.00
+2026-08-26,meals,late working dinner,85.00
+2026-09-02,meals,client dinner,24.50
+2026-09-03,software,CI minutes,24.50
+2026-09-09,office,printer paper,24.50
+2026-09-17,meals,late working dinner,39.00
+2026-09-23,travel,conference travel,318.00
+2026-09-27,software,error tracking,455.00
+2026-09-27,travel,hotel for two nights,210.00
+2026-09-28,office,desk lamp,24.50

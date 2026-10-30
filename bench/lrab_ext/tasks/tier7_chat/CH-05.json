@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 7 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CH-05",
+  "domain": "chat-small-talk-no-tools",
+  "tier": 7,
+  "fixtures": [
+    "fixtures/ch05_hello/README.md",
+    "fixtures/ch05_hello/check_untouched.py",
+    "fixtures/ch05_hello/data.csv",
+    "fixtures/ch05_hello/notes.txt"
+  ],
+  "prompt": "Hi! I'm new here. What can you help me with in this folder?",
+  "milestones": [
+    {
+      "artifact": "reply.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "reply.md",
+      "check": "min_words",
+      "params": {
+        "min_words": 15
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "README.md",
+      "check": "script_pass",
+      "params": {
+        "command": "python check_untouched.py",
+        "expect_stdout": "UNTOUCHED OK",
+        "timeout_s": 120
+      }
+    },
+    {
+      "artifact": "README.md",
+      "check": "script_pass",
+      "params": {
+        "command": "python check_untouched.py",
+        "expect_stdout": "NO NEW FILES",
+        "timeout_s": 120
+      }
+    }
+  ]
+}

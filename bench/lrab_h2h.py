@@ -16,17 +16,26 @@ Usage (the mingbird arm needs `requests` and `beautifulsoup4` in the interpreter
                                                 # Boubou-side tiers (context pressure), AGENT_CTX sweep
   python bench/lrab_h2h.py --model qwen3.5:9b,gemma4:12b --think on,off --ctx 16384
                                                 # serving sweep: every (model, think, ctx) cell is recorded
+  python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier6_editor,tier7_chat \
+                           --policy general,coding
+                                                # turn-policy sweep (docs/refactor.md step 10): the task file
+                                                # is the one message of a web chat / an editor turn
 Hidden scorer tests: bench/lrab_ext/hidden/<task_id>/overlay.json (WF-04, LH-03; gen_hidden.py)
 is copied into the workdir only after the agent has finished and scored with the same scorer;
 score.json gets hidden_score / hidden_details / total_hidden (total with the hidden checks in the
 final group), the summary shows `h=` next to the total. `--hidden ""` disables the overlay.
 
-Sweep axes (--model, --ctx, --think, each a comma list) are recorded in score.json["axes"] and in
-the run id (_m<tag>, _c16k, _t<on|off>, each only when that axis is swept); the summary labels rows
+Sweep axes (--model, --ctx, --think, --policy, each a comma list) are recorded in score.json["axes"]
+and in the run id (_m<tag>, _c16k, _t<on|off>, _p<policy>, each only when that axis is swept); the summary labels rows
 task@<the axes that vary in the results dir> and prints the constant ones once.
 Every cell also gets process metrics (tool calls, peak prompt tokens, guard firings, integrity;
 see process_metrics.py) under score.json["process"], and the summary reports per-arm means with
 a bootstrap 95% CI over tasks when there is more than one replication.
+
+--policy runs `boubou run --policy <name>` (boubou arm only): `unattended` is the batch harness,
+`general` and `coding` the product presets, under which a text reply ends the run. For those
+cells the final reply (the last assistant text, else the `finish` summary) is written to
+`reply.md` in the workdir before scoring, so a task can check an answer the way it checks a file.
 
 Env: MINGBIRD_ROOT (default: sibling `../Mingbird-agent`), BOUBOU_BIN (default: PATH, then
 this checkout's target/release then target/debug), AGENT_CTX / AGENT_SLIM_OUTPUT pass through.
@@ -106,10 +115,13 @@ def axes_env(env, ctx=None, think=None):
     return env
 
 
-def boubou_cmd(workdir, model, ctx=None, think=None):
+POLICIES = ("unattended", "general", "coding")
+
+
+def boubou_cmd(workdir, model, ctx=None, think=None, policy=None):
     """Same contract and env as Mingbird's `_cmd_mingbird`; no --new so phase 2 of a
     kill-resume run continues from .agent_state.json. `ctx` / `think` override AGENT_CTX /
-    AGENT_THINK for the cell."""
+    AGENT_THINK for the cell; `policy` adds `--policy <name>` (unset = the batch harness)."""
     env = dict(os.environ)
     env.pop("AGENT_STREAM", None)
     env["BOUBOU_HOME"] = BENCH_HOME
@@ -120,7 +132,46 @@ def boubou_cmd(workdir, model, ctx=None, think=None):
     env["AGENT_UNATTENDED"] = "1"
     env.setdefault("PYTHONUTF8", "1")
     ensure_python_on_path(env)
-    return [boubou_exe(), "run", model, os.path.join(workdir, "task_input.txt"), workdir], env
+    cmd = [boubou_exe(), "run", model, os.path.join(workdir, "task_input.txt"), workdir]
+    if policy:
+        cmd += ["--policy", policy]
+    return cmd, env
+
+
+def final_reply(messages):
+    """The run's answer from a saved message list: the last assistant text, or the summary of
+    the last `finish` call when the model ended with the tool instead of text."""
+    for m in reversed(messages):
+        if m.get("role") != "assistant":
+            continue
+        if (m.get("content") or "").strip():
+            return m["content"].strip()
+        for call in m.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            if fn.get("name") == "finish":
+                args = fn.get("arguments") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        return args.strip() or None
+                return (str(args.get("summary") or "")).strip() or None
+    return None
+
+
+def write_reply(workdir):
+    """Under a product policy the answer may be text rather than a file: copy the final reply
+    from the checkpoint to `reply.md` so the scorer can check it. Returns the text or None."""
+    ckpt = os.path.join(workdir, ".agent_state.json")
+    try:
+        messages = json.load(open(ckpt, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    reply = final_reply(messages) if isinstance(messages, list) else None
+    if reply:
+        with open(os.path.join(workdir, "reply.md"), "w", encoding="utf-8") as f:
+            f.write(reply + "\n")
+    return reply
 
 
 def ensure_python_on_path(env):
@@ -175,9 +226,9 @@ def _run_phase(cmd, env, cwd, timeout_s):
         return -9, out or "", err or "", time.time() - t0, True
 
 
-def run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx=None, think=None):
+def run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx=None, think=None, policy=None):
     """Returns (rc, stdout, stderr, wall, meta). meta mirrors run_bench's resume dict."""
-    cmd, env = boubou_cmd(workdir, model, ctx, think)
+    cmd, env = boubou_cmd(workdir, model, ctx, think, policy)
     budget = timeout_min * 60
     if not kill_at_pct:
         rc, out, err, wall, timed_out = _run_phase(cmd, env, workdir, budget)
@@ -300,22 +351,24 @@ def apply_hidden(score, task, workdir, overlay, scorer=None):
     return score
 
 
-def cell_axes(model, ctx, think):
+def cell_axes(model, ctx, think, policy=None):
     """The serving axes of one cell, as recorded in score.json["axes"]."""
     return {"model": model, "ctx": int(ctx) if ctx else int(os.environ.get("AGENT_CTX", "32768")),
-            "think": think or "default"}
+            "think": think or "default", "policy": policy or "unattended"}
 
 
 def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge,
-                   task_root=LRAB, ctx=None, think=None, overlay=None):
+                   task_root=LRAB, ctx=None, think=None, overlay=None, policy=None):
     workdir = os.path.join(out_dir, "workdir")
     prepare_workdir(task, workdir, task_root)
-    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx, think)
+    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx, think, policy)
     with open(os.path.join(out_dir, "transcript.txt"), "w", encoding="utf-8") as f:
         f.write(out)
         if err:
             f.write("\n--- STDERR ---\n" + err)
-    axes = cell_axes(model, ctx, think)
+    if policy and policy != "unattended":
+        write_reply(workdir)
+    axes = cell_axes(model, ctx, think, policy)
     base = {"task_id": task["id"], "agent": "boubou", "model": model,
             "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id,
             "ctx": axes["ctx"], "axes": axes}
@@ -385,9 +438,9 @@ def model_slug(model):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", model)
 
 
-def cell_run_id(arm, task_id, model, ctx, think, rep, swept):
+def cell_run_id(arm, task_id, model, ctx, think, rep, swept, policy=None):
     """`<arm>_<task>` plus one suffix per swept axis (model when several models are listed,
-    ctx and think when given on the command line) and `_r<n>` for replications."""
+    ctx, think and policy when given on the command line) and `_r<n>` for replications."""
     rid = f"{arm}_{task_id}"
     if "model" in swept:
         rid += f"_m{model_slug(model)}"
@@ -395,19 +448,21 @@ def cell_run_id(arm, task_id, model, ctx, think, rep, swept):
         rid += ctx_suffix(ctx)
     if think:
         rid += f"_t{think}"
+    if policy:
+        rid += f"_p{policy}"
     if rep is not None:
         rid += f"_r{rep}"
     return rid
 
 
-AXES = ("model", "ctx", "think")
+AXES = ("model", "ctx", "think", "policy")
 
 
 def axes_of(d):
     """A scored cell's axes, also for score.json written before axes were recorded."""
     a = d.get("axes") or {}
     return {"model": a.get("model", d.get("model")), "ctx": a.get("ctx", d.get("ctx")),
-            "think": a.get("think", "default")}
+            "think": a.get("think", "default"), "policy": a.get("policy", "unattended")}
 
 
 def axis_value(axis, value):
@@ -557,6 +612,9 @@ def main():
                     help="comma list of AGENT_CTX values to sweep; run ids get _c16k etc.")
     ap.add_argument("--think", default="",
                     help="comma list of on,off to sweep AGENT_THINK (unset = the model profile's default)")
+    ap.add_argument("--policy", default="",
+                    help="comma list of unattended, general, coding: the turn policy `boubou run` uses for "
+                         "the cell (boubou arm only; unset = unattended); run ids get _pcoding etc.")
     ap.add_argument("--tasks", default="", help="comma list of task ids to restrict to")
     ap.add_argument("--heldout", action="store_true", help="use tasks_heldout instead of tasks")
     ap.add_argument("--results", default=os.path.join(BOUBOU_ROOT, "bench", "results", "lrab_h2h"))
@@ -592,28 +650,34 @@ def main():
     thinks = [t.strip() for t in a.think.split(",") if t.strip()] or [None]
     if any(t not in ("on", "off") for t in thinks if t):
         sys.exit("--think takes on, off or on,off")
+    policies = [p.strip() for p in a.policy.split(",") if p.strip()] or [None]
+    if any(p not in POLICIES for p in policies if p):
+        sys.exit("--policy takes a comma list of " + ", ".join(POLICIES))
+    if any(policies) and "mingbird" in arms:
+        sys.exit("the mingbird arm has no turn policies, so --policy runs with --arms boubou only")
     swept = {"model"} if len(models) > 1 else set()
     cells = []
     for rep in range(a.reps):
         for model in models:
             for think in thinks:
                 for ctx in ctxs:
-                    for ti, (task_path, task) in enumerate(tasks):
-                        arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
-                        for arm in arm_order:
-                            cells.append((rep, model, think, ctx, task_path, task, arm))
-    for rep, model, think, ctx, task_path, task, arm in cells:
+                    for policy in policies:
+                        for ti, (task_path, task) in enumerate(tasks):
+                            arm_order = arms if (ti + rep) % 2 == 0 else arms[::-1]
+                            for arm in arm_order:
+                                cells.append((rep, model, think, ctx, policy, task_path, task, arm))
+    for rep, model, think, ctx, policy, task_path, task, arm in cells:
         kill_at = a.kill_at_pct if a.kill_at_pct is not None else task.get("kill_at_pct")
         budget = a.timeout_min
-        run_id = cell_run_id(arm, task["id"], model, ctx, think, rep if a.reps > 1 else None, swept)
+        run_id = cell_run_id(arm, task["id"], model, ctx, think, rep if a.reps > 1 else None, swept, policy)
         out_dir = os.path.join(a.results, run_id)
         if os.path.exists(os.path.join(out_dir, "score.json")):
             print(f"skip {run_id} (scored)", flush=True)
             continue
         if a.dry_run:
-            axes_txt = " ".join(f"{k}={v}" for k, v in cell_axes(model, ctx, think).items())
+            axes_txt = " ".join(f"{k}={v}" for k, v in cell_axes(model, ctx, think, policy).items())
             if arm == "boubou":
-                cmd, env = boubou_cmd(os.path.join(out_dir, "workdir"), model, ctx, think)
+                cmd, env = boubou_cmd(os.path.join(out_dir, "workdir"), model, ctx, think, policy)
                 print(run_id, axes_txt, f"AGENT_THINK={env.get('AGENT_THINK', '(unset)')}", cmd)
             else:
                 print(run_id, axes_txt, "run_bench.py --agent mingbird --task", task_path)
@@ -621,12 +685,13 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
         print(f"### {run_id} start {time.strftime('%H:%M:%S')} budget={budget}m model={model}"
               + (f" ctx={ctx}" if ctx else "") + (f" think={think}" if think else "")
+              + (f" policy={policy}" if policy else "")
               + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
         t0 = time.time()
         overlay = load_overlay(a.hidden, task["id"])
         if arm == "boubou":
             sc = run_boubou_arm(task_path, task, model, out_dir, run_id, budget, kill_at, a.judge,
-                                task_root, ctx, think, overlay)
+                                task_root, ctx, think, overlay, policy)
         else:
             with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:
                 sc = run_mingbird_arm(task_path, task, model, a.results, run_id, budget, kill_at, a.judge, log,
@@ -635,7 +700,7 @@ def main():
                 apply_hidden(sc, task, os.path.join(out_dir, "workdir"), overlay)
         if sc:
             # Axes are recorded for both arms (Mingbird's runner knows nothing of them).
-            sc["axes"] = cell_axes(model, ctx, think)
+            sc["axes"] = cell_axes(model, ctx, think, policy)
             sc["ctx"] = sc["axes"]["ctx"]
             if a.reps > 1:
                 sc["rep"] = rep

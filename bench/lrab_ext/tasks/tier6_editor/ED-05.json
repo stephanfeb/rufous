@@ -1,0 +1,57 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 6 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "ED-05",
+  "domain": "editor-explain-without-changing",
+  "tier": 6,
+  "fixtures": [
+    "fixtures/ed05_duration/check_collateral.py",
+    "fixtures/ed05_duration/duration.py",
+    "fixtures/ed05_duration/test_duration.py"
+  ],
+  "prompt": "Why does parse_duration('1h30') in duration.py return None when parse_duration('1h30m')\ngives 90? Don't change any files, just explain what is happening.",
+  "milestones": [
+    {
+      "artifact": "duration.py",
+      "check": "script_pass",
+      "params": {
+        "command": "python check_collateral.py",
+        "expect_stdout": "COLLATERAL OK",
+        "timeout_s": 120
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "reply.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "reply.md",
+      "check": "contains_any",
+      "params": {
+        "any_of": [
+          "fullmatch",
+          "suffix",
+          "regex",
+          "regular expression",
+          "pattern",
+          "requires the m",
+          "requires an m",
+          "needs the m",
+          "needs an m",
+          "without the m",
+          "without an m",
+          "'m'",
+          "\"m\"",
+          "`m`"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 7 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CH-02",
+  "domain": "chat-summarise-to-file",
+  "tier": 7,
+  "fixtures": [
+    "fixtures/ch01_notes/notes"
+  ],
+  "prompt": "Summarise the meeting notes in notes/ into brief.md: one page, with every decision, its owner and its date.",
+  "milestones": [
+    {
+      "artifact": "brief.md",
+      "check": "exists"
+    },
+    {
+      "artifact": "brief.md",
+      "check": "min_words",
+      "params": {
+        "min_words": 80
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "brief.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "Postgres"
+          ],
+          [
+            "OpenSearch"
+          ],
+          [
+            "on-call",
+            "on call",
+            "rota"
+          ],
+          [
+            "freeze",
+            "Freeze"
+          ]
+        ],
+        "min_ratio": 0.75
+      }
+    },
+    {
+      "artifact": "brief.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "Priya"
+          ],
+          [
+            "Tomasz"
+          ],
+          [
+            "Mei"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    }
+  ]
+}

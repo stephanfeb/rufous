@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lrab_ext"))
 import gen_pressure  # noqa: E402
+import gen_surface  # noqa: E402
 import lrab_h2h  # noqa: E402
 import process_metrics as pm  # noqa: E402
 
@@ -37,10 +38,13 @@ def same_tree(a, b):
 
 
 def test_generator_is_deterministic_and_matches_checked_in_tier(tmp_path):
-    gen_pressure.generate(str(tmp_path / "a"))
-    gen_pressure.generate(str(tmp_path / "b"))
+    # The checked-in tree is the output of the two generators (gen_surface.py adds the
+    # surface tiers and their fixtures beside these).
+    for root in ("a", "b"):
+        gen_pressure.generate(str(tmp_path / root))
+        gen_surface.generate(str(tmp_path / root))
     assert same_tree(str(tmp_path / "a"), str(tmp_path / "b"))
-    assert same_tree(str(tmp_path / "a" / "fixtures"), FIX), "fixtures drifted from the generator: rerun gen_pressure.py"
+    assert same_tree(str(tmp_path / "a" / "fixtures"), FIX), "fixtures drifted from the generators: rerun gen_pressure.py and gen_surface.py"
     assert same_tree(str(tmp_path / "a" / "tasks"), os.path.join(EXT, "tasks"))
 
 
@@ -125,7 +129,7 @@ def test_cp04_every_scorer_key_matches_exactly_one_decision_line():
 
 
 def test_driver_lists_custom_root_and_resolves_fixtures_against_it(tmp_path):
-    assert lrab_h2h.tiers_under(EXT) == ["tier5_context"]
+    assert lrab_h2h.tiers_under(EXT) == ["tier5_context", "tier6_editor", "tier7_chat"]
     tasks = lrab_h2h.list_tasks(["tier5_context"], set(), False, EXT)
     assert [t["id"] for _p, t in tasks] == ["CP-01", "CP-02", "CP-03", "CP-04"]
     _p, cp03 = tasks[2]
@@ -187,7 +191,7 @@ def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
     assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", None, None, None, set()) == "boubou_WF-01"
     assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", 16384, "off", 2, {"model"}) \
         == "boubou_WF-01_mqwen3.5-9b_c16k_toff_r2"
-    assert lrab_h2h.cell_axes("qwen3.5:9b", None, None) == {"model": "qwen3.5:9b", "ctx": int(os.environ.get("AGENT_CTX", "32768")), "think": "default"}
+    assert lrab_h2h.cell_axes("qwen3.5:9b", None, None) == {"model": "qwen3.5:9b", "ctx": int(os.environ.get("AGENT_CTX", "32768")), "think": "default", "policy": "unattended"}
     # Two models × think on/off at one ctx: the summary labels rows by model and think only.
     for model, think, total in (("qwen3.5:9b", "on", 0.9), ("qwen3.5:9b", "off", 0.5),
                                 ("gemma4:12b", "on", 0.7), ("gemma4:12b", "off", 0.6)):
@@ -198,12 +202,12 @@ def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
                    "process": {"tool_calls": 3, "peak_prompt_tokens": 100}},
                   open(tmp_path / rid / "score.json", "w"))
     text = lrab_h2h.summary(str(tmp_path))
-    assert text.startswith("axes: ctx=16k; varying: model, think")
+    assert text.startswith("axes: ctx=16k, policy=unattended; varying: model, think")
     assert "think=think" not in text
     assert "| WF-01@qwen3.5:9b think=on | — | 0.90" in text
     assert "| WF-01@gemma4:12b think=off | — | 0.60" in text
     # A score.json from before axes were recorded still groups by its top-level ctx.
     old = {"task_id": "CP-01", "agent": "boubou", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
            "model": "qwen3.5:9b", "failure_mode": "completed", "process": {}}
-    assert lrab_h2h.axes_of(old) == {"model": "qwen3.5:9b", "ctx": 8192, "think": "default"}
+    assert lrab_h2h.axes_of(old) == {"model": "qwen3.5:9b", "ctx": 8192, "think": "default", "policy": "unattended"}
     assert lrab_h2h.row_key(old, ["ctx"]) == "CP-01@8k"

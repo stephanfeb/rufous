@@ -91,6 +91,27 @@ fn skills_lists_a_workspace_skill() {
 }
 
 #[test]
+fn run_policy_takes_the_three_names_only() {
+    // `--policy` is the bench's switch between the batch harness and a product's turn
+    // policy; a name that is not one of the three is refused before anything starts.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("task.txt"), "say hi").expect("write");
+    let o = boubou(
+        d.path(),
+        d.path(),
+        &["run", "m", "task.txt", ".", "--policy", "editor"],
+    );
+    assert!(!o.status.success());
+    let t = text(&o);
+    assert!(
+        t.contains("invalid value 'editor'") && t.contains("coding"),
+        "{t}"
+    );
+    let o = boubou(d.path(), d.path(), &["run", "--help"]);
+    assert!(text(&o).contains("--policy <POLICY>"), "{}", text(&o));
+}
+
+#[test]
 fn plan_reports_capacity_without_spawning() {
     let d = tempfile::tempdir().expect("tmp");
     let o = boubou(d.path(), d.path(), &["plan"]);

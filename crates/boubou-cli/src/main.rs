@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use boubou_kernel::agent::chat::model_can_think;
 use boubou_kernel::agent::openai;
 use boubou_kernel::agent::session::{self, load_checkpoint, load_session, sessions_dir};
-use boubou_kernel::agent::{Agent, AgentEvent, RunParams};
+use boubou_kernel::agent::{Agent, AgentEvent, RunParams, TurnPolicy};
 use boubou_kernel::config::{agent_home, config_path, Config};
 use boubou_kernel::guards::budget::{
     elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
@@ -55,6 +55,11 @@ enum Cmd {
         /// Time budget in minutes, or with a unit: `40`, `1.5h`, `90m`, `half an hour`.
         #[arg(long = "time-budget")]
         time_budget: Option<String>,
+        /// The turn policy and skills to run the task under: `unattended` is the batch
+        /// harness; `general` and `coding` run the task file as the one message of a web
+        /// chat or an editor turn, for the bench (docs/refactor.md, step 10).
+        #[arg(long, default_value = "unattended", value_parser = ["unattended", "general", "coding"])]
+        policy: String,
     },
     /// Interactive chat in a workspace.
     Chat {
@@ -283,12 +288,14 @@ fn main() -> Result<()> {
             new,
             append,
             time_budget,
+            policy,
         } => {
             let opts = RunOpts {
                 session,
                 new,
                 append,
                 time_budget,
+                policy,
             };
             run_task(&cfg, model, &taskfile, &workdir, opts)?;
         }
@@ -308,6 +315,25 @@ struct RunOpts {
     new: bool,
     append: bool,
     time_budget: Option<String>,
+    policy: String,
+}
+
+/// The preset and the built-in skills `boubou run --policy <name>` runs under. `unattended`
+/// is the batch harness with every product's skills; a product's name is that product's
+/// preset and skills, so the bench can measure what the web chat or an editor turn would
+/// do with the task. The workdir layout and the checkpoint stay the CLI's either way.
+fn product(policy: &str) -> (TurnPolicy, Vec<Skill>) {
+    match policy {
+        "general" => (
+            boubou_general::harness::policy(),
+            boubou_general::harness::skills(),
+        ),
+        "coding" => (
+            boubou_coding::harness::policy(),
+            boubou_coding::harness::skills(),
+        ),
+        _ => (TurnPolicy::unattended(), builtin_skills()),
+    }
 }
 
 /// `--time-budget` value → minutes, with Mingbird's transparency lines.
@@ -348,7 +374,9 @@ fn run_task(
     std::fs::create_dir_all(&workdir).with_context(|| format!("creating {}", workdir.display()))?;
     let task = read_text(&std::path::absolute(taskfile)?)
         .with_context(|| format!("reading {}", taskfile.display()))?;
-    let params = RunParams::from_env(model, &workdir)?;
+    let mut params = RunParams::from_env(model, &workdir)?;
+    let (policy, skills) = product(&opts.policy);
+    params.policy = policy;
     let cli_tb = cli_budget(opts.time_budget.as_deref());
 
     let (tb_min, tb_src) = resolve_time_budget(
@@ -376,7 +404,7 @@ fn run_task(
     ensure_engine(cfg);
     let mut agent = Agent::standard(params, cfg)?
         .with_sink(print_event)
-        .with_builtin_skills(builtin_skills());
+        .with_builtin_skills(skills);
     install_ctrl_c(agent.stop_flag());
     println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
@@ -765,7 +793,6 @@ mod tests {
         // yet a difference: both presets are the kernel's conversation under their own name
         // and their own copy of the task prefill, and the two copies are the same text.
         // Refactor step 10 replaces this test with one stating the difference and why.
-        use boubou_kernel::agent::TurnPolicy;
         let g = boubou_general::harness::policy();
         let c = boubou_coding::harness::policy();
         assert_eq!((g.name, c.name), ("general", "coding"));
@@ -781,6 +808,26 @@ mod tests {
             boubou_general::harness::TASK_PROMPT,
             boubou_coding::harness::TASK_PROMPT
         );
+    }
+
+    #[test]
+    fn run_policy_picks_the_product_s_preset_and_skills() {
+        // `boubou run --policy coding` is an editor turn over the task file: the coding
+        // preset and the coding skills only; `general` likewise; the default is the batch
+        // harness with every skill.
+        let (p, s) = product("coding");
+        assert_eq!(p, boubou_coding::harness::policy());
+        assert!(
+            s.iter().any(|k| k.name == "bug_fix") && !s.iter().any(|k| k.name == "web_research")
+        );
+        let (p, s) = product("general");
+        assert_eq!(p, boubou_general::harness::policy());
+        assert!(
+            s.iter().any(|k| k.name == "web_research") && !s.iter().any(|k| k.name == "bug_fix")
+        );
+        let (p, s) = product("unattended");
+        assert!(p.is_unattended());
+        assert_eq!(s.len(), 14);
     }
 
     #[test]

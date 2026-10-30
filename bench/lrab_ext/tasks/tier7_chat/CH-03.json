@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 7 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CH-03",
+  "domain": "chat-tidy-folder",
+  "tier": 7,
+  "fixtures": [
+    "fixtures/ch03_inbox/inbox",
+    "fixtures/ch03_inbox/check_tidy.py"
+  ],
+  "prompt": "Tidy up inbox/: move the files into images/, docs/ and data/ subfolders inside it, by type, and tell me what went where.",
+  "milestones": [
+    {
+      "artifact": "reply.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "images"
+          ],
+          [
+            "docs"
+          ],
+          [
+            "data"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "inbox",
+      "check": "script_pass",
+      "params": {
+        "command": "python check_tidy.py",
+        "expect_stdout": "TIDY OK",
+        "timeout_s": 120
+      }
+    }
+  ]
+}

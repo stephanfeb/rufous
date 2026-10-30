@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 6 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "ED-01",
+  "domain": "editor-fix-failing-test",
+  "tier": 6,
+  "fixtures": [
+    "fixtures/ed01_slug/check_collateral.py",
+    "fixtures/ed01_slug/slug.py",
+    "fixtures/ed01_slug/test_slug.py"
+  ],
+  "prompt": "test_slug.py is failing. slugify('Hello  World') comes back as 'hello--world', and a title\nwith punctuation at the ends leaves a hyphen at the front or back. Fix slugify in slug.py\nso `python test_slug.py` passes, and don't change anything else in the file.",
+  "milestones": [
+    {
+      "artifact": "slug.py",
+      "check": "script_pass",
+      "params": {
+        "command": "python check_collateral.py",
+        "expect_stdout": "COLLATERAL OK",
+        "timeout_s": 120
+      }
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "slug.py",
+      "check": "script_pass",
+      "params": {
+        "command": "python test_slug.py",
+        "expect_stdout": "6 passed, 0 failed",
+        "timeout_s": 120
+      }
+    }
+  ]
+}

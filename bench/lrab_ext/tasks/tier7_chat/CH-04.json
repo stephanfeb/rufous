@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 7 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CH-04",
+  "domain": "chat-compute-from-csv",
+  "tier": 7,
+  "fixtures": [
+    "fixtures/ch04_expenses/expenses.csv"
+  ],
+  "prompt": "From expenses.csv, how much did we spend on travel in Q2 (April to June), and which of those three months was the highest?",
+  "milestones": [
+    {
+      "artifact": "reply.md",
+      "check": "exists"
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "reply.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "1 565",
+            "1,565",
+            "1,565.95",
+            "1565",
+            "1565.95"
+          ],
+          [
+            "May"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    }
+  ],
+  "answer": {
+    "travel_q2_total": 1565.95,
+    "per_month": {
+      "04": 227.5,
+      "05": 879.45,
+      "06": 459.0
+    }
+  }
+}

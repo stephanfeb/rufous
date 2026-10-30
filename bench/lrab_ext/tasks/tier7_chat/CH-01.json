@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "required_plan_steps_min": 0,
+  "plan_steps": [],
+  "judge_rubric": "",
+  "max_wall_minutes": 20,
+  "notes": "surface tier 7 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "extra_judge_note": "",
+  "id": "CH-01",
+  "domain": "chat-answer-from-files",
+  "tier": 7,
+  "fixtures": [
+    "fixtures/ch01_notes/notes"
+  ],
+  "prompt": "Looking at the meeting notes in notes/, who owns the Postgres migration and what's the deadline?",
+  "milestones": [
+    {
+      "artifact": "reply.md",
+      "check": "exists"
+    }
+  ],
+  "final_artifacts": [
+    {
+      "artifact": "reply.md",
+      "check": "contains_groups",
+      "params": {
+        "groups": [
+          [
+            "Priya"
+          ],
+          [
+            "14 November",
+            "November 14",
+            "14 Nov",
+            "Nov 14",
+            "2026-11-14",
+            "14/11/2026",
+            "14th of November",
+            "November 14th",
+            "14th November"
+          ]
+        ],
+        "min_ratio": 1.0
+      }
+    }
+  ]
+}

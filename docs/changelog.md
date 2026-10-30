@@ -962,3 +962,23 @@ session sees the coding skills, the web UI and `boubou chat` the general-purpose
 `boubou run`, `boubou skills` and `boubou doctor` both sets. The chat REPL moved to
 `boubou-general::chat`; `boubou-cli` keeps the wiring (engine, event printer, Ctrl-C) and
 `run`. `skills/README.md` is now `docs/skills.md`. 489 tests.
+
+## Measurement rig for the product presets (refactor step 10, 2026-10-30)
+
+`boubou run --policy unattended|general|coding` runs a task file under a product's preset and
+skills (the CLI, the one crate that sees both products, maps the name to `harness::policy()`
+and `harness::skills()`); the workdir layout and checkpoint stay the CLI's. `lrab_h2h.py`
+gains `--policy` as a fourth sweep axis beside model, ctx and think: recorded in
+`score.json["axes"]`, `_p<name>` in the run id, `task@coding` rows in the summary, boubou arm
+only. Under a product preset a text reply ends the run, so for those cells the driver writes
+the final reply (the last assistant text, else the `finish` summary, from `.agent_state.json`)
+to `reply.md` before scoring. `bench/lrab_ext/gen_surface.py` adds two tiers of briefs with no
+batch preamble: `tier6_editor` ED-01..05 (fix a failing test; fix plus a named note; add a
+function with tests; rename across files; explain without changing) and `tier7_chat` CH-01..05
+(answer from files; summarise to a file; tidy a folder; compute from a CSV; small talk that
+must touch nothing). Fixtures land at the workdir root; referee scripts (`check_collateral.py`,
+`check_title_case.py`, `check_tidy.py`, `check_untouched.py`) give the scorer's `script_pass`
+its substrings. Tests: `bench/test_surface.py` (generator determinism, each editor task fails
+then passes, the referees, the driver's axis, `final_reply`, a scorer round trip on ED-02 and
+CH-01). No model has run the tiers yet; the first measurement is the coding preset with and
+without the named-deliverable gate on `tier6_editor`.
