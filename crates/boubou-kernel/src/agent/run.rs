@@ -22,7 +22,10 @@ use super::corrector::{self, Verdict};
 use super::face::{self, ToolFace, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
     attach_pending_images, compact_history, dedupe_trailing_assistant, estimate_messages_tokens,
-    prune_history, similar, workdir_files_text, PRUNE_AT,
+    prune_history, workdir_files_text, PRUNE_AT,
+};
+use super::ladders::{
+    CallLadders, EmptyVerdict, Failure, Recall, Streak, Talk, TalkVerdict, TextLadder,
 };
 use super::openai::OpenAiBackend;
 use super::policy::{Gate, Prompt, Route};
@@ -82,13 +85,6 @@ pub fn is_tool_error(res: &str) -> bool {
 
 const CONTINUE_NOTE: &str =
     "Continue: keep making real progress with tools, or call finish only when fully verified/answered.";
-
-/// How many recent text-only outputs the repeat detector compares against.
-const TEXT_WINDOW: usize = 4;
-/// The text-only task turn that draws the sharper "tool call or finish" note (once).
-const TALK_SHARP_NOTE: usize = 2;
-/// Consecutive text-only task turns after which the turn is ended.
-const TALK_FORCE_END: usize = 4;
 
 /// Prefix of the loop's own missing-argument notes, so pruning can recognise them.
 const MISSING_ARG_NOTE_MARK: &str = "⚠️ [missing argument] ";
@@ -589,20 +585,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut fails = 0usize;
         // `_restarts`: engine restarts this run (≤3), the 500-degradation self-heal.
         let mut restarts = 0usize;
-        let mut fail_count: HashMap<String, usize> = HashMap::new();
-        let mut redirect_warns = 0;
-        let mut last_tool: Option<String> = None;
-        let mut last_sig: Option<(String, String)> = None;
-        let mut same_sig_streak = 0;
-        let mut last_sig_now: Option<(String, String)> = None;
-        let mut dup_warns = 0;
-        let mut disabled_recall: HashMap<String, usize> = HashMap::new();
-        let mut tool_streak = 0;
-        let mut streak_warns = 0;
-        let mut research_streak = 0;
-        let mut research_warns = 0;
-        let mut research_seen: BTreeSet<String> = BTreeSet::new();
-        let mut todo_streak = 0;
+        let mut calls = CallLadders::default();
         let mut productive_used = false;
         let mut fake_finish_warns = 0;
         let mut finish_claim_warns = 0;
@@ -620,33 +603,18 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut named_gate_warns = 0;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
-        let mut bash_teach_warns = 0;
-        let mut empty_turns = 0;
-        let mut len_truncated = false;
-        let mut missing_arg_streak: HashMap<String, usize> = HashMap::new();
-        let mut missing_arg_warns = 0;
+        let mut text_ladder = TextLadder::default();
         let mut truncated_call_warns = 0;
-        let mut empty_resets = 0;
-        let mut empty_total = 0;
         let mut test_guard_warns = 0;
         let mut casual_warns = 0;
         let mut casual_force = false;
-        // Recent text-only outputs (newest last, at most TEXT_WINDOW): a repeat is a new
-        // text resembling any of them, so A/B/C cycles count, not only A/A.
-        let mut recent_texts: Vec<String> = Vec::new();
-        let mut repeat_count = 0;
-        // Consecutive non-empty text-only turns in task mode (no tool call at all).
-        let mut talk_streak = 0;
         let mut compact_lvl: u8 = 0;
         let mut todo_stale = 0;
         let mut todo_nudge_warns = 0;
         let mut todo_gate_warns = 0;
         const TODO_STALE_NUDGE: usize = 4;
-        // Idle-streak guard (guards/idle.rs, boubou-9c5): consecutive calls that read only.
-        let mut idle_streak: usize = 0;
         let mut idle_notes: u32 = 0;
         let mut qa_cap_blocks: u32 = 0;
-        let mut no_result_searches: u32 = 0;
 
         if params.child_mode {
             log!(
@@ -986,7 +954,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     "[{i}] ⚠️ done_reason=length with no text and no calls (eval={:?}): the generation budget was probably burnt",
                     r.eval_count
                 );
-                len_truncated = true;
+                text_ladder.note_truncated();
             }
             if let Some(th) = r.message.thinking.as_deref().filter(|t| !t.is_empty()) {
                 if tcs.is_empty() && guards::semantically_empty(&content) {
@@ -1061,19 +1029,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
             if tcs.is_empty() {
                 // ---- text-only turn ----
+                // The ladder says what the reply was; the policy says what ends a turn.
                 if guards::semantically_empty(&content) {
-                    empty_turns += 1;
-                    empty_total += 1;
-                    if len_truncated && empty_turns == 1 {
-                        // Truncation debris: the model is not idle, one shot cannot hold it.
-                        len_truncated = false;
-                        messages.push(Message::user(format!(
-                            "⚠️ Your previous output hit the generation token limit ({}) and was truncated without producing a valid tool call. Deliver large content in chunks: write the skeleton or opening part with create_file, then add the rest with append_file in pieces of a few hundred lines at most; or simplify the implementation. Do not try to output a whole large file in one go.",
-                            params.num_predict
+                    let verdict = text_ladder.on_empty();
+                    if verdict == EmptyVerdict::TruncationDebris {
+                        messages.push(Message::user(TextLadder::truncation_note(
+                            params.num_predict,
                         )));
                         continue;
                     }
-                    if policy.text_ends_turn && empty_turns >= 2 {
+                    if policy.text_ends_turn && text_ladder.empty_turns() >= 2 {
                         // One silent retry is enough in a conversation; a context reset
                         // would wipe it.
                         log!(
@@ -1083,32 +1048,35 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         exhausted = false;
                         break;
                     }
-                    if empty_turns >= 6 && empty_resets < 3 {
-                        empty_resets += 1;
-                        empty_turns = 0;
-                        let task0 = first_user_text(&messages);
-                        let files = workdir_files_text(workdir, 30);
-                        let head = messages
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| Message::system(""));
-                        messages = vec![
-                            head,
-                            Message::user(format!(
-                                "{task0}\n\n⚠️ [system] Several consecutive empty outputs; the context has been reset. Progress snapshot:\nPlan:\n{}\nFiles already in the working directory:\n{files}\nContinue from the first unfinished step and make progress with tools immediately. Do not output empty text.",
-                                load_todo_str(hdir)
-                            )),
-                        ];
-                        log!("[{i}] ⚠️ 6 consecutive empty turns, hard-resetting the context ({empty_resets}/3, {empty_total} empty turns in total)");
-                        transcript.mark_compacted();
-                        continue;
-                    }
-                    if empty_turns >= 3 && empty_resets >= 3 {
-                        log!("[{i}] {empty_total} empty turns in total and 3 resets had no effect; exiting gracefully");
-                        save!();
-                        return Err(Error::Aborted(format!(
-                            "{empty_total} empty turns after 3 context resets"
-                        )));
+                    match verdict {
+                        EmptyVerdict::Reset { resets, total } => {
+                            let task0 = first_user_text(&messages);
+                            let files = workdir_files_text(workdir, 30);
+                            let head = messages
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| Message::system(""));
+                            messages = vec![
+                                head,
+                                Message::user(TextLadder::reset_note(
+                                    &task0,
+                                    &load_todo_str(hdir),
+                                    &files,
+                                )),
+                            ];
+                            log!("[{i}] ⚠️ 6 consecutive empty turns, hard-resetting the context ({resets}/3, {total} empty turns in total)");
+                            transcript.mark_compacted();
+                            continue;
+                        }
+                        EmptyVerdict::GiveUp { total } => {
+                            log!("[{i}] {total} empty turns in total and 3 resets had no effect; exiting gracefully");
+                            save!();
+                            return Err(Error::Aborted(format!(
+                                "{total} empty turns after 3 context resets"
+                            )));
+                        }
+                        EmptyVerdict::TruncationDebris => unreachable!(),
+                        EmptyVerdict::Nudge | EmptyVerdict::Quiet => {}
                     }
                     if turn.route == Route::FollowUp && acted_this_turn && !follow_up_nudged {
                         // The instruction may already be done; ask for the report, not for work.
@@ -1116,74 +1084,63 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages.push(Message::user(qa::FOLLOW_UP_DONE_NOTE));
                         continue;
                     }
-                    if empty_turns == 3 {
-                        messages.push(Message::user(
-                            "⚠️ You have output empty text repeatedly. Call a tool and do real work now: read_file to read, run_bash to run a command, create_file to write. Do not output empty text.",
-                        ));
-                        continue;
+                    if verdict == EmptyVerdict::Nudge {
+                        messages.push(Message::user(TextLadder::EMPTY_NUDGE));
                     }
-                } else {
-                    empty_turns = 0;
-                    len_truncated = false;
-                    if policy.text_ends_turn {
-                        // The reply is the turn's answer: no note, no forced finish, nothing
-                        // added to the history the next turn will see.
-                        log!("[{i}] text reply ends the turn ({})", policy.name);
-                        exhausted = false;
-                        break;
-                    }
-                    talk_streak += 1;
-                    let repeated = recent_texts.iter().any(|t| similar(t, &content, 0.75));
-                    recent_texts.push(content.clone());
-                    if recent_texts.len() > TEXT_WINDOW {
-                        recent_texts.remove(0);
-                    }
-                    if repeated {
-                        repeat_count += 1;
-                        log!("[{i}] ⚠️ repeated output detected ({repeat_count})");
-                        if repeat_count >= 2 {
+                    continue;
+                }
+                let verdict = text_ladder.on_text(&content);
+                if policy.text_ends_turn {
+                    // The reply is the turn's answer: no note, no forced finish, nothing
+                    // added to the history the next turn will see.
+                    log!("[{i}] text reply ends the turn ({})", policy.name);
+                    exhausted = false;
+                    break;
+                }
+                match verdict {
+                    TalkVerdict::Repeated { count, dead_loop } => {
+                        log!("[{i}] ⚠️ repeated output detected ({count})");
+                        if dead_loop {
                             casual_force = true;
-                            messages.push(Message::user(
-                                "⚠️ You have output nearly identical content repeatedly; this counts as a dead loop. Call finish now to end this turn. Do not repeat yourself.",
-                            ));
+                            messages.push(Message::user(TextLadder::DEAD_LOOP_NOTE));
                         } else {
                             messages.push(Message::user(CONTINUE_NOTE));
                         }
-                    } else {
-                        repeat_count = 0;
-                        if turn.route == Route::Question {
-                            // The answer to a question is the chat: end the turn.
-                            casual_force = true;
-                            messages.push(Message::user(
-                                "Your answer is already sufficient; the user is asking a question, not setting a task. Call finish now to end this turn. Do not repeat the output.",
-                            ));
-                        } else if turn.route == Route::FollowUp && acted_this_turn {
-                            // The follow-up was acted on and this text is the report.
-                            casual_force = true;
-                            log!("[{i}] follow-up acted on and reported; ending the turn");
-                            messages.push(Message::user(qa::FOLLOW_UP_REPORT_NOTE));
-                        } else if talk_streak >= TALK_FORCE_END {
+                    }
+                    TalkVerdict::Fresh { .. } if turn.route == Route::Question => {
+                        // The answer to a question is the chat: end the turn.
+                        casual_force = true;
+                        messages.push(Message::user(
+                            "Your answer is already sufficient; the user is asking a question, not setting a task. Call finish now to end this turn. Do not repeat the output.",
+                        ));
+                    }
+                    TalkVerdict::Fresh { .. }
+                        if turn.route == Route::FollowUp && acted_this_turn =>
+                    {
+                        // The follow-up was acted on and this text is the report.
+                        casual_force = true;
+                        log!("[{i}] follow-up acted on and reported; ending the turn");
+                        messages.push(Message::user(qa::FOLLOW_UP_REPORT_NOTE));
+                    }
+                    TalkVerdict::Fresh { streak, talk } => match talk {
+                        Talk::End => {
                             // The model is talking, not working: bound the loop instead of
                             // nagging until max_iterations.
-                            log!("[{i}] ⚠️ {talk_streak} consecutive text-only turns with no tool call; ending the turn");
+                            log!("[{i}] ⚠️ {streak} consecutive text-only turns with no tool call; ending the turn");
                             casual_force = true;
-                            messages.push(Message::user(
-                                "⚠️ You have replied in text several times without calling a tool. The turn ends here; your earlier text stands as the answer.",
-                            ));
-                        } else if talk_streak == TALK_SHARP_NOTE {
-                            messages.push(Message::user(
-                                "⚠️ You have replied in text without calling any tool. Reply with a tool call (create_file / run_bash / read_file …) to do the work, or call finish(summary=your answer) if the text already answers the user. Do not reply with more text.",
-                            ));
-                        } else {
-                            messages.push(Message::user(CONTINUE_NOTE));
+                            messages.push(Message::user(TextLadder::TALK_END_NOTE));
                         }
-                    }
+                        Talk::Sharp => {
+                            messages.push(Message::user(TextLadder::TALK_SHARP_NOTE));
+                        }
+                        Talk::Continue => messages.push(Message::user(CONTINUE_NOTE)),
+                    },
                 }
                 continue;
             }
 
             // ---- tool calls ----
-            talk_streak = 0;
+            text_ladder.on_tool_call();
             for tc in &tcs {
                 let name = tc.function.name.clone();
                 let args = args_map(&tc.function.arguments);
@@ -1200,10 +1157,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // loop: strong note at 3, hard reset at 10. A malformed name (template
                     // text leaked into the call) takes the same path with its own text.
                     let shown = compact_tool_name(&name);
-                    let cnt = disabled_recall.entry(name.clone()).or_insert(0);
-                    *cnt += 1;
-                    let cnt = *cnt;
-                    if cnt >= 10 {
+                    let recall = calls.on_recall(&name);
+                    if recall == Recall::Reset {
                         let task0 = first_user_text(&messages);
                         let head = messages
                             .first()
@@ -1217,7 +1172,6 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 workdir_files_text(workdir, 30)
                             )),
                         ];
-                        disabled_recall.insert(name.clone(), 0);
                         log!("[{i}] ⚠️ {shown} called 10 times after being disabled, hard-resetting the context");
                         transcript.mark_compacted();
                         continue;
@@ -1229,7 +1183,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     } else {
                         format!("[tool {shown} is not available (not in the tool list assembled for this run: either its category was not loaded, or the name does not exist). Do not invent tool names: create_file for output files, edit_file/create_file to change files, read_file to read; the full list is in your tool definitions.]")
                     };
-                    if cnt == 3 {
+                    if recall == (Recall::Refuse { note: true }) {
                         messages.push(Message::user(format!(
                             "⚠️ The tool {shown} is unavailable (disabled or not assembled) and you have tried it several times. Calling it again will not run and it will no longer appear in your tool list. Change action now: write output files with create_file; use read_file/list_dir to inspect what exists."
                         )));
@@ -1278,14 +1232,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     });
                     messages.push(Message::tool_output(res));
                     continue;
-                } else if n != "finish"
-                    && last_sig.as_ref() == Some(&(name.clone(), sig_json.clone()))
-                    && dup_warns < 3
-                {
+                } else if calls.is_duplicate(&name, &sig_json) {
                     // Exactly the same call as last time: the result will not change.
-                    dup_warns += 1;
                     let res = format!("[blocked: you just made this exact {name} call (identical arguments); the result will not change. Change strategy: read_file to see the real state, or try a different approach.]");
-                    log!("[{i}] ⚠️ duplicate call blocked: {name} ({dup_warns})");
+                    log!("[{i}] ⚠️ duplicate call blocked: {name}");
                     sink(AgentEvent::ToolResult {
                         name: name.clone(),
                         args: args_v.clone(),
@@ -1299,7 +1249,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     continue;
                 } else if turn.route == Route::Question
                     && n != "finish"
-                    && idle_streak >= idle::QA_IDLE_CAP
+                    && calls.idle_streak() >= idle::QA_IDLE_CAP
                 {
                     // Idle cap on the question route (boubou-9c5): the reads have had their
                     // chance; the answer is due. Two refusals, then the turn ends as a text
@@ -1308,6 +1258,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     if qa_cap_blocks >= 2 {
                         casual_force = true;
                     }
+                    let idle_streak = calls.idle_streak();
                     let res = idle::qa_cap_result(&name, idle_streak);
                     log!("[{i}] ⚠️ idle streak: {idle_streak} read-only calls on a question, {name} refused ({qa_cap_blocks})");
                     sink(AgentEvent::ToolResult {
@@ -1345,7 +1296,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 } else {
                     sink(AgentEvent::ToolCall(tc.clone()));
                     res = tools.run_tool(n, &args_v);
-                    last_sig = Some((name.clone(), sig_json.clone()));
+                    calls.ran(&name, &sig_json);
                     if let Some(reason) = tools.child_terminated() {
                         // ≥1 severe refusal (system-area write, irreversible command): end
                         // the child now; the dispatcher sees exit 53 and does not retry.
@@ -1751,7 +1702,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     sig_fails.retain(|k, _| *k == me);
                                     corrector_blocked.retain(|k, _| *k == me);
                                 }
-                                last_sig = Some((cname.clone(), cargs.to_string()));
+                                calls.ran(&cname, &cargs.to_string());
                                 let outcome = if cfailed {
                                     "fix failed too"
                                 } else {
@@ -1814,24 +1765,19 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     if small_model
                         && n == "run_bash"
                         && res.to_lowercase().contains("not recognized")
-                        && bash_teach_warns < 2
+                        && calls.bash_teach()
                     {
-                        bash_teach_warns += 1;
                         messages.push(Message::user(
                             "Hint: run_bash runs Windows shell (cmd) commands and cannot execute Python code directly. Do it this way: write the code to a .py file with create_file, then run it with run_bash: python filename.py",
                         ));
                     }
-                    if let Some(key) = missing_arg_key(&res).map(str::to_string) {
-                        // Missing-argument ladder: gemma-class models drop `path` about one
-                        // call in eight and then copy their own failed call from the history
-                        // (WF-08: 37 path-less create_file calls in a row). From the second
-                        // consecutive miss on, remove the earlier failed pairs and prescribe
-                        // a different call shape instead of "retry verbatim".
-                        let st = missing_arg_streak.entry(name.clone()).or_insert(0);
-                        *st += 1;
-                        let st = *st;
-                        if st >= 2 && missing_arg_warns < 4 {
-                            missing_arg_warns += 1;
+                    match calls.on_failure(&name, missing_arg_key(&res)) {
+                        Failure::MissingArg { key, streak: st } => {
+                            // Missing-argument ladder: gemma-class models drop `path` about one
+                            // call in eight and then copy their own failed call from the
+                            // history (WF-08: 37 path-less create_file calls in a row). From
+                            // the second consecutive miss on, remove the earlier failed pairs
+                            // and prescribe a different call shape instead of "retry verbatim".
                             let pruned = prune_missing_arg_calls(&mut messages, n, &key);
                             if pruned > 0 {
                                 save!();
@@ -1852,75 +1798,47 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 "{MISSING_ARG_NOTE_MARK}You have called {name} {st} times in a row without the argument '{key}' (the failed calls have been removed from the conversation; do not copy them). Do not resend the same content in one piece. Use a different call shape: first {name}({key}=\"<filename>\", content=\"<the first few lines>\") to create the file, then append_file(path=\"<filename>\", content=\"<the rest>\") piece by piece. Every call must carry both '{key}' and content, with {key} first.{plan_hint}"
                             ));
                         }
-                    } else {
-                        let fc = fail_count.entry(name.clone()).or_insert(0);
-                        *fc += 1;
-                        if *fc >= 3 {
-                            if n == "edit_file" {
-                                face.disable("edit_file");
-                                messages.push(Message::user(
+                        Failure::DisableEditFile => {
+                            face.disable("edit_file");
+                            messages.push(Message::user(
                                 "⚠️ edit_file has failed 3 times in a row and is now disabled. From now on change files by writing the complete content with create_file.",
                             ));
-                                *fc = 0;
-                            } else if redirect_warns < 4 {
-                                redirect_warns += 1;
-                                let path_refused = res.contains("outside the working directory")
-                                    || res.contains("out of bounds");
-                                let hint = if path_refused {
-                                    "⚠️ The rejected path is outside the working directory. All of the task's input files are already in your working directory: run list_dir(path='.') now, read the files it lists, and do not touch any path outside the working directory again."
-                                } else if n == "run_bash" {
-                                    "⚠️ Do not cd to absolute paths like /workspace. The working directory is already set: run commands directly or use relative paths; check the directory with list_dir and the real state with read_file/pwd first."
-                                } else {
-                                    "⚠️ Check the real state with list_dir / read_file first and rebuild the arguments, or try a different approach."
-                                };
-                                let count = *fc;
-                                messages.push(Message::user(format!(
+                        }
+                        Failure::Redirect { count } => {
+                            let path_refused = res.contains("outside the working directory")
+                                || res.contains("out of bounds");
+                            let hint = if path_refused {
+                                "⚠️ The rejected path is outside the working directory. All of the task's input files are already in your working directory: run list_dir(path='.') now, read the files it lists, and do not touch any path outside the working directory again."
+                            } else if n == "run_bash" {
+                                "⚠️ Do not cd to absolute paths like /workspace. The working directory is already set: run commands directly or use relative paths; check the directory with list_dir and the real state with read_file/pwd first."
+                            } else {
+                                "⚠️ Check the real state with list_dir / read_file first and rebuild the arguments, or try a different approach."
+                            };
+                            messages.push(Message::user(format!(
                                 "⚠️ Your last {count} {name} calls all failed. Stop retrying now and change strategy: {hint}"
                             )));
-                                *fc = 0;
-                            }
                         }
+                        Failure::Quiet => {}
                     }
                 } else {
-                    // Only a success of the same tool resets its ladders.
-                    if fail_count.get(n).is_some_and(|c| *c > 0) {
-                        fail_count.insert(name.clone(), 0);
-                    }
-                    missing_arg_streak.insert(name.clone(), 0);
+                    calls.on_success(&name);
                 }
 
                 // Repeat-success streaks.
-                let sig_now = (name.clone(), sig_json.clone());
-                if last_sig_now.as_ref() == Some(&sig_now) {
-                    same_sig_streak += 1;
-                } else {
-                    same_sig_streak = 1;
-                }
-                last_sig_now = Some(sig_now);
-                if last_tool.as_deref() == Some(n) {
-                    tool_streak += 1;
-                } else {
-                    last_tool = Some(name.clone());
-                    tool_streak = 1;
-                }
-                if tool_streak >= 5 && streak_warns < 3 {
-                    streak_warns += 1;
-                    messages.push(Message::user(format!(
-                        "⚠️ You have called {name} {tool_streak} times in a row. If the results are similar or nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish). If you are doing a batch of steps with different arguments each time, that is fine; carry on."
-                    )));
-                    tool_streak = 1;
-                }
-                if !params.ablated("anti_loop")
-                    && tool_streak >= 8
-                    && same_sig_streak >= 4
-                    && n != "finish"
-                {
-                    // Only a true loop: same tool 8×, same arguments 4× in a row.
-                    face.disable(n);
-                    messages.push(Message::user(format!(
-                        "⚠️ {name} has been called {tool_streak} times in a row and is now disabled. Stop repeating it and get on with the real work (write files / run / call finish)."
-                    )));
-                    tool_streak = 1;
+                match calls.on_streak(&name, &sig_json, !params.ablated("anti_loop")) {
+                    Streak::Note { count } => {
+                        messages.push(Message::user(format!(
+                            "⚠️ You have called {name} {count} times in a row. If the results are similar or nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish). If you are doing a batch of steps with different arguments each time, that is fine; carry on."
+                        )));
+                    }
+                    Streak::Disable { count } => {
+                        // Only a true loop: same tool 8×, same arguments 4× in a row.
+                        face.disable(n);
+                        messages.push(Message::user(format!(
+                            "⚠️ {name} has been called {count} times in a row and is now disabled. Stop repeating it and get on with the real work (write files / run / call finish)."
+                        )));
+                    }
+                    Streak::Quiet => {}
                 }
                 // Idle streak (boubou-9c5): reads, listings, searches, the plan tool and
                 // read-only commands; anything that changes the world resets it.
@@ -1929,8 +1847,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 } else {
                     idle::is_idle_call(n, &args)
                 };
+                let idle_streak = calls.on_idle(idle);
                 if idle {
-                    idle_streak += 1;
                     let note = if turn.route == Route::Question {
                         (idle_streak == idle::QA_IDLE_NUDGE).then(|| idle::qa_nudge(idle_streak))
                     } else {
@@ -1944,57 +1862,30 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages.push(Message::user(note));
                     }
                 } else {
-                    idle_streak = 0;
                     acted_this_turn = true;
                 }
-                // Two searches in a row with nothing relevant: the web is the wrong place.
-                if RESEARCH_ALL.contains(&n) && res.starts_with(idle::NO_RESULTS_MARK) {
-                    no_result_searches += 1;
-                    if no_result_searches == 2 {
-                        log!("[{i}] ⚠️ two web searches in a row found nothing");
-                        messages.push(Message::user(idle::NO_RESULTS_NOTE));
-                    }
-                } else if RESEARCH_ALL.contains(&n) {
-                    no_result_searches = 0;
+                // Web research: two searches in a row with nothing relevant (the web is the
+                // wrong place), and the same query over and over (a new query is progress).
+                let research =
+                    calls.on_research(&name, &sig_json, res.starts_with(idle::NO_RESULTS_MARK));
+                if research.no_results_twice {
+                    log!("[{i}] ⚠️ two web searches in a row found nothing");
+                    messages.push(Message::user(idle::NO_RESULTS_NOTE));
                 }
-                // Research streak, fingerprint level: a new query is progress.
-                if RESEARCH_ALL.contains(&n) {
-                    let fp = text::head(&sig_json, 256).to_string();
-                    if research_seen.contains(&fp) {
-                        research_streak += 1;
-                    } else {
-                        research_seen.insert(fp);
-                        research_streak = 0;
+                if let Some(streak) = research.disable {
+                    for t in RESEARCH_ALL {
+                        face.disable(t);
                     }
-                    if research_streak >= 6 && research_warns < 3 {
-                        research_warns += 1;
-                        for t in RESEARCH_ALL {
-                            face.disable(t);
-                        }
-                        messages.push(Message::user(format!(
-                            "⚠️ You have repeated the exact same web query {research_streak} times without producing any file. The web tools are now disabled: take a genuinely different angle, or write what you have found to a file with create_file and then call finish. To search again, rephrase the query and re-enable the tools with enable_tools."
-                        )));
-                        research_streak = 0;
-                        research_seen.clear();
-                    }
-                } else if matches!(
-                    n,
-                    "create_file" | "edit_file" | "append_file" | "finish" | "run_bash"
-                ) {
-                    research_streak = 0;
+                    messages.push(Message::user(format!(
+                        "⚠️ You have repeated the exact same web query {streak} times without producing any file. The web tools are now disabled: take a genuinely different angle, or write what you have found to a file with create_file and then call finish. To search again, rephrase the query and re-enable the tools with enable_tools."
+                    )));
                 }
                 // Plan-tool loop: same (action,index) 6× in a row, or 15 todo calls without output.
-                if n == "todo" {
-                    todo_streak += 1;
-                    if same_sig_streak >= 6 || todo_streak >= 15 {
-                        face.disable("todo");
-                        messages.push(Message::user(format!(
-                            "⚠️ todo is now disabled (the same call {same_sig_streak} times in a row / {todo_streak} calls with no real work). Switch to producing tools now: create_file for output files, run_bash to verify; if you need to record a plan, write it into an output file."
-                        )));
-                        todo_streak = 0;
-                    }
-                } else if PRODUCTIVE.contains(&n) {
-                    todo_streak = 0;
+                if let Some((same, count)) = calls.on_todo(&name) {
+                    face.disable("todo");
+                    messages.push(Message::user(format!(
+                        "⚠️ todo is now disabled (the same call {same} times in a row / {count} calls with no real work). Switch to producing tools now: create_file for output files, run_bash to verify; if you need to record a plan, write it into an output file."
+                    )));
                 }
                 // Shotgun-edit guard counts only landed edits.
                 if n == "edit_file" && res.starts_with("[edited") {

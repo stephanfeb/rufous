@@ -8,6 +8,8 @@
 //!   `sanitize_ckpt`, `_similar`, pending-image attachment).
 //! - [`session`]: checkpoint, transcript and session files, byte-compatible with Mingbird.
 //! - [`prompt`]: the system prompts and the platform block.
+//! - [`ladders`]: the small-model ladders (stateful compensation mechanisms the loop feeds
+//!   observations and gets verdicts from; no policy reads).
 //! - [`policy`]: the turn policy (what the harness does around the model), with the
 //!   `general`, `coding` and `unattended` presets.
 //! - [`testguard`]: the finish-gate test runner.
@@ -21,6 +23,7 @@ pub mod chat;
 pub mod corrector;
 pub mod face;
 pub mod history;
+pub mod ladders;
 pub mod openai;
 pub mod policy;
 pub mod prompt;
