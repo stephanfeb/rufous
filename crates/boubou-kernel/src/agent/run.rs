@@ -25,7 +25,7 @@ use super::history::{
     prune_history, similar, workdir_files_text, PRUNE_AT,
 };
 use super::openai::OpenAiBackend;
-use super::policy::TurnPolicy;
+use super::policy::{Route, TurnPolicy};
 use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
@@ -35,7 +35,6 @@ use crate::exec::Executor;
 use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
 use crate::guards::idle;
-use crate::guards::qa::Intent;
 use crate::guards::qa::DISPATCH_NOTE_MARK;
 use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
@@ -233,12 +232,10 @@ pub fn ws_note(workdir: &Path) -> String {
     )
 }
 
-/// `_plan_note`: current plan as text for compaction re-injection; none in Q&A / no plan.
-fn plan_note(qa: bool, plan_dir: &Path) -> Option<String> {
-    if qa {
-        return None;
-    }
-    let t = load_todo(plan_dir);
+/// `_plan_note`: current plan as text for compaction re-injection; none without a plan
+/// directory (the question route) or with an empty plan.
+fn plan_note(plan_dir: Option<&Path>) -> Option<String> {
+    let t = load_todo(plan_dir?);
     if t.is_empty() {
         None
     } else {
@@ -531,9 +528,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         } else {
             params.policy
         };
-        let fg_off = !policy.finish_gates
-            || params.ablated("finish_gate")
-            || params.ablated("finish_gate_text_only");
+        let gates_ablated =
+            params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
@@ -673,11 +669,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 session::append_decision(sessions_dir, name, &intent.record(decider.mode(), name));
             }
         }
-        let qa = !child && policy.intent_routing && intent.intent == Intent::Question;
-        // A follow-up (boubou-he2) runs the task loop but ends when the model has acted and
-        // then reports: the task-mode "continue" notes would otherwise push it into the
-        // next piece of work the user never asked for.
-        let follow_up = !child && policy.intent_routing && intent.intent == Intent::FollowUp;
+        // What this turn does around the model, derived once from the policy, the intent,
+        // child mode and the ablations; read by name from here on.
+        let turn = policy.turn(intent.intent, child, gates_ablated);
+        let plan_dir_for_notes: Option<&Path> = turn.working.then_some(hdir);
         let mut acted_this_turn = false;
         let mut follow_up_nudged = false;
         // The system prompt follows the route, every turn. A continued session (the web UI
@@ -687,7 +682,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // task-mode guards and finish gates (bead boubou-c4b). A fresh run already carries
         // the task prompt from `task_messages`; children keep their sandbox prompt.
         let continued = messages.iter().any(|m| m.role == Role::Assistant);
-        let cats: Option<BTreeSet<String>> = if qa {
+        let cats: Option<BTreeSet<String>> = if turn.route == Route::Question {
             let cs = prompt::chat_system(Some(workdir));
             let mut m = vec![Message::system(cs)];
             m.extend(messages.into_iter().filter(|m| m.role != Role::System));
@@ -715,7 +710,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // plan already on disk dispatches here; a resumed run (tool results in the history)
         // is left alone. The usual case, the model writing its plan on its first turn, is
         // handled below: the hook runs once more after the first successful todo(create).
-        let dispatch_wanted = parallel.is_some() && !qa && !child && policy.parallel_dispatch;
+        let dispatch_wanted = parallel.is_some() && turn.dispatch;
         let mut dispatch_after_plan = dispatch_wanted;
         if dispatch_wanted && !messages.iter().any(|m| m.role == Role::Tool) {
             if let Some(hook) = parallel.as_ref() {
@@ -729,7 +724,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     .any(|m| m.content.starts_with(DISPATCH_NOTE_MARK));
             }
         }
-        let small_model = !qa && guards::is_small_model(model);
+        let small_model = turn.working && guards::is_small_model(model);
         tools.set_slim_output(params.slim_output);
         if small_model {
             // ≤4B: edit_file's exact-match protocol is the top failure mode; rewrite instead.
@@ -775,7 +770,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 break;
             }
             dedupe_trailing_assistant(&mut messages);
-            let ct: Vec<Value> = match (&cats, qa) {
+            let ct: Vec<Value> = match (&cats, turn.route == Route::Question) {
                 (_, true) => face.chat_tool_defs(),
                 (Some(c), false) if !params.ablated("flat_prefill") => {
                     let mut defs = face.tools_for_categories(c);
@@ -810,7 +805,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             };
             if let Some(level) = pre {
                 let (todo, files) = if level >= 2 {
-                    (plan_note(qa, hdir), Some(workdir_files_text(workdir, 30)))
+                    (
+                        plan_note(plan_dir_for_notes),
+                        Some(workdir_files_text(workdir, 30)),
+                    )
                 } else {
                     (None, None)
                 };
@@ -867,7 +865,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         log!(
                             "[{i}] ⚠️ context-overflow error → forcing L3 compaction and retrying"
                         );
-                        let todo = plan_note(qa, hdir);
+                        let todo = plan_note(plan_dir_for_notes);
                         let files = Some(workdir_files_text(workdir, 30));
                         messages =
                             compact(backend, model, messages, 3, todo, files, transcript, sink);
@@ -906,7 +904,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         if compact_lvl < 3 {
                             let lvl = (compact_lvl + 1).min(3);
                             compact_lvl = lvl;
-                            let todo = plan_note(qa, hdir);
+                            let todo = plan_note(plan_dir_for_notes);
                             let files = Some(workdir_files_text(workdir, 30));
                             messages = compact(
                                 backend, model, messages, lvl, todo, files, transcript, sink,
@@ -962,7 +960,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 };
                 if let Some(level) = post {
                     let todo = if level >= 2 {
-                        plan_note(qa, hdir)
+                        plan_note(plan_dir_for_notes)
                     } else {
                         None
                     };
@@ -994,7 +992,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     );
                 }
             }
-            if tcs.is_empty() && !qa {
+            if tcs.is_empty() && turn.route != Route::Question {
                 // Format leak salvage: the model wrote the call as text. The generic shapes
                 // first; the profile's finish-prose rescue only for models known to end a
                 // text turn with `Finish: …`.
@@ -1051,9 +1049,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             } else {
                 Vec::new()
             };
-            let mut turn = Message::assistant(content.clone());
-            turn.tool_calls = tcs.clone();
-            messages.push(turn);
+            let mut reply = Message::assistant(content.clone());
+            reply.tool_calls = tcs.clone();
+            messages.push(reply);
             session::write_checkpoint_to(&ckpt_path, &messages);
 
             if tcs.is_empty() {
@@ -1107,7 +1105,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             "{empty_total} empty turns after 3 context resets"
                         )));
                     }
-                    if follow_up && acted_this_turn && !follow_up_nudged {
+                    if turn.route == Route::FollowUp && acted_this_turn && !follow_up_nudged {
                         // The instruction may already be done; ask for the report, not for work.
                         follow_up_nudged = true;
                         messages.push(Message::user(qa::FOLLOW_UP_DONE_NOTE));
@@ -1148,13 +1146,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     } else {
                         repeat_count = 0;
-                        if qa {
+                        if turn.route == Route::Question {
                             // The answer to a question is the chat: end the turn.
                             casual_force = true;
                             messages.push(Message::user(
                                 "Your answer is already sufficient; the user is asking a question, not setting a task. Call finish now to end this turn. Do not repeat the output.",
                             ));
-                        } else if follow_up && acted_this_turn {
+                        } else if turn.route == Route::FollowUp && acted_this_turn {
                             // The follow-up was acted on and this text is the report.
                             casual_force = true;
                             log!("[{i}] follow-up acted on and reported; ending the turn");
@@ -1294,7 +1292,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         "⚠️ The last call was judged a duplicate (identical to an earlier one); the result will not change. Do not retry it unchanged: check the current state with read_file/list_dir first, or move forward with a different approach.",
                     ));
                     continue;
-                } else if qa && n != "finish" && idle_streak >= idle::QA_IDLE_CAP {
+                } else if turn.route == Route::Question
+                    && n != "finish"
+                    && idle_streak >= idle::QA_IDLE_CAP
+                {
                     // Idle cap on the question route (boubou-9c5): the reads have had their
                     // chance; the answer is due. Two refusals, then the turn ends as a text
                     // answer would.
@@ -1312,7 +1313,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     });
                     messages.push(Message::tool_output(res));
                     continue;
-                } else if qa && face::QA_BLOCKED.contains(&n) && casual_warns < 3 {
+                } else if turn.route == Route::Question
+                    && face::QA_BLOCKED.contains(&n)
+                    && casual_warns < 3
+                {
                     // Q&A guard: a question never needs files written. Commands are allowed
                     // (bead boubou-o5a): "what should we do next?" is `bd ready`, "does it
                     // build?" is the build command; the safety gate vets them as always.
@@ -1413,8 +1417,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         .unwrap_or_default();
                     // Gate 1: a delivery must exist — file/command, body text, or a
                     // substantive summary. Q&A is exempt (the answer is the chat).
-                    if !fg_off
-                        && !qa
+                    if turn.finish_gates
                         && !productive_used
                         && guards::semantically_empty(&content)
                         && guards::semantically_empty(&summary)
@@ -1432,8 +1435,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         continue;
                     }
                     // Gate 2: tests in the workdir must pass (3 refusals, then let through).
-                    if !qa
-                        && !fg_off
+                    if turn.finish_gates
                         && testguard::has_python_tests(workdir)
                         && test_guard_warns < 3
                     {
@@ -1469,7 +1471,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                     // Gate 2b (integrity): the summary must not claim a verified outcome the
                     // turn's commands do not back, nor report success over a failed check.
-                    if !qa && !fg_off && claim_gate_warns < 2 {
+                    if turn.finish_gates && claim_gate_warns < 2 {
                         if let Some((log_line, msg)) =
                             integrity::claim_contradiction(&summary, &cmd_records)
                         {
@@ -1484,7 +1486,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                     // Gate 3: files the summary claims must exist. A file the summary reports
                     // as failed ("dataset.csv could not be downloaded") is not a claim.
-                    if !qa && !fg_off && finish_claim_warns < 2 {
+                    if turn.finish_gates && finish_claim_warns < 2 {
                         let missing: Vec<String> =
                             artifacts::claimed_missing_files(&summary, workdir)
                                 .into_iter()
@@ -1507,7 +1509,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // Gate 3b (integrity): files the TASK names must exist, unless the summary
                     // reports them as failed. LRAB WF-04: "Task complete" with fix_summary.md
                     // never written; the summary did not name it, so gate 3 never saw it.
-                    if !qa && !child && !fg_off && named_gate_warns < 1 {
+                    if turn.plan_gates && named_gate_warns < 1 {
                         let task_text = qa::task_original_text(&messages, 100_000);
                         let t_missing =
                             integrity::task_named_missing(&task_text, &summary, workdir);
@@ -1529,7 +1531,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // Children are exempt from gates 4–6: one mechanical task, no plan to
                     // maintain; their exit contract (artefacts + finish) is checked by the
                     // dispatcher, and a blocked child only burns its budget into a timeout.
-                    if !qa && !child && !fg_off && plan_gate_warns < 2 {
+                    if turn.plan_gates && plan_gate_warns < 2 {
                         let p_missing: Vec<String> = artifacts::plan_named_missing(hdir, workdir)
                             .into_iter()
                             .filter(|f| !integrity::admits_failure_about(&summary, f))
@@ -1553,12 +1555,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // model giving up on finish after two "plan out of sync" refusals with the
                     // correct, verified result already on disk. Bookkeeping never outranks a
                     // verified deliverable; the todo is synced for it instead.
-                    if !qa
-                        && !child
-                        && policy.finish_gates
-                        && !params.ablated("finish_gate_text_only")
-                        && todo_gate_warns < 2
-                    {
+                    if turn.plan_gates && todo_gate_warns < 2 {
                         let (t_done, t_all) = todo_progress(&load_todo(hdir));
                         if t_all > 0 && t_done < t_all && integrity::verified_at_end(&cmd_records) {
                             // A passing check says the work is done, not that every planned
@@ -1594,7 +1591,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // the self-check, and probes_integrity2 t00/t04 showed the model answering
                     // the re-injected task in prose instead of calling finish again, so the
                     // dead-loop guard ended a run whose verified result was already on disk.
-                    if !qa && !child && policy.finish_gates && !finish_reread_used {
+                    if turn.plan_gates && !finish_reread_used {
                         finish_reread_used = true;
                         let orig = if integrity::verified_at_end(&cmd_records) {
                             log!("[{i}] pre-delivery check skipped: the last command was a passing check");
@@ -1620,8 +1617,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // tool-less call so the user sees a wrap-up.
                     if guards::semantically_empty(&content)
                         && summary.trim().is_empty()
-                        && !qa
-                        && !fg_off
+                        && turn.finish_gates
                     {
                         let mut wm = messages.clone();
                         wm.push(Message::tool_output(res.clone()));
@@ -1666,7 +1662,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     *k += 1;
                     let k = *k;
                     if k >= corrector::CONSULT_AT
-                        && !qa
+                        && turn.working
                         && !params.ablated("corrector")
                         && missing_arg_key(&res).is_none()
                         && corrector_calls < corrector::MAX_PER_RUN
@@ -1930,7 +1926,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 };
                 if idle {
                     idle_streak += 1;
-                    let note = if qa {
+                    let note = if turn.route == Route::Question {
                         (idle_streak == idle::QA_IDLE_NUDGE).then(|| idle::qa_nudge(idle_streak))
                     } else {
                         (idle_streak == idle::TASK_IDLE_NUDGE
@@ -2004,7 +2000,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                 }
                 // Time budget pacing (task mode only).
-                if budget_total > 0.0 && !qa {
+                if budget_total > 0.0 && turn.working {
                     let el = prev_elapsed + t0.elapsed().as_secs_f64();
                     budget::save_elapsed_at(&elapsed_path, el);
                     if let Some(bn) = budget::budget_nudge(budget_total, el, &mut budget_fired) {
@@ -2032,7 +2028,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                 }
                 // Stale-plan reminder (never a block, twice at most).
-                if !qa && todo_nudge_warns < 2 && todo_stale >= TODO_STALE_NUDGE {
+                if turn.working && todo_nudge_warns < 2 && todo_stale >= TODO_STALE_NUDGE {
                     let (t_done, t_all) = todo_progress(&load_todo(hdir));
                     if t_all > 0 && t_done < t_all {
                         let stale = todo_stale;

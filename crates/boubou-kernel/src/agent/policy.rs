@@ -17,6 +17,44 @@
 //! semantics (`interactive = true`). The two products are expected to pull `general` and
 //! `coding` apart; until then they are equal by construction and the tests say so.
 
+use crate::guards::qa::Intent;
+
+/// Which way a turn is routed: the policy applied to the decider's intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The task prompt, the full tool set, the task-route mechanisms.
+    Task,
+    /// The chat prompt and tool set; the Q&A guard, the idle cap and a text reply that is
+    /// the answer. No gates, no plan, no dispatch.
+    Question,
+    /// The task loop, ending once the model has acted and then reported (boubou-he2): the
+    /// task route's continue notes would otherwise push it into the next piece of work the
+    /// user never asked for.
+    FollowUp,
+}
+
+/// What the harness does on one turn: the policy applied to the decider's intent, child
+/// mode and the bench's ablations, derived once by [`TurnPolicy::turn`] and read by name.
+/// The loop reads these fields; it never recombines the inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Turn {
+    pub route: Route,
+    /// The model is working a task rather than answering: budget pacing, the stale-plan
+    /// reminder, the plan note on compaction, small-model rewrite mode and the corrector
+    /// apply.
+    pub working: bool,
+    /// `finish` meets the delivery gates: something delivered, the workdir's tests, the
+    /// summary's claims, the closing wrap-up. Off on the question route, under a policy
+    /// without gates, and under the finish-gate ablations.
+    pub finish_gates: bool,
+    /// The plan bookkeeping gates on top of `finish_gates`: files the task names, files the
+    /// plan names, the plan in sync, the pre-delivery re-read. Children are exempt: one
+    /// mechanical task, no plan to maintain, and the dispatcher checks their exit contract.
+    pub plan_gates: bool,
+    /// A plan may be dispatched to children this turn (the `parallel` config permitting).
+    pub dispatch: bool,
+}
+
 /// What the harness does around the model for one turn. See the module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnPolicy {
@@ -76,6 +114,34 @@ impl TurnPolicy {
         }
     }
 
+    /// The route for a turn whose opening message the decider read as `intent`. A child
+    /// always runs a task, and so does every turn under a policy without intent routing.
+    pub fn route(&self, intent: Intent, child: bool) -> Route {
+        if child || !self.intent_routing {
+            return Route::Task;
+        }
+        match intent {
+            Intent::Question => Route::Question,
+            Intent::FollowUp => Route::FollowUp,
+            Intent::Task => Route::Task,
+        }
+    }
+
+    /// Everything the loop needs to know about this turn, derived once. `gates_ablated` is
+    /// the bench's `finish_gate` / `finish_gate_text_only` ablation.
+    pub fn turn(&self, intent: Intent, child: bool, gates_ablated: bool) -> Turn {
+        let route = self.route(intent, child);
+        let working = route != Route::Question;
+        let finish_gates = working && self.finish_gates && !gates_ablated;
+        Turn {
+            route,
+            working,
+            finish_gates,
+            plan_gates: finish_gates && !child,
+            dispatch: working && !child && self.parallel_dispatch,
+        }
+    }
+
     /// The batch harness, as opposed to a conversation or an editor turn.
     pub fn is_unattended(&self) -> bool {
         *self == Self::unattended()
@@ -103,7 +169,7 @@ impl Default for TurnPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::TurnPolicy;
+    use super::{Intent, Route, Turn, TurnPolicy};
 
     #[test]
     fn the_two_product_presets_are_equal_until_they_diverge() {
@@ -116,6 +182,68 @@ mod tests {
         assert_eq!(g.intent_routing, c.intent_routing);
         assert_eq!(g.parallel_dispatch, c.parallel_dispatch);
         assert_ne!(g, c, "the names differ");
+    }
+
+    #[test]
+    fn the_route_follows_the_intent_only_where_the_policy_routes() {
+        let u = TurnPolicy::unattended();
+        assert_eq!(u.route(Intent::Question, false), Route::Question);
+        assert_eq!(u.route(Intent::FollowUp, false), Route::FollowUp);
+        assert_eq!(u.route(Intent::Task, false), Route::Task);
+        // A child always runs a task, whatever the decider read.
+        assert_eq!(u.route(Intent::Question, true), Route::Task);
+        // A conversation or an editor turn takes the task route for every intent.
+        for p in [TurnPolicy::general(), TurnPolicy::coding()] {
+            assert_eq!(p.route(Intent::Question, false), Route::Task);
+            assert_eq!(p.route(Intent::FollowUp, false), Route::Task);
+        }
+    }
+
+    #[test]
+    fn the_turn_is_the_policy_applied_to_intent_child_and_ablation() {
+        let u = TurnPolicy::unattended();
+        assert_eq!(
+            u.turn(Intent::Task, false, false),
+            Turn {
+                route: Route::Task,
+                working: true,
+                finish_gates: true,
+                plan_gates: true,
+                dispatch: true
+            }
+        );
+        // A question: the answer is the chat; nothing is gated, paced or dispatched.
+        assert_eq!(
+            u.turn(Intent::Question, false, false),
+            Turn {
+                route: Route::Question,
+                working: false,
+                finish_gates: false,
+                plan_gates: false,
+                dispatch: false
+            }
+        );
+        // A follow-up works and is gated like a task; only its ending differs.
+        let f = u.turn(Intent::FollowUp, false, false);
+        assert_eq!(f.route, Route::FollowUp);
+        assert!(f.working && f.finish_gates && f.plan_gates && f.dispatch);
+        // A child: delivery gates but no plan bookkeeping and no dispatch of its own.
+        assert_eq!(
+            u.turn(Intent::Task, true, false),
+            Turn {
+                route: Route::Task,
+                working: true,
+                finish_gates: true,
+                plan_gates: false,
+                dispatch: false
+            }
+        );
+        // The ablation switches every gate off, the plan bookkeeping included.
+        let a = u.turn(Intent::Task, false, true);
+        assert!(a.working && !a.finish_gates && !a.plan_gates && a.dispatch);
+        // A conversation: working, nothing gated, nothing dispatched.
+        let g = TurnPolicy::general().turn(Intent::Question, false, false);
+        assert!(g.route == Route::Task && g.working && !g.finish_gates && !g.dispatch);
     }
 
     #[test]
