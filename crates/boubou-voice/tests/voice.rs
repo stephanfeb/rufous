@@ -122,21 +122,22 @@ fn model_dir_resolution_and_int8_discipline() {
     assert!(f.tokens.is_file());
     assert_eq!(installed_langs(&bases), ["en"]);
     // float-only weights do not count as an installed model
-    let zh = fake_model_dir(root.path(), STT_MODEL_DIRS[1].1, false);
-    assert!(stt_files(&zh).is_none());
+    let float_only = fake_model_dir(root.path(), "sherpa-onnx-streaming-zipformer-float", false);
+    assert!(stt_files(&float_only).is_none());
     assert_eq!(installed_langs(&bases), ["en"]);
     // A base may name the model directory itself (BOUBOU_STT_DIR pointing straight at it).
     assert_eq!(stt_model_dir("en", std::slice::from_ref(&en)), Some(en));
-    assert!(install_hint("zh", root.path()).contains(STT_MODEL_DIRS[1].1));
+    // The hint names the English model whatever language was asked for.
+    assert!(install_hint("xx", root.path()).contains(STT_MODEL_DIRS[0].1));
 }
 
 #[test]
 fn availability_follows_feature_and_files() {
     let root = tempfile::tempdir().expect("tmp");
     let bases = vec![root.path().to_path_buf()];
-    assert!(!local_stt_available("zh", &bases));
+    assert!(!local_stt_available("en", &bases));
     fake_model_dir(root.path(), STT_MODEL_DIRS[0].1, true);
-    assert_eq!(local_stt_available("zh", &bases), cfg!(feature = "sherpa"));
+    assert_eq!(local_stt_available("en", &bases), cfg!(feature = "sherpa"));
 }
 
 #[test]
@@ -146,7 +147,7 @@ fn silence_is_no_voice_and_no_engine_is_unavailable() {
     let silent = encode_wav16(&tone(16_000, 0.5, 0.0));
     let req = Request {
         wav: &silent,
-        lang: "zh",
+        lang: "en",
         bases: &bases,
         ollama_host: "http://127.0.0.1:9",
         fallback_model: None,
@@ -187,16 +188,16 @@ fn ollama_transcript_post_processing() {
 }
 
 /// Real transcription of the model's own sample (`test_wavs/0.wav`). Skipped unless the
-/// Chinese model is installed (gitignored distribution asset) and the feature is on.
+/// English model is installed (gitignored distribution asset) and the feature is on.
 #[test]
-fn real_zh_transcription_when_model_present() {
+fn real_transcription_when_model_present() {
     let install = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_default();
     let bases = boubou_voice::stt_bases(&install, &boubou_core::config::agent_home());
-    let Some(dir) = stt_model_dir("zh", &bases).filter(|d| stt_files(d).is_some()) else {
-        eprintln!("skip: zh STT model not installed");
+    let Some(dir) = stt_model_dir("en", &bases).filter(|d| stt_files(d).is_some()) else {
+        eprintln!("skip: en STT model not installed");
         return;
     };
     if !cfg!(feature = "sherpa") {
@@ -210,7 +211,7 @@ fn real_zh_transcription_when_model_present() {
     };
     let req = Request {
         wav: &wav,
-        lang: "zh",
+        lang: "en",
         bases: &bases,
         ollama_host: "http://127.0.0.1:9",
         fallback_model: None,
@@ -219,9 +220,7 @@ fn real_zh_transcription_when_model_present() {
     assert_eq!(t.engine.as_str(), "sherpa");
     assert!(t.text.chars().count() > 4, "{}", t.text);
     assert!(
-        t.text
-            .chars()
-            .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+        t.text.chars().any(|c| c.is_ascii_alphabetic()),
         "{}",
         t.text
     );

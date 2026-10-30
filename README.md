@@ -50,7 +50,7 @@ built-in entry per family or tag (an empty note switches the built-in one off). 
 decider (`"decider": {"mode": "shadow"}`, model `d1:latest` through Ollama's native decision
 API) can shadow or take over the question-or-task decision; off by default. Voice input is behind the `voice` cargo feature
 (`cargo build --features voice`, sherpa-onnx linked statically): `boubou voice <wav>` and the
-web UI's mic button transcribe with the bundled sherpa-onnx models (English by default, Chinese also supported) from `~/.ollama_agent/stt/`
+web UI's mic button transcribe with the bundled sherpa-onnx English model from `~/.ollama_agent/stt/`
 or `BOUBOU_STT_DIR`, falling back to an Ollama audio model. `boubou acp --model <tag>` serves the
 [Agent Client Protocol](https://agentclientprotocol.com) over stdio, so an editor (Zed, JetBrains,
 Neovim) can run Boubou as its agent: streamed text and thoughts, tool calls with status and diffs,

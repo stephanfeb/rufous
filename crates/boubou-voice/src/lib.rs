@@ -2,9 +2,8 @@
 //!
 //! The page records 16 kHz mono PCM with an energy VAD (auto-stop after ~1.2 s of silence,
 //! 60 s cap) and posts a WAV. Transcription prefers the bundled sherpa-onnx streaming
-//! zipformer for the chosen language (CPU, faster than real time), falls back to the other
-//! bundled language, then to an Ollama audio-capable model, and reports `Unavailable` when
-//! none exists. The sherpa path is behind the `sherpa` cargo feature (native libraries);
+//! zipformer (English; CPU, faster than real time), falls back to an Ollama audio-capable
+//! model, and reports `Unavailable` when none exists. The sherpa path is behind the `sherpa` cargo feature (native libraries);
 //! model files are the same ones Mingbird ships, in `stt/<model dir>` under the install
 //! directory or the agent home (`BOUBOU_STT_DIR` names an extra location first).
 
@@ -17,11 +16,11 @@ use std::path::{Path, PathBuf};
 
 pub use wav::{encode_wav16, parse_wav, Pcm};
 
-/// Bundled streaming zipformer directories per language (int8 weights only).
-pub const STT_MODEL_DIRS: &[(&str, &str)] = &[
-    ("en", "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"),
-    ("zh", "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"),
-];
+/// Bundled streaming zipformer directories per language (int8 weights only). English only:
+/// Boubou targets en_UK, and Mingbird's Chinese model was dropped with the rest of its
+/// Chinese-language handling.
+pub const STT_MODEL_DIRS: &[(&str, &str)] =
+    &[("en", "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17")];
 
 /// Where the models are fetched from (the k2-fsa release that Mingbird's installer bundles).
 pub const STT_MODEL_URL_BASE: &str =
@@ -174,7 +173,7 @@ pub enum VoiceError {
 #[derive(Debug, Clone)]
 pub struct Request<'a> {
     pub wav: &'a [u8],
-    /// `en` | `zh` (the prefs' `stt_lang`).
+    /// The prefs' `stt_lang`; `en` is the only bundled model, anything else falls back to it.
     pub lang: &'a str,
     pub bases: &'a [PathBuf],
     /// Ollama host for the fallback.

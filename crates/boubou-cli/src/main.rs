@@ -85,7 +85,7 @@ enum Cmd {
     /// Transcribe a 16 kHz WAV file (local sherpa-onnx model, else an Ollama audio model).
     Voice {
         wav: PathBuf,
-        /// `en` or `zh` (which bundled model to use).
+        /// Language of the bundled model to use (`en` is the only one shipped).
         #[arg(long, default_value = "en")]
         lang: String,
         /// Ollama audio-capable model to fall back to when no local model is installed.

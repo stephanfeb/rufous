@@ -67,7 +67,7 @@ README and [docs/acp.md](acp.md).
 | `test_crawl_guard.py` | `tests/exec_tools.rs` | 8 of 8 | — |
 | `test_output_cap.py` | `tests/guards.rs`, `tests/agent_loop.rs` | 4 of 5 | `NUM_PREDICT` env override at import time (Boubou reads it in `RunParams::from_env`; the default is asserted) |
 | `test_v211_backends.py`, cloud cases of `test_offline_mode.py` / `test_v203_fixes.py` | `tests/openai_backend.rs`, `tests/ollama_proc.rs` | all | — (plus loopback round trips against a one-shot TCP server and scripted 4×500 restart runs) |
-| `test_v191_universal.py::TestBilingualSTT` | `boubou-voice/tests/voice.rs` | all | — (the real zh transcription test runs only when the model is installed and the feature is on) |
+| `test_v191_universal.py::TestBilingualSTT` | `boubou-voice/tests/voice.rs` | all | — (English model only; the real transcription test runs only when the model is installed and the feature is on) |
 
 `tests/agent_loop.rs` also adds loop tests Mingbird never had: explicit `budget_sec` beating the
 env, substantive-summary delivery, the todo sync gate's two-refusal limit, `enable_tools`
@@ -95,7 +95,7 @@ chunks, loopback captures, engine selection, think-probe gating, restart ladder)
 `boubou-cli/tests/cli.rs` is the headless `main()` suite; `boubou-voice/tests/voice.rs` covers
 WAV decode/encode/resample, model-dir resolution, the silence gate and the Ollama transcript
 post-processing. 296 tests in the default build, plus 28 in the `voice` feature build (voice,
-web, cli; the real zh transcription test runs when the model is present).
+web, cli; the real transcription test runs when the model is present).
 
 Counts are test functions, not parametrised cases. Several Python tests were merged where they
 shared a fixture; the assertions are all present.
