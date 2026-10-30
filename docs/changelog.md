@@ -1354,3 +1354,52 @@ last segment is `workdir`, and the model then addresses files as `workdir/x`. Th
 kernel-shaped compensation to design (bead `boubou-8e6`), the edit rule is not. Bead for the rule's
 fate: keep it only if a wider run (several models at 2–4B, n≥3) shows a mean gain; on this
 evidence it should go.
+
+## tier6_editor with gemma4:e2b, the finish gates alone switched off, and what the coding cells say about noise (2026-10-31)
+
+`AGENT_ABLATION=finish_gate`, every other compensation on, same axes; results in
+`bench/results/surface_editor/gemma_e2b_finish_gate_off`, every transcript logging
+`[ablation] off: finish_gate`. Mean 0.59 in 15 minutes. Under `coding` the gates are off by
+policy, so those five cells ran the probe's exact configuration again and are a repeat, not
+an arm; the unattended cells carry the measurement.
+
+| task | probe coding / unattended | gates off coding / unattended |
+|---|---|---|
+| ED-01 | 1.00 / 1.00 | 0.00 / 1.00 |
+| ED-02 | 1.00 / 1.00 | 0.43 / 1.00 |
+| ED-03 | 0.29 / 0.00 | 0.71 / 0.29 |
+| ED-04 | 0.21 / 0.89 | 0.21 / 0.43 |
+| ED-05 | 1.00 / 0.79 | 1.00 / 0.79 |
+| preset mean | 0.70 / 0.74 | 0.47 / 0.70 |
+
+The repeat first, because it bounds everything else. Five coding cells under an identical
+configuration moved from 0.70 to 0.47: ED-01 1.00 to 0.00 and ED-02 1.00 to 0.43 (both the
+invented `workdir/` path, six and four files created there), ED-03 0.29 to 0.71 (the
+rewrite happened to keep the referee's cases). The run-to-run spread of a single cell at
+this model size is the whole scale, and the spread of a five-cell preset mean is about 0.2.
+Every mean difference reported in the three ablation entries above (0.72 against 0.64
+against 0.69) is inside that spread. What those entries establish is the per-cell
+mechanism readings from the harness lines (the `edit_file` loop without the failure
+ladder, the six finishes over a failing check without the gates, the rename landing with
+real edits), not the means. A mean claim needs n≥3 per cell, and the bench's `--runs` or a
+repeat into separate `--results` dirs is the way to get it.
+
+The measurement. Unattended with the gates off scored 0.70 against 0.74, and the change is in
+two cells. ED-04 (0.89 to 0.43) ran 428 seconds and 70 calls: a `create_file` rewrite of
+`repo.py`, appends to the other two files, then 24 identical `sed -i 's/fetchAll/fetch_all/'
+store/repo.py` calls (BSD `sed` rejecting `-i` without a suffix), six empty turns and a hard
+reset, the duplicate block and the corrector firing on the `sed` loop, ten test runs, and a
+finish admitting the tests failed, accepted with no gate to send it back; the probe's cell
+ended with a passing test and a gate that let it through. ED-03 (0.00 to 0.29): the probe's
+cell was the `workdir/` loss, this one edited the real file and broke `collapse_spaces`. ED-01,
+ED-02 and ED-05 unattended were identical to the probe. No finish in this arm was refused
+(none could be), and the two unattended finishes over a failing check (ED-03, ED-04) both
+admitted the failure in the summary, which the claims gate lets through anyway. So on these
+five briefs the finish gates' measurable contribution under unattended is the test re-run
+on ED-02 (confirmed, not changed the result) and nothing else; the kernel-off entry's six
+finishes over a failing check came from the gates and the ladders going together, and this
+arm says most of that was the ladders.
+
+The `workdir/` path again: two more cells (ED-01 and ED-02 coding), six across five runs,
+bead boubou-8e6. It is now the largest single cause of lost cells for this model, ahead of
+anything the edit protocol or the gates did.
