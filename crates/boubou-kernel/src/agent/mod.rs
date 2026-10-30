@@ -89,14 +89,11 @@ pub struct RunParams {
     /// `AGENT_PRUNE_KEEP`: tool results kept verbatim by recency pruning (5 is the measured
     /// setting, [`history::PRUNE_KEEP`]); 0, the default, leaves the ladder alone as Mingbird.
     pub prune_keep: usize,
-    /// Interactive chat (`boubou chat`): a plain text reply ends the turn instead of
-    /// drawing a "continue with tools" note. The finish gates and the Q&A route still apply.
-    pub chat_mode: bool,
     /// What the harness does around the model this turn ([`TurnPolicy`]): whether text
     /// ends the turn, whether `finish` meets the delivery gates, whether a question is
     /// routed away from the producing tools, whether a plan may be dispatched. The default
     /// is [`TurnPolicy::unattended`], Mingbird's batch harness; the ACP server sets
-    /// [`TurnPolicy::coding`] and the web UI's chat [`TurnPolicy::general`]. A child run
+    /// [`TurnPolicy::coding`], the web UI's chat and `boubou chat` [`TurnPolicy::general`]. A child run
     /// is always unattended. The safety gate, the duplicate-call and failure ladders and
     /// compaction do not depend on the policy.
     pub policy: TurnPolicy,
@@ -147,7 +144,6 @@ impl RunParams {
             child_mode: std::env::var("AGENT_CHILD_SANDBOX").is_ok_and(|v| v == "1"),
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
             prune_keep: env_parse("AGENT_PRUNE_KEEP")?.unwrap_or(0),
-            chat_mode: false,
             policy: TurnPolicy::unattended(),
             harness_dir: None,
             profile,
@@ -176,7 +172,6 @@ impl RunParams {
             child_mode: false,
             sleep_scale: 1.0,
             prune_keep: 0,
-            chat_mode: false,
             policy: TurnPolicy::unattended(),
             harness_dir: None,
             profile,

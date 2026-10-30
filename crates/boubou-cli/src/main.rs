@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use boubou_kernel::agent::chat::model_can_think;
 use boubou_kernel::agent::openai;
 use boubou_kernel::agent::session::{self, load_checkpoint, load_session, sessions_dir};
-use boubou_kernel::agent::{Agent, AgentEvent, RunParams};
+use boubou_kernel::agent::{Agent, AgentEvent, RunParams, TurnPolicy};
 use boubou_kernel::config::{agent_home, config_path, Config};
 use boubou_kernel::guards::budget::{
     elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
@@ -436,8 +436,7 @@ fn chat(
 ) -> Result<()> {
     let workdir = std::path::absolute(workdir)?;
     std::fs::create_dir_all(&workdir)?;
-    let mut params = RunParams::from_env(model, &workdir)?;
-    params.chat_mode = true;
+    let params = chat_params(model, &workdir)?;
     let cli_tb = cli_budget(time_budget.as_deref());
     ensure_engine(cfg);
     let mut agent = Agent::standard(params, cfg)?.with_sink(print_event);
@@ -453,7 +452,7 @@ fn chat(
             m.pop();
             m
         });
-    println!("[interactive] type exit to quit.");
+    println!("[chat] type exit to quit.");
     let stdin = std::io::stdin();
     loop {
         print!("you> ");
@@ -476,6 +475,16 @@ fn chat(
         println!();
     }
     Ok(())
+}
+
+/// `boubou chat` is the general-purpose harness at a terminal: the same turn policy as the
+/// web UI's chat, so a text reply ends the turn, `finish` is accepted as is, every turn takes
+/// the task prompt and the full tool set, and nothing is dispatched. The environment
+/// (`AGENT_CTX` and the rest) is read as for `run`.
+fn chat_params(model: String, workdir: &Path) -> Result<RunParams> {
+    let mut params = RunParams::from_env(model, workdir)?;
+    params.policy = TurnPolicy::general();
+    Ok(params)
 }
 
 /// Ctrl-C: the first press raises the agent's stop flag, so the loop ends after the current
@@ -764,4 +773,19 @@ fn human_size(bytes: u64) -> String {
         return String::new();
     }
     format!("{:.1} GB", bytes as f64 / GB)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_runs_the_general_policy() {
+        // `boubou chat` and the web UI's chat are the same product at two surfaces: a text
+        // reply ends the turn, with no finish gates, no Q&A route and no dispatch.
+        let d = tempfile::tempdir().expect("tmp");
+        let p = chat_params("m".into(), d.path()).expect("params");
+        assert_eq!(p.policy, TurnPolicy::general());
+        assert_eq!(p.workdir, d.path());
+    }
 }

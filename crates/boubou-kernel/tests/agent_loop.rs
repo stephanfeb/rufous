@@ -930,11 +930,12 @@ fn text_only_task_turns_are_capped() {
 }
 
 #[test]
-fn chat_mode_text_reply_ends_the_turn() {
-    // `boubou chat`: a plain text reply is the answer even when the message reads like a task.
+fn general_policy_text_reply_ends_the_turn_even_for_a_task_shaped_message() {
+    // `boubou chat` and the web UI's chat: a plain text reply is the answer even when the
+    // message reads like a task, and nothing is appended for the next turn to see.
     let d = tempfile::tempdir().expect("tmp");
     let mut params = RunParams::plain("gemma4:12b", d.path());
-    params.chat_mode = true;
+    params.policy = TurnPolicy::general();
     let mut a = Agent::new(
         params,
         Responder {
@@ -951,16 +952,17 @@ fn chat_mode_text_reply_ends_the_turn() {
         .run(start("Write me a haiku about Rust"), None, None)
         .expect("loop");
     assert!(user_msgs(&out, "Continue: keep making").is_empty());
-    assert!(!user_msgs(&out, "Your answer is already sufficient").is_empty());
+    assert!(user_msgs(&out, "Your answer is already sufficient").is_empty());
     assert_eq!(
         out.iter()
             .filter(|m| m.role == Role::Assistant && m.tool_calls.is_empty())
             .count(),
         1
     );
-    assert!(out
-        .last()
-        .is_some_and(|m| m.role == Role::Tool && m.content.contains("TASK_COMPLETE")));
+    assert!(
+        out.last().is_some_and(|m| m.role == Role::Assistant),
+        "the history ends on the reply: {out:#?}"
+    );
 }
 
 #[test]

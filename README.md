@@ -93,7 +93,7 @@ boubou models
 boubou skills [workdir]
 boubou tools --enable web_fetch  # print the schemas the model receives
 boubou run <model> <taskfile> <workdir> [--session NAME] [--new] [--append]
-boubou chat <model> <workdir>
+boubou chat <model> <workdir>   # the general-purpose harness at a terminal: same turn policy as the web UI
 boubou acp --model <model>      # Agent Client Protocol over stdio, for an editor
 ```
 

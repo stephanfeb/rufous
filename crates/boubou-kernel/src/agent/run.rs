@@ -1148,8 +1148,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     } else {
                         repeat_count = 0;
-                        if qa || params.chat_mode {
-                            // A conversational reply is the answer: end the turn.
+                        if qa {
+                            // The answer to a question is the chat: end the turn.
                             casual_force = true;
                             messages.push(Message::user(
                                 "Your answer is already sufficient; the user is asking a question, not setting a task. Call finish now to end this turn. Do not repeat the output.",

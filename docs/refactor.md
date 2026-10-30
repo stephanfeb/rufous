@@ -72,8 +72,8 @@ Presets and who sets them:
 
 | Preset | `text_ends_turn` | `finish_gates` | `intent_routing` | `parallel_dispatch` | Set by |
 |---|---|---|---|---|---|
-| `unattended` | off | on | on | on | `boubou run`, `boubou chat`, children, the web UI with `batch: true`; the default |
-| `general` | on | off | off | off | the web UI's chat (`boubou serve`, `boubou-app`) |
+| `unattended` | off | on | on | on | `boubou run`, children, the web UI with `batch: true`; the default |
+| `general` | on | off | off | off | the web UI's chat (`boubou serve`, `boubou-app`) and `boubou chat` |
 | `coding` | on | off | off | off | the ACP server (`boubou acp`, Zed) |
 
 `general` and `coding` are equal field for field today: they are the two behaviours the loop
@@ -84,10 +84,6 @@ divergence is a deliberate, documented change (step 9 below) and not drift.
 
 Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 
-- **`RunParams::chat_mode`** (`boubou chat`): a text reply draws a "your answer is
-  sufficient, call finish" note instead of ending the turn. It runs the `unattended` policy
-  with one exception bolted on. It should become `general`, once the difference between
-  "text ends the turn" and "text asks for finish" is either reconciled or made a policy field.
 - **`RunParams::child_mode`**: three things in one flag. The ring-0 sandbox and the
   narrowed tool face are safety, and stay where they are; "never Q&A, never dispatch, batch
   gates" is a policy and is already expressed as `unattended`; the child system prompt is
@@ -114,7 +110,7 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 |---|---|---|---|
 | 1 | `TurnPolicy` struct with `general`, `coding` and `unattended`; `RunParams::interactive` removed; every surface sets a preset | workspace tests pass with no behaviour change; the equality test is in | done |
 | 2 | Crates mirror the repositories: `boubou-core` → `boubou-kernel`, `boubou-web` → `boubou-general`, `boubou-acp` → `boubou-coding` | the workspace builds and tests under the new names; the kernel depends on no product crate | done |
-| 3 | `boubou chat` runs `general`; `chat_mode` folded into the policy or removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | open |
+| 3 | `boubou chat` runs `general`; `chat_mode` removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | done |
 | 4 | The intent route is a value the policy derives from the decider's intent | `qa`/`follow_up` read in fewer than ten places in `run.rs`; no `!child && policy.x && intent == …` expressions | open |
 | 5 | System prompt chosen from the policy and the route | `run.rs` no longer branches on `child` or `qa` to pick a prompt | open |
 | 6 | The finish gates are named units the policy lists | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | open |
