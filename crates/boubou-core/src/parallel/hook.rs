@@ -1,11 +1,18 @@
-//! `_maybe_parallel_dispatch`: the harness-level hook at the start of a fresh task.
+//! `_maybe_parallel_dispatch`: the harness-level hook, run at the start of a fresh task and
+//! once more right after the model writes its plan.
 //!
 //! When the plan is large, a batch of its items is mechanical, and the machine can hold a
 //! small model next to the parent, those items are dispatched to headless children before
-//! the parent model takes its first turn. The model does not need to know the mechanism
+//! the parent model works through them itself. The model does not need to know the mechanism
 //! exists: the system prompt is unchanged and the trigger lives entirely in code. After a
 //! dispatch the parent gets one user message prefixed with [`DISPATCH_NOTE_MARK`], which
 //! routing and Q&A detection skip and which makes a resumed run idempotent.
+//!
+//! Mingbird ran the hook only before the first model turn, when a fresh task has no plan
+//! yet (its runners delete the plan file on a new task), so the trigger was reachable only
+//! from a hand-written `todo.json`. The loop now calls it again after the first successful
+//! `todo(action=create)`, which is where the plan comes from; the plan is read from the
+//! harness directory, wherever the session keeps it.
 //!
 //! Any fault in the dispatch layer degrades to serial execution; it never fails the task.
 
@@ -22,7 +29,7 @@ use super::dispatch::{ParallelDispatcher, ResultIntegrator, Spawner};
 use super::probe::{CapacityPlanner, ResourceProbe};
 use super::trigger::{should_dispatch, JsonTodoProvider};
 use crate::guards::qa::DISPATCH_NOTE_MARK;
-use crate::ollama::{Message, Role};
+use crate::ollama::Message;
 
 /// What the hook reports while it works.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,11 +116,9 @@ impl DispatchHook {
         if super::config::hard_disabled(&self.env) {
             return true;
         }
-        // Only a brand-new task: no tool results yet (a resumed run is left alone).
-        if messages.iter().any(|m| m.role == Role::Tool) {
-            return true;
-        }
-        // Idempotence: a receipt already in the history means the dispatch happened.
+        // Idempotence: a receipt already in the history means the dispatch happened. (The
+        // loop, not the hook, keeps a resumed run from dispatching: it calls the hook at
+        // the start only when no tool has run yet, and after the plan is written only once.)
         if messages
             .iter()
             .any(|m| m.content.starts_with(DISPATCH_NOTE_MARK))
@@ -126,17 +131,20 @@ impl DispatchHook {
         !self.cfg.enabled
     }
 
-    /// The hook. Returns the (possibly extended) message list.
+    /// The hook. `workdir` is where the children work, `plan_dir` where the plan (`todo.json`)
+    /// lives: the same directory for the CLI, the session's harness directory for an editor
+    /// or web session. Returns the (possibly extended) message list.
     pub fn maybe_dispatch(
         &self,
         mut messages: Vec<Message>,
         workdir: &Path,
+        plan_dir: &Path,
         emit: &mut dyn FnMut(HookEvent),
     ) -> Vec<Message> {
         if self.skip(&messages) {
             return messages;
         }
-        match self.dispatch(workdir, emit) {
+        match self.dispatch(workdir, plan_dir, emit) {
             Ok(Some(note)) => {
                 messages.push(Message::user(format!("{DISPATCH_NOTE_MARK} {note}")));
             }
@@ -151,10 +159,11 @@ impl DispatchHook {
     fn dispatch(
         &self,
         workdir: &Path,
+        plan_dir: &Path,
         emit: &mut dyn FnMut(HookEvent),
     ) -> Result<Option<String>, String> {
         let cfg = &self.cfg;
-        let mut provider = JsonTodoProvider::new(workdir);
+        let mut provider = JsonTodoProvider::new(plan_dir);
         let probe: Arc<dyn CapacityPlanner> = match &self.probe {
             Some(p) => p.clone(),
             None => Arc::new(ResourceProbe::new(self.ollama_host.clone())),

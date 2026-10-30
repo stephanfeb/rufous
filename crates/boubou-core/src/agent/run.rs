@@ -35,6 +35,7 @@ use crate::guards::budget::{self, BudgetMark};
 use crate::guards::edit::EditConvergenceGuard;
 use crate::guards::idle;
 use crate::guards::qa::Intent;
+use crate::guards::qa::DISPATCH_NOTE_MARK;
 use crate::guards::{self, artifacts, integrity, leak, qa};
 use crate::ollama::{FunctionCall, Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
@@ -700,14 +701,23 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             }
             Some(face::route_categories(&qa::task_routing_text(&messages)))
         };
-        // Parallel dispatch hook (harness layer; Q&A, children and resumed runs skip it —
-        // the hook itself re-checks the child, kill-switch, no-tool-message and receipt gates).
-        if !qa && !child && !interactive {
+        // Parallel dispatch hook (harness layer; Q&A, children and editor turns skip it, the
+        // hook itself re-checks the child, kill-switch and receipt gates). A fresh task with a
+        // plan already on disk dispatches here; a resumed run (tool results in the history)
+        // is left alone. The usual case, the model writing its plan on its first turn, is
+        // handled below: the hook runs once more after the first successful todo(create).
+        let dispatch_wanted = parallel.is_some() && !qa && !child && !interactive;
+        let mut dispatch_after_plan = dispatch_wanted;
+        if dispatch_wanted && !messages.iter().any(|m| m.role == Role::Tool) {
             if let Some(hook) = parallel.as_ref() {
-                messages = hook.maybe_dispatch(messages, workdir, &mut |ev| match ev {
+                messages = hook.maybe_dispatch(messages, workdir, hdir, &mut |ev| match ev {
                     HookEvent::Log(l) => sink(AgentEvent::Log(l)),
                     HookEvent::Dispatch(v) => sink(AgentEvent::Dispatch(v)),
                 });
+                // Dispatched already: the receipt keeps a second run idempotent anyway.
+                dispatch_after_plan = !messages
+                    .iter()
+                    .any(|m| m.content.starts_with(DISPATCH_NOTE_MARK));
             }
         }
         let small_model = !qa && guards::is_small_model(model);
@@ -1990,9 +2000,24 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages.push(Message::user(bn));
                     }
                 }
+                let plan_just_written = dispatch_after_plan
+                    && n == "todo"
+                    && args.get("action").and_then(Value::as_str) == Some("create")
+                    && todo_progress(&load_todo(hdir)).1 > 0;
                 messages.push(Message::tool_output(res));
                 if let Some(note) = after_output.take() {
                     messages.push(Message::user(note));
+                }
+                // The plan exists now: the one chance to farm its mechanical items out.
+                if plan_just_written {
+                    dispatch_after_plan = false;
+                    if let Some(hook) = parallel.as_ref() {
+                        messages =
+                            hook.maybe_dispatch(messages, workdir, hdir, &mut |ev| match ev {
+                                HookEvent::Log(l) => sink(AgentEvent::Log(l)),
+                                HookEvent::Dispatch(v) => sink(AgentEvent::Dispatch(v)),
+                            });
+                    }
                 }
                 // Stale-plan reminder (never a block, twice at most).
                 if !qa && todo_nudge_warns < 2 && todo_stale >= TODO_STALE_NUDGE {

@@ -34,8 +34,10 @@ Parallel dispatch is in and off by default: with `"parallel": {"enabled": true, 
 "<tag>"}` in `config.json`, a plan with enough simple single-file items is farmed out to
 sandboxed child processes (`AGENT_CHILD_SANDBOX=1`, default-deny tool face, writes only inside
 the child directory, audit log, exit 53 on a severe violation); each child runs at
-`parallel.child_ctx`, the context window the capacity plan budgets for it. `boubou plan` shows
-what this machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
+`parallel.child_ctx`, the context window the capacity plan budgets for it. The hook looks at the
+plan when the loop starts and once more right after the model writes it, so a fresh task can
+dispatch (Mingbird looked only before the first turn, when a new task has no plan yet). `boubou
+plan` shows what this machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
 automatically after four consecutive 500s; a server Boubou did not start is given time to be
 relaunched by its own supervisor, the Ollama app or systemd, and a bound port is never spawned
 over, so there is only ever one server), an OpenAI-compatible local server (LM Studio,

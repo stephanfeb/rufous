@@ -276,8 +276,112 @@ fn hook(cfg: ParallelConfig, env: &[(&str, &str)]) -> DispatchHook {
 
 fn run_hook(h: &DispatchHook, msgs: Vec<Message>, wd: &Path) -> (Vec<Message>, Vec<HookEvent>) {
     let mut ev = Vec::new();
-    let out = h.maybe_dispatch(msgs, wd, &mut |e| ev.push(e));
+    let out = h.maybe_dispatch(msgs, wd, wd, &mut |e| ev.push(e));
     (out, ev)
+}
+
+/// A tool runner whose `todo(action=create)` really writes the plan, into `plan_dir`.
+struct PlanWriter {
+    plan_dir: std::path::PathBuf,
+}
+
+impl ToolRunner for PlanWriter {
+    fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        match name {
+            "todo" => {
+                let items: Vec<TodoItem> = args["items"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(TodoItem::new)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let n = items.len();
+                save_todo(&self.plan_dir, &items).expect("plan");
+                format!("[todo created: {n} items]")
+            }
+            "finish" => "[TASK_COMPLETE] all done".to_string(),
+            _ => "[tool error: not scripted]".to_string(),
+        }
+    }
+}
+
+#[test]
+fn the_plan_the_model_writes_is_dispatched_once_from_the_harness_dir() {
+    // The usual shape: no plan on disk when the loop starts, the model writes one with its
+    // first call, the hook then reads it from the session's harness directory (not the
+    // project) and farms the mechanical items out. A second todo(create) does not dispatch again.
+    let d = tempfile::tempdir().expect("tmp");
+    let hdir = d.path().join("session.files");
+    let items: Vec<Value> = (1..=6)
+        .map(|i| Value::from(format!("convert data{i}.csv to a markdown table")))
+        .collect();
+    let calls: Vec<Call> = vec![
+        ("todo", json!({"action": "create", "items": items}), ""),
+        ("todo", json!({"action": "create", "items": ["again"]}), ""),
+    ];
+    let mut params = RunParams::plain("small:2b", d.path());
+    params.harness_dir = Some(hdir.clone());
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let mut a = Agent::new(
+        params,
+        Scripted { calls, i: 0 },
+        PlanWriter {
+            plan_dir: hdir.clone(),
+        },
+    )
+    .with_parallel(hook(enabled_cfg(), &[]))
+    .with_sink(move |ev| sink.lock().expect("events").push(ev));
+    a.sessions_dir = d.path().join("sessions");
+    let msgs = a
+        .run(
+            vec![
+                Message::system("sys"),
+                Message::user("Convert each data*.csv file in this directory to a markdown table."),
+            ],
+            None,
+            None,
+        )
+        .expect("loop");
+    let receipts: Vec<usize> = msgs
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.content.starts_with(DISPATCH_NOTE_MARK))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        receipts.len(),
+        1,
+        "one dispatch for two plan writes: {msgs:#?}"
+    );
+    let first_tool = msgs
+        .iter()
+        .position(|m| m.role == Role::Tool)
+        .expect("the todo call ran");
+    assert!(
+        receipts[0] > first_tool,
+        "the receipt follows the plan, it does not precede the model's first turn"
+    );
+    for i in 1..=6 {
+        assert!(
+            d.path().join(format!("out_task{i:02}.md")).is_file(),
+            "child {i} ran in the project"
+        );
+    }
+    assert!(
+        !d.path().join("todo.json").exists(),
+        "no plan in the project"
+    );
+    let ev = events.lock().expect("events");
+    assert_eq!(
+        ev.iter()
+            .filter(|e| matches!(e, AgentEvent::Log(l) if l.contains("[parallel] triggered")))
+            .count(),
+        1
+    );
 }
 
 #[test]
