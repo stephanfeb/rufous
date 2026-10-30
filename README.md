@@ -24,7 +24,7 @@ sessions it writes load in Mingbird and vice versa. Web search/fetch (shared res
 long-term memory, parallel `batch_tools` and MCP (stdio and streamable HTTP via `rmcp`, tools
 flattened into the categories as `server.tool`) are in. `boubou doctor` probes every MCP server;
 `boubou tool <name> '<json>'` runs any single tool, built-in or `server.tool`, for debugging.
-Web search defaults to Brave, then DuckDuckGo, then Bing, then Baidu (`AGENT_SEARCH_BACKENDS` overrides); a query that names a site is fetched directly first, and results sharing no word with the query are dropped.
+Web search defaults to Brave, then DuckDuckGo, then Bing (`AGENT_SEARCH_BACKENDS` overrides); a query that names a site is fetched directly first, and results sharing no word with the query are dropped.
 `boubou serve` runs the local web UI: a session rail, the conversation with per-turn run blocks
 (every tool call with its step time), inline permission cards, a pinned composer with the model and
 Online/Offline controls, and an inspector with the live plan, activity and files; dark by default,

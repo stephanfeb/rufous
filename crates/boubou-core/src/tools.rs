@@ -160,7 +160,7 @@ pub fn advanced_tools() -> Vec<Value> {
         spec("append_file", "Append text to the end of a file", json!({"path": s(), "content": s()}), &["path", "content"]),
         spec("delete_file", "Delete a file (moved to .mingbird_trash/, recoverable)", json!({"path": s()}), &["path"]),
         spec("search_files", "Grep-like content search in a directory", json!({"path": s(), "pattern": s()}), &["path", "pattern"]),
-        spec("web_search", "Search the web (Bing/Baidu), return titles+links+snippets", json!({"query": s()}), &["query"]),
+        spec("web_search", "Search the web, return titles+links+snippets", json!({"query": s()}), &["query"]),
         spec("web_fetch", "Fetch a URL: full text saved to sources/, return summary+path", json!({"url": s()}), &["url"]),
         spec("web_search_multi", "Parallel search multiple queries at once (fast)",
             json!({"queries": str_array(), "max_results": n()}), &["queries"]),

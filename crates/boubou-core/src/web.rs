@@ -1,8 +1,8 @@
 //! `web_search`, `web_search_multi`, `web_fetch` and the on-disk result cache.
 //!
-//! Search scrapes the HTML of the configured backends (Brave, DuckDuckGo's HTML endpoint,
-//! Bing and Baidu by default, overridable with `AGENT_SEARCH_BACKENDS`); Bing/Baidu use
-//! Mingbird's selectors, Brave and DuckDuckGo are Boubou's additions. Three guards sit on top
+//! Search scrapes the HTML of the configured backends (Brave, DuckDuckGo's HTML endpoint
+//! and Bing by default, overridable with `AGENT_SEARCH_BACKENDS`); Bing uses Mingbird's
+//! selectors, Brave and DuckDuckGo are Boubou's additions. Three guards sit on top
 //! of the scraping (2026-10-28, after Bing answered "jevai.net" with ten Microsoft Forms
 //! pages): a result must mention at least one word of the query or it is dropped, a backend
 //! whose results all fail that floor is skipped and never cached, a bot-challenge page is
@@ -25,13 +25,12 @@ use crate::text::{clen, head};
 /// Brave first: it serves full HTML to Boubou's user agent and indexes new sites quickly.
 /// DuckDuckGo's HTML endpoint second (it currently answers bots with a challenge page, which
 /// `search` reports rather than treating as "no results"). Bing third: its filler results
-/// for unindexed terms are caught by the relevance floor. Baidu last, for Chinese queries.
-/// Override with `AGENT_SEARCH_BACKENDS` (comma-separated URLs).
-pub const DEFAULT_BACKENDS: [&str; 4] = [
+/// for unindexed terms are caught by the relevance floor. Override with
+/// `AGENT_SEARCH_BACKENDS` (comma-separated URLs).
+pub const DEFAULT_BACKENDS: [&str; 3] = [
     "https://search.brave.com/search?source=web",
     "https://html.duckduckgo.com/html/",
     "https://www.bing.com/search",
-    "https://www.baidu.com/s",
 ];
 pub const CACHE_TTL: Duration = Duration::from_secs(3600);
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
@@ -121,7 +120,6 @@ fn text_flat(el: ElementRef<'_>) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Engine {
     Bing,
-    Baidu,
     DuckDuckGo,
     Brave,
 }
@@ -129,9 +127,7 @@ pub enum Engine {
 impl Engine {
     /// Guess from the backend URL; anything unknown is parsed with Bing's selectors.
     pub fn for_backend(url: &str) -> Self {
-        if url.contains("baidu") {
-            Self::Baidu
-        } else if url.contains("duckduckgo") {
+        if url.contains("duckduckgo") {
             Self::DuckDuckGo
         } else if url.contains("brave") {
             Self::Brave
@@ -141,8 +137,8 @@ impl Engine {
     }
 }
 
-/// Result blocks (`• title\n  url\n  snippet`) from a Brave, Bing, Baidu or DuckDuckGo
-/// results page.
+/// Result blocks (`• title\n  url\n  snippet`) from a Brave, Bing or DuckDuckGo results
+/// page.
 pub fn parse_search_results(html: &str, engine: Engine, max_results: usize) -> Vec<String> {
     let doc = Html::parse_document(html);
     if engine == Engine::Brave {
@@ -150,17 +146,11 @@ pub fn parse_search_results(html: &str, engine: Engine, max_results: usize) -> V
     }
     let items = match engine {
         Engine::Bing => sel("li.b_algo"),
-        Engine::Baidu => sel("div.result.c-container"),
         Engine::DuckDuckGo => sel("div.result"),
         Engine::Brave => unreachable!("handled above"),
     };
     let (h2a, h3a, ddg_a) = (sel("h2 a"), sel("h3 a"), sel("a.result__a"));
-    let (cap_bing, cap_p, cap_baidu, cap_ddg) = (
-        sel(".b_caption p"),
-        sel("p"),
-        sel(".c-abstract"),
-        sel(".result__snippet"),
-    );
+    let (cap_bing, cap_p, cap_ddg) = (sel(".b_caption p"), sel("p"), sel(".result__snippet"));
     let mut out = Vec::new();
     for li in doc.select(&items).take(max_results) {
         let a = match engine {
@@ -180,8 +170,7 @@ pub fn parse_search_results(html: &str, engine: Engine, max_results: usize) -> V
             _ => li
                 .select(&cap_bing)
                 .next()
-                .or_else(|| li.select(&cap_p).next())
-                .or_else(|| li.select(&cap_baidu).next()),
+                .or_else(|| li.select(&cap_p).next()),
         }
         .map(|c| head(&text_spaced(c), 200).to_string())
         .unwrap_or_default();
@@ -269,8 +258,8 @@ pub fn query_tokens(query: &str) -> Vec<String> {
 }
 
 /// The relevance floor: `block` (title, URL and snippet) must contain at least one token as
-/// a whole word, or share a five-letter prefix with one (plurals and verb forms). Non-ASCII
-/// tokens (Chinese has no word boundaries) match as substrings. No tokens means no floor.
+/// a whole word, or share a five-letter prefix with one (plurals and verb forms). No tokens
+/// means no floor.
 pub fn is_relevant(tokens: &[String], block: &str) -> bool {
     if tokens.is_empty() {
         return true;
@@ -281,9 +270,6 @@ pub fn is_relevant(tokens: &[String], block: &str) -> bool {
         .filter(|w| !w.is_empty())
         .collect();
     tokens.iter().any(|t| {
-        if !t.is_ascii() {
-            return lower.contains(t.as_str());
-        }
         words.iter().any(|w| {
             *w == t.as_str()
                 || (t.len() >= 5 && w.starts_with(t.as_str()))

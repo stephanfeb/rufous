@@ -24,12 +24,6 @@ const BING: &str = r#"<html><body><ol id="b_results">
 <li class="b_algo"><h2><a href="https://a.example/3">Gamma</a></h2></li>
 </ol></body></html>"#;
 
-const BAIDU: &str = r#"<html><body>
-<div class="result c-container"><h3 class="t"><a href="http://b.example/x">Baidu result</a></h3>
-  <div class="c-abstract">snippet text</div></div>
-<div class="result c-container"><h3><a href="http://b.example/y">second item</a></h3></div>
-</body></html>"#;
-
 fn home() -> tempfile::TempDir {
     tempfile::tempdir().expect("tmp")
 }
@@ -83,17 +77,6 @@ fn bing_results_parse_like_bs4() {
     assert_eq!(out[1], "• Beta\n  https://a.example/2\n  Loose paragraph.");
     assert_eq!(out[2], "• Gamma\n  https://a.example/3\n  ");
     assert_eq!(parse_search_results(BING, Engine::Bing, 1).len(), 1);
-}
-
-#[test]
-fn baidu_results_parse_like_bs4() {
-    let out = parse_search_results(BAIDU, Engine::Baidu, 5);
-    assert_eq!(out.len(), 2);
-    assert_eq!(
-        out[0],
-        "• Baidu result\n  http://b.example/x\n  snippet text"
-    ); // bs4 strips only the ends of a text node
-    assert!(parse_search_results(BAIDU, Engine::Bing, 5).is_empty());
 }
 
 const DDG: &str = r#"<html><body><div id="links" class="results">
@@ -152,11 +135,10 @@ fn brave_results_parse_titles_urls_and_snippets() {
 
 #[test]
 fn default_backends_brave_first_and_map_to_engines() {
-    assert_eq!(DEFAULT_BACKENDS.len(), 4);
+    assert_eq!(DEFAULT_BACKENDS.len(), 3);
     assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[0]), Engine::Brave);
     assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[1]), Engine::DuckDuckGo);
     assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[2]), Engine::Bing);
-    assert_eq!(Engine::for_backend(DEFAULT_BACKENDS[3]), Engine::Baidu);
     assert!(DEFAULT_BACKENDS[0].contains("search.brave.com"));
     assert_eq!(
         Engine::for_backend("https://example.org/s?q={query}"),
@@ -194,11 +176,6 @@ fn relevance_floor_tokens_and_matching() {
     let t = query_tokens("ai");
     assert!(is_relevant(&t, "• Jev AI\n  u\n  "));
     assert!(!is_relevant(&t, "• Aim high\n  u\n  "));
-    // No word boundaries in Chinese: substring match.
-    assert!(is_relevant(
-        &query_tokens("鸣鸟"),
-        "• 鸣鸟本地助手\n  u\n  "
-    ));
     // No tokens, no floor.
     assert!(is_relevant(&[], "anything"));
 }
