@@ -128,7 +128,10 @@ pub fn parse_verdict(resp: &ChatResponse, failing: (&str, &Value)) -> Verdict {
             );
         }
     }
-    const BLOCKED: [&str; 8] = [
+    // Phrases that say the failure is outside the agent's reach. The bare word
+    // `environment` is not one: "check the environment variable" is a retry hint, and a
+    // give-up blocks the call for the rest of the run.
+    const BLOCKED: &[&str] = &[
         "cannot be fixed",
         "can't be fixed",
         "not fixable",
@@ -136,7 +139,10 @@ pub fn parse_verdict(resp: &ChatResponse, failing: (&str, &Value)) -> Verdict {
         "service unavailable",
         "no command will",
         "out of the agent's control",
-        "environment",
+        "environment problem",
+        "environment error",
+        "environment issue",
+        "environmental",
     ];
     if !low.is_empty() && BLOCKED.iter().any(|w| low.contains(w)) {
         return Verdict::GiveUp {
@@ -280,6 +286,16 @@ mod tests {
         );
         assert_eq!(
             parse_verdict(&ChatResponse::text("Let me think about this."), (&n, &a)),
+            Verdict::Unclear
+        );
+        // Mentioning the environment while suggesting a fix is not giving up.
+        assert_eq!(
+            parse_verdict(
+                &ChatResponse::text(
+                    "The environment variable PYTHONPATH does not include src; run it as python3 -m src.fetch instead."
+                ),
+                (&n, &a)
+            ),
             Verdict::Unclear
         );
     }
