@@ -38,7 +38,7 @@ use crate::{Error, Result};
 pub use chat::{ChatBackend, ChatError, ChatResponse, DynBackend, OllamaBackend, StreamPiece};
 pub use face::ToolFace;
 pub use openai::OpenAiBackend;
-pub use policy::TurnPolicy;
+pub use policy::{Gate, Gates, TurnPolicy};
 pub use run::{Agent, ToolRunner};
 
 pub const DEFAULT_NUM_CTX: u32 = 131_072;

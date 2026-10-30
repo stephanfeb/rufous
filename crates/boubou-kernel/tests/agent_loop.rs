@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use boubou_kernel::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
-use boubou_kernel::agent::{Agent, AgentEvent, RunParams, ToolRunner, TurnPolicy};
+use boubou_kernel::agent::{Agent, AgentEvent, Gate, Gates, RunParams, ToolRunner, TurnPolicy};
 use boubou_kernel::guards::budget::{elapsed_meta_path, load_elapsed, save_elapsed};
 use boubou_kernel::guards::idle::{QA_IDLE_CAP, QA_IDLE_NUDGE};
 use boubou_kernel::ollama::{FunctionCall, Message, Role, ToolCall};
@@ -2398,6 +2398,59 @@ fn interactive_finish_is_accepted_without_gates() {
         "{out:#?}"
     );
     assert!(user_msgs(&out, "Pre-delivery check").is_empty());
+    assert_eq!(
+        out.iter()
+            .filter(|m| m.tool_calls.iter().any(|t| t.function.name == "finish"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_preset_lists_its_gates_one_by_one() {
+    // The coding product's expected shape, by changing the preset alone: the
+    // named-deliverable gate on, every other gate off. The task names fix_summary.md and it
+    // is never written, so finish is bounced once by that gate; the hollow-finish gate
+    // (nothing delivered), the test guard and the pre-delivery re-read stay silent.
+    let task = "Read inventory.py, write bug_report.md, fix the bugs, then write fix_summary.md.";
+    let setup = || {
+        let d = tempfile::tempdir().expect("tmp");
+        std::fs::write(d.path().join("inventory.py"), "x = 1").expect("w");
+        std::fs::write(d.path().join("bug_report.md"), "# bugs").expect("w");
+        std::fs::write(
+            d.path().join("test_inventory.py"),
+            "def test_x():\n    assert False\n",
+        )
+        .expect("w");
+        d
+    };
+    let d = setup();
+    let mut a = agent_with(d.path(), &[], "", "Task complete.");
+    a.params.policy = TurnPolicy {
+        gates: Gates::NONE.with(Gate::NamedFiles),
+        ..TurnPolicy::coding()
+    };
+    let out = a.run(start(task), None, None).expect("loop");
+    let named = user_msgs(&out, "the task names these files");
+    assert_eq!(named.len(), 1, "{out:#?}");
+    assert!(named[0].content.contains("fix_summary.md"));
+    assert!(user_msgs(&out, "nothing has been delivered").is_empty());
+    assert!(user_msgs(&out, "tests").is_empty(), "the test guard is off");
+    assert!(user_msgs(&out, "Pre-delivery check").is_empty());
+    assert_eq!(
+        out.iter()
+            .filter(|m| m.tool_calls.iter().any(|t| t.function.name == "finish"))
+            .count(),
+        2,
+        "bounced once, then accepted"
+    );
+
+    // The same run under the plain coding preset: no gate at all.
+    let d = setup();
+    let mut a = agent_with(d.path(), &[], "", "Task complete.");
+    a.params.policy = TurnPolicy::coding();
+    let out = a.run(start(task), None, None).expect("loop");
+    assert!(user_msgs(&out, "the task names these files").is_empty());
     assert_eq!(
         out.iter()
             .filter(|m| m.tool_calls.iter().any(|t| t.function.name == "finish"))

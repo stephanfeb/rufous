@@ -61,24 +61,26 @@ The repositories split when two of these three hold:
 `RunParams::interactive` boolean. A child run (`AGENT_CHILD_SANDBOX=1`) always runs
 `unattended`. At the start of a turn the loop calls `policy.turn(intent, child, ablated)`
 once and gets a `Turn`: the `Route` (task, question, follow-up), the `Prompt` that frames
-the turn (task, chat, child) and the switches derived from the route (`working`,
-`finish_gates`, `plan_gates`, `dispatch`). From there the loop reads those names and never
-recombines the inputs; the system prompt is built in one place from `Turn::prompt`.
+the turn (task, chat, child), the `Gates` this turn runs (the policy's, none on the
+question route or under the ablations, minus the plan bookkeeping for a child) and the
+switches derived from the route (`working`, `dispatch`). From there the loop reads those
+names and never recombines the inputs; the system prompt is built in one place from
+`Turn::prompt`, and each gate block asks `turn.gates.has(Gate::…)`.
 
 | Field | On | Off |
 |---|---|---|
 | `text_ends_turn` | a text reply with no tool call ends the turn; two empty replies end it | continue note; context reset after repeated empty replies |
-| `finish_gates` | `finish` must pass: delivery, tests, claimed artefacts, named deliverables, plan sync, pre-delivery re-read, closing wrap-up | `finish` accepted as is |
+| `gates` | the set of finish gates `finish` must pass, one `Gate` each: delivery, tests, claims, claimed files, named files, plan files, plan sync, re-read, wrap-up | empty: `finish` accepted as is |
 | `intent_routing` | a question takes the Q&A prompt and loses the producing tools; a follow-up ends once acted on and reported | every turn takes the task prompt and the full tool set |
 | `parallel_dispatch` | a plan with enough simple items is farmed out to sandboxed children when `parallel` is configured | nothing is dispatched |
 
 Presets and who sets them:
 
-| Preset | `text_ends_turn` | `finish_gates` | `intent_routing` | `parallel_dispatch` | Set by |
+| Preset | `text_ends_turn` | `gates` | `intent_routing` | `parallel_dispatch` | Set by |
 |---|---|---|---|---|---|
-| `unattended` | off | on | on | on | `boubou run`, children, the web UI with `batch: true`; the default |
-| `general` | on | off | off | off | the web UI's chat (`boubou serve`, `boubou-app`) and `boubou chat` |
-| `coding` | on | off | off | off | the ACP server (`boubou acp`, Zed) |
+| `unattended` | off | all nine | on | on | `boubou run`, children, the web UI with `batch: true`; the default |
+| `general` | on | none | off | off | the web UI's chat (`boubou serve`, `boubou-app`) and `boubou chat` |
+| `coding` | on | none | off | off | the ACP server (`boubou acp`, Zed) |
 
 `general` and `coding` are equal field for field today: they are the two behaviours the loop
 already had, given names. A unit test in `policy.rs` asserts the equality so that the first
@@ -92,9 +94,6 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
   narrowed tool face are safety, and stay where they are; "never Q&A, never dispatch, batch
   gates" is a policy and is already expressed as `unattended`; the child system prompt is
   prompt selection (next item).
-- **The finish gates as one block**: `finish_gates` is all or nothing. The coding product
-  will want some of them (a deliverable the user named is missing) and not others (running
-  the project's test suite on every `finish`). Each gate needs a name and the policy a list.
 - **Ablations** (`AGENT_ABLATION=…`): the bench's way of switching pieces off for a
   measurement. The two finish-gate ablations are one input to `TurnPolicy::turn`; the
   others (`flat_prefill`, `corrector`) are still read where they act.
@@ -113,7 +112,7 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 | 3 | `boubou chat` runs `general`; `chat_mode` removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | done |
 | 4 | The intent route is a value the policy derives from the decider's intent (`Route`, and `Turn` for the derived switches) | the route read in fewer than ten places in `run.rs`; no `!child && policy.x && intent == …` expressions | done |
 | 5 | System prompt chosen from the policy and the route (`Turn::prompt`, `Prompt::rebuild`) | `run.rs` no longer branches on `child` or `qa` to pick a prompt | done |
-| 6 | The finish gates are named units the policy lists | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | open |
+| 6 | The finish gates are named units the policy lists (`Gate`, `Gates`) | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | done |
 | 7 | `child_mode` split: sandbox and tool face stay as safety; the rest is `unattended` plus the child prompt | `run.rs` reads `child` only where the sandbox or the dispatch receipt needs it | open |
 | 8 | Kernel boundary inside `boubou-kernel`: the ladders, salvage, compaction and corrector are a module the policy-driven loop calls | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | open |
 | 9 | Sessions record the policy they ran under | a resumed session keeps its policy or says it changed | open |

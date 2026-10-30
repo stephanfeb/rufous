@@ -25,7 +25,7 @@ use super::history::{
     prune_history, similar, workdir_files_text, PRUNE_AT,
 };
 use super::openai::OpenAiBackend;
-use super::policy::{Prompt, Route, TurnPolicy};
+use super::policy::{Gate, Prompt, Route, TurnPolicy};
 use super::prompt;
 use super::session::{self, Transcript};
 use super::testguard::{self, TestVerdict};
@@ -1429,7 +1429,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         .unwrap_or_default();
                     // Gate 1: a delivery must exist — file/command, body text, or a
                     // substantive summary. Q&A is exempt (the answer is the chat).
-                    if turn.finish_gates
+                    if turn.gates.has(Gate::Delivery)
                         && !productive_used
                         && guards::semantically_empty(&content)
                         && guards::semantically_empty(&summary)
@@ -1447,7 +1447,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         continue;
                     }
                     // Gate 2: tests in the workdir must pass (3 refusals, then let through).
-                    if turn.finish_gates
+                    if turn.gates.has(Gate::Tests)
                         && testguard::has_python_tests(workdir)
                         && test_guard_warns < 3
                     {
@@ -1483,7 +1483,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                     // Gate 2b (integrity): the summary must not claim a verified outcome the
                     // turn's commands do not back, nor report success over a failed check.
-                    if turn.finish_gates && claim_gate_warns < 2 {
+                    if turn.gates.has(Gate::Claims) && claim_gate_warns < 2 {
                         if let Some((log_line, msg)) =
                             integrity::claim_contradiction(&summary, &cmd_records)
                         {
@@ -1498,7 +1498,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                     // Gate 3: files the summary claims must exist. A file the summary reports
                     // as failed ("dataset.csv could not be downloaded") is not a claim.
-                    if turn.finish_gates && finish_claim_warns < 2 {
+                    if turn.gates.has(Gate::ClaimedFiles) && finish_claim_warns < 2 {
                         let missing: Vec<String> =
                             artifacts::claimed_missing_files(&summary, workdir)
                                 .into_iter()
@@ -1521,7 +1521,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // Gate 3b (integrity): files the TASK names must exist, unless the summary
                     // reports them as failed. LRAB WF-04: "Task complete" with fix_summary.md
                     // never written; the summary did not name it, so gate 3 never saw it.
-                    if turn.plan_gates && named_gate_warns < 1 {
+                    if turn.gates.has(Gate::NamedFiles) && named_gate_warns < 1 {
                         let task_text = qa::task_original_text(&messages, 100_000);
                         let t_missing =
                             integrity::task_named_missing(&task_text, &summary, workdir);
@@ -1543,7 +1543,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // Children are exempt from gates 4–6: one mechanical task, no plan to
                     // maintain; their exit contract (artefacts + finish) is checked by the
                     // dispatcher, and a blocked child only burns its budget into a timeout.
-                    if turn.plan_gates && plan_gate_warns < 2 {
+                    if turn.gates.has(Gate::PlanFiles) && plan_gate_warns < 2 {
                         let p_missing: Vec<String> = artifacts::plan_named_missing(hdir, workdir)
                             .into_iter()
                             .filter(|f| !integrity::admits_failure_about(&summary, f))
@@ -1567,7 +1567,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // model giving up on finish after two "plan out of sync" refusals with the
                     // correct, verified result already on disk. Bookkeeping never outranks a
                     // verified deliverable; the todo is synced for it instead.
-                    if turn.plan_gates && todo_gate_warns < 2 {
+                    if turn.gates.has(Gate::PlanSync) && todo_gate_warns < 2 {
                         let (t_done, t_all) = todo_progress(&load_todo(hdir));
                         if t_all > 0 && t_done < t_all && integrity::verified_at_end(&cmd_records) {
                             // A passing check says the work is done, not that every planned
@@ -1603,7 +1603,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // the self-check, and probes_integrity2 t00/t04 showed the model answering
                     // the re-injected task in prose instead of calling finish again, so the
                     // dead-loop guard ended a run whose verified result was already on disk.
-                    if turn.plan_gates && !finish_reread_used {
+                    if turn.gates.has(Gate::ReRead) && !finish_reread_used {
                         finish_reread_used = true;
                         let orig = if integrity::verified_at_end(&cmd_records) {
                             log!("[{i}] pre-delivery check skipped: the last command was a passing check");
@@ -1629,7 +1629,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // tool-less call so the user sees a wrap-up.
                     if guards::semantically_empty(&content)
                         && summary.trim().is_empty()
-                        && turn.finish_gates
+                        && turn.gates.has(Gate::WrapUp)
                     {
                         let mut wm = messages.clone();
                         wm.push(Message::tool_output(res.clone()));

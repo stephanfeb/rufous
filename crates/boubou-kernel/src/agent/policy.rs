@@ -4,10 +4,10 @@
 //! salvage, argument coercion, the duplicate, streak and idle ladders, the empty-reply
 //! ladder, the integrity and honest-failure checks, the corrector, compaction, the five
 //! safety rings and the per-model profiles. The other is a policy about the turn: whether a
-//! plain text reply ends it, whether `finish` has to pass the delivery gates, whether a
-//! question is routed away from the producing tools, whether a plan may be farmed out to
-//! child processes. The kernel is the same for every product; the policy is what differs
-//! between a conversation, an editor turn and an unattended task run.
+//! plain text reply ends it, which delivery gates `finish` has to pass, whether a question
+//! is routed away from the producing tools, whether a plan may be farmed out to child
+//! processes. The kernel is the same for every product; the policy is what differs between
+//! a conversation, an editor turn and an unattended task run.
 //!
 //! [`TurnPolicy`] names that second thing so it is set in one place and read by name,
 //! instead of through a spread of booleans (`docs/refactor.md`). Today the three presets
@@ -16,6 +16,8 @@
 //! [`TurnPolicy::general`] and [`TurnPolicy::coding`] are both the old editor/chat
 //! semantics (`interactive = true`). The two products are expected to pull `general` and
 //! `coding` apart; until then they are equal by construction and the tests say so.
+
+use std::fmt;
 
 use crate::guards::qa::Intent;
 
@@ -69,6 +71,127 @@ impl Prompt {
     }
 }
 
+/// One finish gate: a check `finish` has to pass before the turn may end. Each one is a
+/// block in the loop's `finish` handling; the numbers are the loop's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// Gate 1: something was delivered: a file or command, body text, or a substantive
+    /// summary (two refusals).
+    Delivery,
+    /// Gate 2: the workdir's Python tests pass (three refusals, then let through).
+    Tests,
+    /// Gate 2b: the summary claims no verified outcome the turn's commands do not back,
+    /// and reports no success over a failed check (two refusals).
+    Claims,
+    /// Gate 3: files the summary claims exist, unless it reports them as failed (two
+    /// refusals).
+    ClaimedFiles,
+    /// Gate 3b: files the task names exist, unless the summary reports them as failed (one
+    /// refusal).
+    NamedFiles,
+    /// Gate 4: files the plan names exist (two refusals).
+    PlanFiles,
+    /// Gate 5: the plan is synced (two refusals; waived, and the plan synced instead, when
+    /// the turn's last command was a passing check).
+    PlanSync,
+    /// Gate 6: once, the original task is re-injected for a self-check (skipped after a
+    /// passing check).
+    ReRead,
+    /// A bare finish, no body and no summary, gets one tool-less call so the user sees a
+    /// wrap-up.
+    WrapUp,
+}
+
+impl Gate {
+    /// Every gate, in the order the loop runs them.
+    pub const ALL: [Gate; 9] = [
+        Gate::Delivery,
+        Gate::Tests,
+        Gate::Claims,
+        Gate::ClaimedFiles,
+        Gate::NamedFiles,
+        Gate::PlanFiles,
+        Gate::PlanSync,
+        Gate::ReRead,
+        Gate::WrapUp,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Gate::Delivery => "delivery",
+            Gate::Tests => "tests",
+            Gate::Claims => "claims",
+            Gate::ClaimedFiles => "claimed files",
+            Gate::NamedFiles => "named files",
+            Gate::PlanFiles => "plan files",
+            Gate::PlanSync => "plan sync",
+            Gate::ReRead => "re-read",
+            Gate::WrapUp => "wrap-up",
+        }
+    }
+
+    /// Plan bookkeeping: the gates a dispatched child is exempt from. One mechanical task,
+    /// no plan to maintain; its exit contract (artefacts and `finish`) is checked by the
+    /// dispatcher, and a blocked child only burns its budget into a timeout.
+    pub const fn plan_bookkeeping(self) -> bool {
+        matches!(
+            self,
+            Gate::NamedFiles | Gate::PlanFiles | Gate::PlanSync | Gate::ReRead
+        )
+    }
+
+    const fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
+}
+
+/// A set of finish gates. Built in `const` context so a preset can list its gates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Gates(u16);
+
+impl Gates {
+    pub const NONE: Gates = Gates(0);
+    pub const ALL: Gates = Gates((1 << Gate::ALL.len()) - 1);
+
+    pub const fn with(self, g: Gate) -> Gates {
+        Gates(self.0 | g.bit())
+    }
+
+    pub const fn without(self, g: Gate) -> Gates {
+        Gates(self.0 & !g.bit())
+    }
+
+    pub const fn has(self, g: Gate) -> bool {
+        self.0 & g.bit() != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The set a dispatched child runs under: the plan bookkeeping gates removed.
+    pub fn without_plan_bookkeeping(self) -> Gates {
+        Gate::ALL
+            .into_iter()
+            .filter(|g| g.plan_bookkeeping())
+            .fold(self, Gates::without)
+    }
+
+    pub fn names(self) -> Vec<&'static str> {
+        Gate::ALL
+            .into_iter()
+            .filter(|g| self.has(*g))
+            .map(Gate::name)
+            .collect()
+    }
+}
+
+impl fmt::Debug for Gates {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Gates[{}]", self.names().join(", "))
+    }
+}
+
 /// What the harness does on one turn: the policy applied to the decider's intent, child
 /// mode and the bench's ablations, derived once by [`TurnPolicy::turn`] and read by name.
 /// The loop reads these fields; it never recombines the inputs.
@@ -81,14 +204,9 @@ pub struct Turn {
     /// reminder, the plan note on compaction, small-model rewrite mode and the corrector
     /// apply.
     pub working: bool,
-    /// `finish` meets the delivery gates: something delivered, the workdir's tests, the
-    /// summary's claims, the closing wrap-up. Off on the question route, under a policy
-    /// without gates, and under the finish-gate ablations.
-    pub finish_gates: bool,
-    /// The plan bookkeeping gates on top of `finish_gates`: files the task names, files the
-    /// plan names, the plan in sync, the pre-delivery re-read. Children are exempt: one
-    /// mechanical task, no plan to maintain, and the dispatcher checks their exit contract.
-    pub plan_gates: bool,
+    /// The finish gates this turn runs: the policy's, none on the question route or under
+    /// the finish-gate ablations, and without the plan bookkeeping for a child.
+    pub gates: Gates,
     /// A plan may be dispatched to children this turn (the `parallel` config permitting).
     pub dispatch: bool,
 }
@@ -102,10 +220,8 @@ pub struct TurnPolicy {
     /// a row end it too. Off, the loop pushes a "continue with tools" note and resets the
     /// context after repeated empty replies, as the batch harness does.
     pub text_ends_turn: bool,
-    /// `finish` has to pass the delivery gates: something delivered, the workdir's tests,
-    /// claimed artefacts present, named deliverables present, the plan in sync, the
-    /// pre-delivery re-read, the closing wrap-up call. Off, `finish` is accepted as is.
-    pub finish_gates: bool,
+    /// The finish gates `finish` has to pass ([`Gate`]). Empty, `finish` is accepted as is.
+    pub gates: Gates,
     /// The decider's intent routes the turn: a question takes the Q&A prompt and loses the
     /// producing tools, a follow-up ends once acted on and reported. Off, every turn takes
     /// the task prompt and the full tool set, so an instruction phrased as a question can
@@ -118,25 +234,25 @@ pub struct TurnPolicy {
 
 impl TurnPolicy {
     /// Mingbird's unattended task run (`boubou run`, children, the web UI's batch mode):
-    /// the finish gates, the Q&A and follow-up routes, continue notes and child dispatch.
+    /// every finish gate, the Q&A and follow-up routes, continue notes and child dispatch.
     pub const fn unattended() -> Self {
         Self {
             name: "unattended",
             text_ends_turn: false,
-            finish_gates: true,
+            gates: Gates::ALL,
             intent_routing: true,
             parallel_dispatch: true,
         }
     }
 
-    /// A conversation with a general-purpose assistant (the web UI, chat). The turn ends
-    /// when the model replies in text or calls `finish`; `finish` is accepted as is; every
-    /// turn takes the task prompt and the full tool set; nothing is dispatched.
+    /// A conversation with a general-purpose assistant (the web UI, `boubou chat`). The
+    /// turn ends when the model replies in text or calls `finish`; `finish` is accepted as
+    /// is; every turn takes the task prompt and the full tool set; nothing is dispatched.
     pub const fn general() -> Self {
         Self {
             name: "general",
             text_ends_turn: true,
-            finish_gates: false,
+            gates: Gates::NONE,
             intent_routing: false,
             parallel_dispatch: false,
         }
@@ -170,7 +286,13 @@ impl TurnPolicy {
     pub fn turn(&self, intent: Intent, child: bool, gates_ablated: bool) -> Turn {
         let route = self.route(intent, child);
         let working = route != Route::Question;
-        let finish_gates = working && self.finish_gates && !gates_ablated;
+        let gates = if !working || gates_ablated {
+            Gates::NONE
+        } else if child {
+            self.gates.without_plan_bookkeeping()
+        } else {
+            self.gates
+        };
         let prompt = if child {
             Prompt::Child
         } else if route == Route::Question {
@@ -182,8 +304,7 @@ impl TurnPolicy {
             route,
             prompt,
             working,
-            finish_gates,
-            plan_gates: finish_gates && !child,
+            gates,
             dispatch: working && !child && self.parallel_dispatch,
         }
     }
@@ -196,11 +317,18 @@ impl TurnPolicy {
     /// One line for the run log: the name and what it switches.
     pub fn describe(&self) -> String {
         let on_off = |b: bool| if b { "on" } else { "off" };
+        let gates = if self.gates == Gates::ALL {
+            "all".to_string()
+        } else if self.gates.is_empty() {
+            "none".to_string()
+        } else {
+            self.gates.names().join("+")
+        };
         format!(
             "{}: text ends turn {}, finish gates {}, intent routing {}, dispatch {}",
             self.name,
             on_off(self.text_ends_turn),
-            on_off(self.finish_gates),
+            gates,
             on_off(self.intent_routing),
             on_off(self.parallel_dispatch)
         )
@@ -215,7 +343,7 @@ impl Default for TurnPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::{Intent, Prompt, Route, Turn, TurnPolicy};
+    use super::{Gate, Gates, Intent, Prompt, Route, Turn, TurnPolicy};
 
     #[test]
     fn the_two_product_presets_are_equal_until_they_diverge() {
@@ -224,7 +352,7 @@ mod tests {
         let g = TurnPolicy::general();
         let c = TurnPolicy::coding();
         assert_eq!(g.text_ends_turn, c.text_ends_turn);
-        assert_eq!(g.finish_gates, c.finish_gates);
+        assert_eq!(g.gates, c.gates);
         assert_eq!(g.intent_routing, c.intent_routing);
         assert_eq!(g.parallel_dispatch, c.parallel_dispatch);
         assert_ne!(g, c, "the names differ");
@@ -254,8 +382,7 @@ mod tests {
                 route: Route::Task,
                 prompt: Prompt::Task,
                 working: true,
-                finish_gates: true,
-                plan_gates: true,
+                gates: Gates::ALL,
                 dispatch: true
             }
         );
@@ -266,33 +393,64 @@ mod tests {
                 route: Route::Question,
                 prompt: Prompt::Chat,
                 working: false,
-                finish_gates: false,
-                plan_gates: false,
+                gates: Gates::NONE,
                 dispatch: false
             }
         );
         // A follow-up works and is gated like a task; only its ending differs.
         let f = u.turn(Intent::FollowUp, false, false);
         assert_eq!(f.route, Route::FollowUp);
-        assert!(f.working && f.finish_gates && f.plan_gates && f.dispatch);
-        // A child: delivery gates but no plan bookkeeping and no dispatch of its own.
+        assert!(f.working && f.gates == Gates::ALL && f.dispatch);
+        // A child: the delivery gates but no plan bookkeeping and no dispatch of its own.
+        let c = u.turn(Intent::Task, true, false);
         assert_eq!(
-            u.turn(Intent::Task, true, false),
-            Turn {
-                route: Route::Task,
-                prompt: Prompt::Child,
-                working: true,
-                finish_gates: true,
-                plan_gates: false,
-                dispatch: false
-            }
+            (c.route, c.prompt, c.working, c.dispatch),
+            (Route::Task, Prompt::Child, true, false)
+        );
+        assert_eq!(
+            c.gates.names(),
+            ["delivery", "tests", "claims", "claimed files", "wrap-up"]
         );
         // The ablation switches every gate off, the plan bookkeeping included.
         let a = u.turn(Intent::Task, false, true);
-        assert!(a.working && !a.finish_gates && !a.plan_gates && a.dispatch);
+        assert!(a.working && a.gates.is_empty() && a.dispatch);
         // A conversation: working, nothing gated, nothing dispatched.
         let g = TurnPolicy::general().turn(Intent::Question, false, false);
-        assert!(g.route == Route::Task && g.working && !g.finish_gates && !g.dispatch);
+        assert!(g.route == Route::Task && g.working && g.gates.is_empty() && !g.dispatch);
+    }
+
+    #[test]
+    fn gates_are_listed_one_by_one() {
+        // The coding product's expected shape: the named-deliverable gate without the test
+        // guard, by changing the preset alone.
+        let p = TurnPolicy {
+            gates: Gates::NONE.with(Gate::NamedFiles),
+            ..TurnPolicy::coding()
+        };
+        let t = p.turn(Intent::Task, false, false);
+        assert!(t.gates.has(Gate::NamedFiles));
+        assert!(!t.gates.has(Gate::Tests) && !t.gates.has(Gate::Delivery));
+        assert_eq!(
+            p.describe(),
+            "coding: text ends turn on, finish gates named files, intent routing off, dispatch off"
+        );
+        // Set algebra and the child's exemption.
+        assert_eq!(Gates::ALL.names().len(), Gate::ALL.len());
+        assert_eq!(
+            Gates::ALL.without(Gate::Tests).with(Gate::Tests),
+            Gates::ALL
+        );
+        for g in Gate::ALL {
+            assert_eq!(
+                Gates::ALL.without_plan_bookkeeping().has(g),
+                !g.plan_bookkeeping(),
+                "{g:?}"
+            );
+        }
+        assert_eq!(
+            format!("{:?}", Gates::NONE.with(Gate::ReRead)),
+            "Gates[re-read]"
+        );
     }
 
     #[test]
@@ -320,12 +478,18 @@ mod tests {
     fn unattended_is_the_batch_harness_and_the_default() {
         let u = TurnPolicy::default();
         assert!(u.is_unattended());
-        assert!(!u.text_ends_turn && u.finish_gates && u.intent_routing && u.parallel_dispatch);
+        assert!(
+            !u.text_ends_turn && u.gates == Gates::ALL && u.intent_routing && u.parallel_dispatch
+        );
         assert!(!TurnPolicy::general().is_unattended());
         assert!(!TurnPolicy::coding().is_unattended());
         assert_eq!(
             TurnPolicy::coding().describe(),
-            "coding: text ends turn on, finish gates off, intent routing off, dispatch off"
+            "coding: text ends turn on, finish gates none, intent routing off, dispatch off"
+        );
+        assert_eq!(
+            TurnPolicy::unattended().describe(),
+            "unattended: text ends turn off, finish gates all, intent routing on, dispatch on"
         );
     }
 }
