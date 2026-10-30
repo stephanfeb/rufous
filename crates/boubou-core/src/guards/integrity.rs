@@ -559,14 +559,127 @@ pub fn admits_failure_about(text: &str, name: &str) -> bool {
     seen
 }
 
+/// Words that introduce a file the task hands the agent: something to read, convert or edit.
+const INPUT_CUES: &[&str] = &[
+    "from",
+    "in",
+    "read",
+    "reads",
+    "reading",
+    "parse",
+    "parses",
+    "parsing",
+    "load",
+    "loads",
+    "loading",
+    "using",
+    "use",
+    "uses",
+    "given",
+    "input",
+    "inputs",
+    "open",
+    "opens",
+    "existing",
+    "based on",
+    "according to",
+    "convert",
+    "converts",
+    "process",
+    "processes",
+    "analyse",
+    "analyze",
+    "summarise",
+    "summarize",
+    "clean",
+    "merge",
+    "reconcile",
+    "check",
+    "fix",
+    "update",
+    "edit",
+    "review",
+    "refactor",
+    "rename",
+    "move",
+    "copy",
+    "delete",
+    "run",
+    "contents of",
+    "content of",
+    "data in",
+    "the file",
+];
+/// Words that introduce a file the task asks for. Anywhere in the window they win, so
+/// `write the totals in result.txt` is a deliverable despite the `in`.
+const OUTPUT_CUES: &[&str] = &[
+    "to",
+    "into",
+    "as",
+    "create",
+    "creates",
+    "write",
+    "writes",
+    "save",
+    "saves",
+    "produce",
+    "produces",
+    "generate",
+    "generates",
+    "output",
+    "outputs",
+    "named",
+    "called",
+    "deliver",
+    "export",
+    "exports",
+    "store",
+    "result in",
+    "results in",
+    "report in",
+    "new file",
+];
+
+/// Does every mention of `file_low` in `task_low` read as an input? The six words before a
+/// mention decide: an output cue among them makes it a deliverable, otherwise an input cue
+/// makes it an input. No cue at all keeps the old reading (expected to exist at the end).
+pub fn named_as_input(task_low: &str, file_low: &str) -> bool {
+    let mut seen = false;
+    for (pos, _) in task_low.match_indices(file_low) {
+        seen = true;
+        let words: Vec<&str> = task_low[..pos]
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let window = format!(" {} ", words[words.len().saturating_sub(6)..].join(" "));
+        if OUTPUT_CUES
+            .iter()
+            .any(|c| window.contains(&format!(" {c} ")))
+        {
+            return false;
+        }
+        if !INPUT_CUES
+            .iter()
+            .any(|c| window.contains(&format!(" {c} ")))
+        {
+            return false;
+        }
+    }
+    seen
+}
+
 /// Files the task text names (with an artefact extension) that are not in the workdir and
-/// that the summary does not report as failed. Plan files and the prompt file never count.
+/// that the summary does not report as failed. Plan files, the prompt file and the task's
+/// inputs ([`named_as_input`]) never count: a missing input is reported, not produced.
 pub fn task_named_missing(task: &str, summary: &str, workdir: &Path) -> Vec<String> {
+    let task_low = task.to_lowercase();
     missing_files_in_text(task, workdir)
         .into_iter()
         .filter(|f| {
             let base = f.rsplit(['/', '\\']).next().unwrap_or(f).to_lowercase();
-            !NOT_DELIVERABLE.contains(&base.as_str()) && !admits_failure_about(summary, &base)
+            !NOT_DELIVERABLE.contains(&base.as_str())
+                && !admits_failure_about(summary, &base)
+                && !named_as_input(&task_low, &f.to_lowercase())
         })
         .collect()
 }
@@ -805,6 +918,7 @@ mod tests {
         let d = tempfile::tempdir().expect("tmp");
         std::fs::write(d.path().join("bug_report.md"), "x").expect("w");
         let task = "Write bug_report.md and fix_summary.md; plan in plan.md; input is data.csv.";
+        // data.csv is named as an input: missing, it is reported, never demanded.
         assert_eq!(
             task_named_missing(task, "Task complete.", d.path()),
             vec!["fix_summary.md".to_string()]
@@ -884,6 +998,21 @@ mod tests {
             "bd show --current",
             "bd list",
             "git status --short && git log --oneline -3",
+            // filters and navigation (the old list bounced an honest finish on these)
+            "sed -n '1,40p' lib/main.dart",
+            "sed -e 's/a/b/' f | head",
+            "jq .name package.json",
+            "awk '{print}' f",
+            "awk -F, '{print $2}' data.csv | sort | uniq -c",
+            "cd src && cat f",
+            "tr -d '\\r' < f | wc -l",
+            "env",
+            "env | grep -i path",
+            "git branch",
+            "git branch -a -v",
+            "git branch --list 'feat/*'",
+            "git branch --merged main",
+            "git -C sub branch --show-current",
         ] {
             assert!(is_read_only_command(c), "{c}");
         }
@@ -900,28 +1029,6 @@ mod tests {
             "find . -name x -delete",
             "xargs rm",
             "",
-        ] {
-            assert!(!is_read_only_command(c), "{c}");
-        }
-        // file tool names never look like verification commands
-        assert!(!CommandRecord::file_write("edit_file", "test_x.py", "[edited]").is_verification());
-    }
-}
-            // filters and navigation (the old list bounced an honest finish on these)
-            "sed -n '1,40p' lib/main.dart",
-            "sed -e 's/a/b/' f | head",
-            "jq .name package.json",
-            "awk '{print}' f",
-            "awk -F, '{print $2}' data.csv | sort | uniq -c",
-            "cd src && cat f",
-            "tr -d '\\r' < f | wc -l",
-            "env",
-            "env | grep -i path",
-            "git branch",
-            "git branch -a -v",
-            "git branch --list 'feat/*'",
-            "git branch --merged main",
-            "git -C sub branch --show-current",
             // writes dressed as reads (the old list counted every one of these as a read)
             "git branch -D feature/x",
             "git branch -m old new",
@@ -934,3 +1041,37 @@ mod tests {
             "sed -ni p f",
             "awk -i inplace '{print}' f",
             "env FOO=1 python x.py",
+        ] {
+            assert!(!is_read_only_command(c), "{c}");
+        }
+        // file tool names never look like verification commands
+        assert!(!CommandRecord::file_write("edit_file", "test_x.py", "[edited]").is_verification());
+    }
+
+    #[test]
+    fn inputs_the_task_names_are_not_deliverables() {
+        let d = tempfile::tempdir().expect("tmp");
+        let m = |task: &str| task_named_missing(task, "", d.path());
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            m("Read data.csv and write the totals to result.txt"),
+            vec!["result.txt"]
+        );
+        assert_eq!(
+            m("Convert data.csv to a markdown table in table.md"),
+            vec!["table.md"]
+        );
+        assert_eq!(
+            m("Create report.md from the notes in notes.txt"),
+            vec!["report.md"]
+        );
+        assert_eq!(m("Fix the bug in parser.py and run the tests."), none);
+        assert_eq!(
+            m("Run python fetch.py and save its output as out.json"),
+            vec!["out.json"]
+        );
+        assert_eq!(m("Produce summary.md"), vec!["summary.md"]);
+        // No cue keeps the old reading: a named file is expected to exist at the end.
+        assert_eq!(m("summary.md with three bullet points"), vec!["summary.md"]);
+    }
+}
