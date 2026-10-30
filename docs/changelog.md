@@ -999,3 +999,19 @@ benchmark. Filed as bd epic `boubou-bk9` with six children; post-edit diagnostic
 system, fixed 16k compaction reserves, subagents and plan mode in the kernel, and
 thousand-word per-model prompts.
 
+## Surface tiers: no credit for an untouched fixture (2026-10-30)
+
+The first `tier6_editor` run (`bench/results/surface_editor`, qwen3.5:9b, coding vs unattended)
+measured nothing: the release binary predated `--policy`, every cell exited in half a second
+with "unexpected argument '--policy'", and still scored 0.29 to 0.57. The milestone of four
+tasks was the collateral checker, which passes on a tree nobody touched, and ED-03 and ED-04 also
+had test runs that were green before any work. Fixed in the generators, not the scorer: the
+shared checker template takes a `require` block (a listed definition must differ from the
+shipped one, a listed file must exist, a listed test command must print its pass line) and
+prints `COLLATERAL PENDING` or `COLLATERAL TESTS FAIL` until it holds; ED-03's and ED-04's test
+runs moved inside the checker; ED-05's and CH-05's untouched checks need `reply.md` first. The
+driver now writes `reply.md` for every boubou cell (unattended's `finish` summary is its reply)
+and never overwrites one the agent wrote. `test_an_untouched_fixture_scores_nothing_on_every_surface_task`
+holds all ten tasks at 0.0 against Mingbird's scorer; the pressure-tier checkers regenerate
+byte-for-byte in behaviour (empty `require`). The run is to be repeated with the rebuilt binary.
+

@@ -45,15 +45,6 @@
         "expect_stdout": "TITLE_CASE OK",
         "timeout_s": 120
       }
-    },
-    {
-      "artifact": "test_textfmt.py",
-      "check": "script_pass",
-      "params": {
-        "command": "python test_textfmt.py",
-        "expect_stdout": ", 0 failed",
-        "timeout_s": 120
-      }
     }
   ]
 }

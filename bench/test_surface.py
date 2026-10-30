@@ -77,6 +77,8 @@ def test_ed01_fails_then_passes_and_collateral_is_caught(tmp_path):
     _t, wd = workdir_for(tmp_path, "tier6_editor", "ED-01")
     rc, out = run(["test_slug.py"], wd)
     assert rc == 1 and "3 passed, 3 failed" in out, out
+    rc, out = run(["check_collateral.py"], wd)
+    assert rc == 1 and "COLLATERAL PENDING: slug.py: slugify, _NON_WORD unchanged" in out, out
     p = os.path.join(wd, "slug.py")
     src = open(p, encoding="utf-8").read()
     fixed = src.replace('re.compile(r"[^a-z0-9]")', 're.compile(r"[^a-z0-9]+")') \
@@ -95,6 +97,7 @@ def test_ed02_fails_then_passes_and_the_note_is_the_named_deliverable(tmp_path):
     t, wd = workdir_for(tmp_path, "tier6_editor", "ED-02")
     rc, out = run(["test_rates.py"], wd)
     assert rc == 1 and "3 passed, 3 failed" in out, out
+    assert "COLLATERAL PENDING" in run(["check_collateral.py"], wd)[1]
     p = os.path.join(wd, "rates.py")
     rewrite(p, "if amount > lower:", "if amount >= lower:")
     rc, out = run(["test_rates.py"], wd)
@@ -105,8 +108,11 @@ def test_ed02_fails_then_passes_and_the_note_is_the_named_deliverable(tmp_path):
 
 
 def test_ed03_reference_title_case_satisfies_the_referee(tmp_path):
-    _t, wd = workdir_for(tmp_path, "tier6_editor", "ED-03")
+    t, wd = workdir_for(tmp_path, "tier6_editor", "ED-03")
     assert "TITLE_CASE FAIL" in run(["check_title_case.py"], wd)[1]
+    assert "COLLATERAL PENDING: textfmt.py: title_case unchanged" in run(["check_collateral.py"], wd)[1]
+    assert [a["artifact"] for a in t["final_artifacts"]] == ["textfmt.py"], \
+        "the existing tests pass before any work, so they are a condition of the checker, not a final check"
     with open(os.path.join(wd, "textfmt.py"), "a", encoding="utf-8") as f:
         f.write('''
 
@@ -125,15 +131,30 @@ def title_case(s):
     assert rc == 0 and "TITLE_CASE OK" in out, out
     assert "4 passed, 0 failed" in run(["test_textfmt.py"], wd)[1]
     assert "COLLATERAL OK" in run(["check_collateral.py"], wd)[1], "adding a function changes nothing else"
+    # A red test file is caught by the checker, since the test run lives there now.
+    rewrite(os.path.join(wd, "test_textfmt.py"), "def test_", "def test_aaa_bad():\n    assert title_case('x') == 'Y'\n\n\ndef test_")
+    out = run(["check_collateral.py"], wd)[1]
+    assert "COLLATERAL TESTS FAIL: test_textfmt.py" in out, out
 
 
 def test_ed04_rename_passes_and_the_old_name_is_gone(tmp_path):
     t, wd = workdir_for(tmp_path, "tier6_editor", "ED-04")
-    assert "3 passed, 0 failed" in run(["test_store.py"], wd)[1]
-    for rel in ("store/repo.py", "store/service.py", "store/cli.py"):
+    assert "3 passed, 0 failed" in run(["test_store.py"], wd)[1], "green before any work: not a check on its own"
+    assert t["milestones"] == [{"artifact": "store/repo.py", "check": "script_pass",
+                                "params": {"command": "python check_collateral.py", "expect_stdout": "COLLATERAL OK", "timeout_s": 120}}]
+    assert "COLLATERAL PENDING: store/repo.py: fetch_all unchanged" in run(["check_collateral.py"], wd)[1]
+    # Renaming the definition without its callers: the rename happened, the tests now fail.
+    rewrite(os.path.join(wd, "store/repo.py"), "fetchAll", "fetch_all")
+    out = run(["check_collateral.py"], wd)[1]
+    assert "COLLATERAL TESTS FAIL: test_store.py" in out, out
+    for rel in ("store/service.py", "store/cli.py"):
         rewrite(os.path.join(wd, rel), "fetchAll", "fetch_all")
     rc, out = run(["test_store.py"], wd)
     assert rc == 0 and "3 passed, 0 failed" in out, out
+    assert "COLLATERAL OK" in run(["check_collateral.py"], wd)[1]
+    # Touching an unrelated definition is still collateral.
+    rewrite(os.path.join(wd, "store/repo.py"), "def fetch_one(conn, order_id):", "def fetch_one(conn, order_id, extra=None):")
+    assert "COLLATERAL CHANGED: store/repo.py:fetch_one" in run(["check_collateral.py"], wd)[1]
     for check in t["final_artifacts"]:
         text = open(os.path.join(wd, check["artifact"]), encoding="utf-8").read()
         if check["check"] == "not_contains":
@@ -145,6 +166,8 @@ def test_ed04_rename_passes_and_the_old_name_is_gone(tmp_path):
 def test_ed05_is_explained_not_changed(tmp_path):
     t, wd = workdir_for(tmp_path, "tier6_editor", "ED-05")
     assert "5 passed, 0 failed" in run(["test_duration.py"], wd)[1]
+    assert "COLLATERAL PENDING: reply.md missing" in run(["check_collateral.py"], wd)[1]
+    open(os.path.join(wd, "reply.md"), "w", encoding="utf-8").write("The pattern uses fullmatch and wants the m suffix.\n")
     assert "COLLATERAL OK" in run(["check_collateral.py"], wd)[1]
     # The cause named by the fixture: fullmatch against a pattern that wants the m suffix.
     sys.path.insert(0, wd)
@@ -202,6 +225,8 @@ def test_ch04_total_and_highest_month_follow_the_csv(tmp_path):
 
 def test_ch05_referee_tells_touched_from_untouched_and_new_files(tmp_path):
     _t, wd = workdir_for(tmp_path, "tier7_chat", "CH-05")
+    rc, out = run(["check_untouched.py"], wd)
+    assert rc == 1 and "UNTOUCHED PENDING" in out and "UNTOUCHED OK" not in out, out
     # The harness's own files are not "new"; a plan or a stray file is.
     open(os.path.join(wd, ".agent_state.json"), "w").write("[]")
     open(os.path.join(wd, "reply.md"), "w").write("Hello! I can read the CSV, ...\n")
@@ -259,6 +284,9 @@ def test_final_reply_is_the_last_text_or_the_finish_summary(tmp_path):
     json.dump(text_end, open(wd / ".agent_state.json", "w"))
     assert lrab_h2h.write_reply(str(wd)) == "Priya owns it; 14 November."
     assert open(wd / "reply.md").read() == "Priya owns it; 14 November.\n"
+    open(wd / "reply.md", "w").write("the agent's own\n")
+    lrab_h2h.write_reply(str(wd))
+    assert open(wd / "reply.md").read() == "the agent's own\n", "an agent-written reply.md is kept"
 
 
 @pytest.mark.skipif(not os.path.isdir(lrab_h2h.LRAB), reason="Mingbird checkout (the scorer) not found")
@@ -267,7 +295,7 @@ def test_mingbird_scorer_scores_a_reference_solution_of_ed02_and_ch01(tmp_path):
     t, wd = workdir_for(tmp_path, "tier6_editor", "ED-02")
     task_path = os.path.join(EXT, "tasks", "tier6_editor", "ED-02.json")
     before = lrab_h2h.score_with_mingbird(task_path, wd, judge="")
-    assert before["total"] < 0.5, before
+    assert before["total"] == 0.0, before
     rewrite(os.path.join(wd, "rates.py"), "if amount > lower:", "if amount >= lower:")
     open(os.path.join(wd, "fix_note.md"), "w", encoding="utf-8").write("The bands are inclusive at the lower bound; the comparison used > instead of >=.\n")
     after = lrab_h2h.score_with_mingbird(task_path, wd, judge="")
@@ -280,3 +308,15 @@ def test_mingbird_scorer_scores_a_reference_solution_of_ed02_and_ch01(tmp_path):
               open(os.path.join(wd, ".agent_state.json"), "w"))
     lrab_h2h.write_reply(wd)
     assert lrab_h2h.score_with_mingbird(task_path, wd, judge="")["total"] == 1.0
+
+
+@pytest.mark.skipif(not os.path.isdir(lrab_h2h.LRAB), reason="Mingbird checkout (the scorer) not found")
+def test_an_untouched_fixture_scores_nothing_on_every_surface_task(tmp_path):
+    # A crashed cell, or one that read the files and quit, must not collect the collateral
+    # credit: no milestone or final check may pass before the task's own work has happened.
+    for tier in ("tier6_editor", "tier7_chat"):
+        for name in sorted(os.listdir(os.path.join(EXT, "tasks", tier))):
+            tid = name[:-5]
+            _t, wd = workdir_for(tmp_path, tier, tid)
+            sc = lrab_h2h.score_with_mingbird(os.path.join(EXT, "tasks", tier, name), wd, judge="")
+            assert sc["total"] == 0.0, (tid, sc["milestone_details"], sc["final_details"])

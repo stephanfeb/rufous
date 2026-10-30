@@ -14,7 +14,8 @@ python bench/lrab_h2h.py --summary --results bench/results/lrab_ctx
 Only the boubou arm runs here: Mingbird's own runner resolves fixtures against its own LRAB
 root. Task checks are limited to the scorer's root-independent kinds (`exists`, `contains_any`,
 `contains_groups`, `script_pass`); collateral damage is caught by a `check_collateral.py`
-shipped with the fixture (prints `COLLATERAL OK` when every untouched definition is intact).
+shipped with the fixture (prints `COLLATERAL OK` when every untouched definition is intact; in
+the surface tiers only once the task's own edit has happened, else `COLLATERAL PENDING`).
 
 ## hidden/ (bead boubou-65d.10)
 
@@ -61,14 +62,16 @@ writes the final reply (the last assistant text, else the `finish` summary) to `
 workdir before scoring, so an answer is checked the way a file is. The summary labels rows
 `ED-02@coding`, `ED-02@unattended` when the axis varies, and the process table's
 `named_files_missing` line is the named-deliverable gate's measure (ED-02's `fix_note.md`).
+An untouched fixture scores 0 on every task (`test_surface.py` proves it against the scorer), so
+a cell that crashed or read the files and quit is not paid the collateral credit.
 
 | task | brief | deliverable checked |
 |---|---|---|
 | ED-01 | fix `slugify` so `test_slug.py` passes, touch nothing else | 6 of 6 tests; collateral checker |
 | ED-02 | fix an inclusive-bound bug, then write `fix_note.md` | 6 of 6 tests; the note exists and names the cause |
-| ED-03 | add `title_case` to `textfmt.py` with tests | a referee script's six cases; existing tests still pass |
-| ED-04 | rename `fetchAll` to `fetch_all` across three files | tests pass; the old name is gone from all three |
-| ED-05 | explain why `parse_duration('1h30')` is `None`, change nothing | `reply.md` names the cause; files byte-identical |
+| ED-03 | add `title_case` to `textfmt.py` with tests | a referee script's six cases; the checker needs `title_case` present and `test_textfmt.py` green |
+| ED-04 | rename `fetchAll` to `fetch_all` across three files | the checker needs `fetch_all` defined and the tests green; the old name is gone from all three |
+| ED-05 | explain why `parse_duration('1h30')` is `None`, change nothing | `reply.md` names the cause; files byte-identical, credited only once `reply.md` exists |
 | CH-01 | who owns the Postgres migration and when, from `notes/` | `reply.md` names Priya and 14 November |
 | CH-02 | summarise `notes/` into `brief.md` with every decision and owner | the four decisions and three owners, 80+ words |
 | CH-03 | tidy `inbox/` into `images/`, `docs/`, `data/` and say what went where | every file under the right folder, none loose |

@@ -33,9 +33,10 @@ see process_metrics.py) under score.json["process"], and the summary reports per
 a bootstrap 95% CI over tasks when there is more than one replication.
 
 --policy runs `boubou run --policy <name>` (boubou arm only): `unattended` is the batch harness,
-`general` and `coding` the product presets, under which a text reply ends the run. For those
-cells the final reply (the last assistant text, else the `finish` summary) is written to
-`reply.md` in the workdir before scoring, so a task can check an answer the way it checks a file.
+`general` and `coding` the product presets, under which a text reply ends the run. For every
+boubou cell the final reply (the last assistant text, else the `finish` summary) is written to
+`reply.md` in the workdir before scoring, unless the agent wrote one itself, so a task can check
+an answer the way it checks a file under any policy.
 
 Env: MINGBIRD_ROOT (default: sibling `../Mingbird-agent`), BOUBOU_BIN (default: PATH, then
 this checkout's target/release then target/debug), AGENT_CTX / AGENT_SLIM_OUTPUT pass through.
@@ -160,15 +161,16 @@ def final_reply(messages):
 
 
 def write_reply(workdir):
-    """Under a product policy the answer may be text rather than a file: copy the final reply
-    from the checkpoint to `reply.md` so the scorer can check it. Returns the text or None."""
+    """The answer may be text rather than a file: copy the final reply (the last assistant text,
+    else the `finish` summary) from the checkpoint to `reply.md` so the scorer can check it.
+    Returns the text or None. Never overwrites a `reply.md` the agent wrote itself."""
     ckpt = os.path.join(workdir, ".agent_state.json")
     try:
         messages = json.load(open(ckpt, encoding="utf-8"))
     except (OSError, ValueError):
         return None
     reply = final_reply(messages) if isinstance(messages, list) else None
-    if reply:
+    if reply and not os.path.isfile(os.path.join(workdir, "reply.md")):
         with open(os.path.join(workdir, "reply.md"), "w", encoding="utf-8") as f:
             f.write(reply + "\n")
     return reply
@@ -366,8 +368,7 @@ def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at
         f.write(out)
         if err:
             f.write("\n--- STDERR ---\n" + err)
-    if policy and policy != "unattended":
-        write_reply(workdir)
+    write_reply(workdir)  # every policy: unattended's `finish` summary is its reply
     axes = cell_axes(model, ctx, think, policy)
     base = {"task_id": task["id"], "agent": "boubou", "model": model,
             "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id,

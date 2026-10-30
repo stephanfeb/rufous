@@ -20,9 +20,13 @@ plan" preamble: the message is the whole prompt, as in an editor or a chat.
     CH-04  compute from a CSV        travel spend in Q2 and the highest month
     CH-05  small talk                "what can you help me with?": answer in text, touch nothing
 
-Under a product policy a text reply ends the run; `lrab_h2h.py` writes that reply to `reply.md`
-in the workdir before scoring, so an answer is checked the way a file is. Fixture files are
-listed one by one so they land at the workdir root, the way a project sits under an editor.
+Under a product policy a text reply ends the run; `lrab_h2h.py` writes that reply (the last
+assistant text, else the `finish` summary) to `reply.md` in the workdir before scoring, so an
+answer is checked the way a file is. Fixture files are listed one by one so they land at the
+workdir root, the way a project sits under an editor. No check passes on the untouched fixture:
+the collateral checkers are gated on the task's own edit (or on `reply.md` where the task is to
+change nothing), so a run that crashed, or read the files and quit, scores 0 rather than the
+collateral credit.
 
 Run:  python bench/lrab_ext/gen_surface.py        # writes fixtures/ and tasks/tier{6_editor,7_chat}/
 """
@@ -145,7 +149,8 @@ def test_path():
 if __name__ == "__main__":
     _run([(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")])
 ''')
-    write_checker(d, "check_collateral.py", ["slug.py"], allowed=["slugify", "_NON_WORD"])
+    write_checker(d, "check_collateral.py", ["slug.py"], allowed=["slugify", "_NON_WORD"],
+                  require={"changed": {"slug.py": ["slugify", "_NON_WORD"]}})
     prompt = textwrap.dedent("""\
         test_slug.py is failing. slugify('Hello  World') comes back as 'hello--world', and a title
         with punctuation at the ends leaves a hyphen at the front or back. Fix slugify in slug.py
@@ -215,7 +220,8 @@ def test_cost_follows_band():
 if __name__ == "__main__":
     _run([(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")])
 ''')
-    write_checker(d, "check_collateral.py", ["rates.py"], allowed=["band_for"])
+    write_checker(d, "check_collateral.py", ["rates.py"], allowed=["band_for"],
+                  require={"changed": {"rates.py": ["band_for"]}})
     prompt = textwrap.dedent("""\
         band_for(1000) returns 'standard', but the bands are inclusive at their lower bound: 1000
         is 'premium' and 250 is 'standard'. Fix rates.py so `python test_rates.py` passes, then
@@ -307,7 +313,9 @@ if bad:
     sys.exit(1)
 print("TITLE_CASE OK")
 ''' % json.dumps(cases, indent=4))
-    write_checker(d, "check_collateral.py", ["textfmt.py"], allowed=[])
+    write_checker(d, "check_collateral.py", ["textfmt.py"], allowed=[],
+                  require={"changed": {"textfmt.py": ["title_case"]},
+                           "run": [[["test_textfmt.py"], ", 0 failed"]]})
     prompt = textwrap.dedent("""\
         Add title_case(s) to textfmt.py: capitalise each word (first letter upper, the rest lower),
         except a, an, the, of, in, on and and, which stay lower-case unless they are the first word.
@@ -317,8 +325,7 @@ print("TITLE_CASE OK")
         fixtures=files_of("ed03_textfmt"), prompt=prompt,
         milestones=[script("python check_collateral.py", "COLLATERAL OK", "textfmt.py"),
                     {"artifact": "test_textfmt.py", "check": "contains_any", "params": {"any_of": ["title_case"]}}],
-        final_artifacts=[script("python check_title_case.py", "TITLE_CASE OK", "textfmt.py"),
-                         script("python test_textfmt.py", ", 0 failed", "test_textfmt.py")],
+        final_artifacts=[script("python check_title_case.py", "TITLE_CASE OK", "textfmt.py")],
     )
 
 
@@ -407,13 +414,17 @@ def test_cli_counts():
 if __name__ == "__main__":
     _run([(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")])
 ''')
+    write_checker(d, "check_collateral.py", ["store/repo.py", "store/service.py", "store/cli.py"],
+                  allowed=["fetchAll", "load_all", "main"],
+                  require={"changed": {"store/repo.py": ["fetch_all"]},
+                           "run": [[["test_store.py"], "3 passed, 0 failed"]]})
     prompt = textwrap.dedent("""\
         Rename fetchAll to fetch_all across the store package: it is defined in store/repo.py and
         used in store/service.py and store/cli.py. Keep `python test_store.py` passing.""")
     return task_json(
         id="ED-04", domain="editor-rename-across-files", tier=6,
         fixtures=files_of("ed04_store"), prompt=prompt,
-        milestones=[script("python test_store.py", "3 passed, 0 failed", "test_store.py")],
+        milestones=[script("python check_collateral.py", "COLLATERAL OK", "store/repo.py")],
         final_artifacts=[
             {"artifact": "store/repo.py", "check": "contains_any", "params": {"any_of": ["def fetch_all("]}},
             {"artifact": "store/repo.py", "check": "not_contains", "params": {"none_of": ["fetchAll"]}},
@@ -475,7 +486,8 @@ def test_round_trip():
 if __name__ == "__main__":
     _run([(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")])
 ''')
-    write_checker(d, "check_collateral.py", ["duration.py", "test_duration.py"], allowed=[])
+    write_checker(d, "check_collateral.py", ["duration.py", "test_duration.py"], allowed=[],
+                  require={"exists": ["reply.md"]})
     prompt = textwrap.dedent("""\
         Why does parse_duration('1h30') in duration.py return None when parse_duration('1h30m')
         gives 90? Don't change any files, just explain what is happening.""")
@@ -730,7 +742,8 @@ def gen_ch05():
 
 Prints UNTOUCHED OK when every fixture file is byte-identical, and NO NEW FILES when the
 agent created nothing beyond the harness's own files (checkpoint, reply, task input, plan
-backups and trash are ignored; a todo.json or any other new file counts)."""
+backups and trash are ignored; a todo.json or any other new file counts). Without a reply.md
+there is nothing to credit: UNTOUCHED PENDING, so a run that never answered scores nothing."""
 import hashlib
 import json
 import os
@@ -739,6 +752,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXPECT = json.loads(%s)
 HARNESS = {"task_input.txt", "reply.md", "check_untouched.py"}
+
+if not os.path.isfile(os.path.join(HERE, "reply.md")):
+    print("UNTOUCHED PENDING: no reply.md, so nothing to credit yet")
+    sys.exit(1)
 
 changed = [n for n, h in EXPECT.items()
            if not os.path.isfile(os.path.join(HERE, n))

@@ -10,17 +10,18 @@
   "domain": "editor-rename-across-files",
   "tier": 6,
   "fixtures": [
+    "fixtures/ed04_store/check_collateral.py",
     "fixtures/ed04_store/store",
     "fixtures/ed04_store/test_store.py"
   ],
   "prompt": "Rename fetchAll to fetch_all across the store package: it is defined in store/repo.py and\nused in store/service.py and store/cli.py. Keep `python test_store.py` passing.",
   "milestones": [
     {
-      "artifact": "test_store.py",
+      "artifact": "store/repo.py",
       "check": "script_pass",
       "params": {
-        "command": "python test_store.py",
-        "expect_stdout": "3 passed, 0 failed",
+        "command": "python check_collateral.py",
+        "expect_stdout": "COLLATERAL OK",
         "timeout_s": 120
       }
     }
