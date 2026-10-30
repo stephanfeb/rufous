@@ -113,6 +113,21 @@ fn agent_with(
     a
 }
 
+/// `agent_for` under another model name and the bench's ablation switches.
+fn agent_as(
+    workdir: &Path,
+    calls: &[Call],
+    model: &str,
+    ablation: &[&str],
+) -> Agent<Scripted, ScriptedTools> {
+    let mut a = agent_for(workdir, calls);
+    a.params.model = model.to_string();
+    a.params
+        .ablation
+        .extend(ablation.iter().map(|s| s.to_string()));
+    a
+}
+
 fn start(task: &str) -> Vec<Message> {
     vec![Message::system("sys"), Message::user(task)]
 }
@@ -871,6 +886,62 @@ fn identical_consecutive_call_is_intercepted() {
         .collect();
     assert_eq!(blocked.len(), 1);
     assert!(!user_msgs(&msgs, "Do not retry it unchanged").is_empty());
+}
+
+#[test]
+fn a_duplicate_call_runs_again_when_the_loop_ladders_are_ablated() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![
+        ("read_file", json!({"path": "m08.py"}), "code"),
+        ("read_file", json!({"path": "m08.py"}), "code"),
+    ];
+    let msgs = agent_as(d.path(), &calls, "gemma4:12b", &["anti_loop"])
+        .run(start(TASK), None, None)
+        .expect("loop");
+    let served: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content == "code")
+        .collect();
+    assert_eq!(served.len(), 2, "both reads reach the tool");
+    assert!(msgs
+        .iter()
+        .all(|m| !(m.role == Role::Tool && m.content.starts_with("[blocked:"))));
+    assert!(user_msgs(&msgs, "Do not retry it unchanged").is_empty());
+}
+
+// ---- the ≤4B protocol and its switch ----
+
+#[test]
+fn a_two_billion_model_is_refused_edit_file_until_the_small_model_rule_is_ablated() {
+    // The rule: the loop hides edit_file from a ≤4B model and refuses the call if it is
+    // made anyway. Under the `small_model` switch (and under `kernel`) the same model is
+    // left the raw loop and the edit runs.
+    let calls: Vec<Call> = vec![edit(1, true)];
+    let d = tempfile::tempdir().expect("tmp");
+    let msgs = agent_as(d.path(), &calls, "gemma4:e2b", &[])
+        .run(start(TASK), None, None)
+        .expect("loop");
+    let refused: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.content.starts_with("[tool edit_file is disabled"))
+        .collect();
+    assert_eq!(refused.len(), 1);
+    assert!(msgs.iter().all(|m| m.content != EDIT_OK));
+
+    for switches in [&["small_model"][..], &["kernel"][..]] {
+        let d = tempfile::tempdir().expect("tmp");
+        let msgs = agent_as(d.path(), &calls, "gemma4:e2b", switches)
+            .run(start(TASK), None, None)
+            .expect("loop");
+        assert!(
+            msgs.iter()
+                .any(|m| m.role == Role::Tool && m.content == EDIT_OK),
+            "{switches:?}: the edit must run"
+        );
+        assert!(msgs
+            .iter()
+            .all(|m| !m.content.starts_with("[tool edit_file is disabled")));
+    }
 }
 
 // ---- output cap: truncation feedback and the empty-turn ladder ----

@@ -19,6 +19,7 @@
 //! time, exactly as Mingbird runs it, so a GUI drives it from a worker thread and tests
 //! drive it with a scripted backend.
 
+pub mod ablation;
 pub mod chat;
 pub mod corrector;
 pub mod face;
@@ -220,8 +221,10 @@ impl RunParams {
         self.slim_output = resolve_slim_output(self.slim_output_env, cfg.slim_output, self.num_ctx);
     }
 
+    /// Whether the bench switch `flag` ([`ablation`]) is off for this run; `kernel` in
+    /// the list turns every switch off.
     pub fn ablated(&self, flag: &str) -> bool {
-        self.ablation.iter().any(|a| a == flag)
+        ablation::covers(&self.ablation, flag)
     }
 }
 

@@ -1184,3 +1184,79 @@ server's decoder is the authority. Tests: `tests/history.rs` (drop everywhere, n
 `tests/agent_loop.rs` (a backend that refuses any request carrying an image is refused once,
 the retry carries none, the run completes). 502 Rust tests, clippy clean.
 
+
+## tier6_editor with gemma4:e2b, every ablation switch off (2026-10-30, an invalid arm)
+
+The ablation meant to answer "does the kernel earn its place on the easy tiers": the gemma
+probe above rerun with `AGENT_ABLATION=finish_gate,finish_gate_text_only,corrector,anti_loop,
+flat_prefill`, same axes (32k, coding and unattended), results in
+`bench/results/surface_editor/gemma_e2b_ablated`. Mean 0.45 against the probe's 0.72, but
+the arm did not measure the kernel off, so the difference is not the kernel's contribution.
+
+| task | probe (kernel on) coding / unattended | ablated coding / unattended |
+|---|---|---|
+| ED-01 | 1.00 / 1.00 | 1.00 / 0.00 |
+| ED-02 | 1.00 / 1.00 | 0.00 / 0.43 |
+| ED-03 | 0.29 / 0.00 | 0.29 / 0.29 |
+| ED-04 | 0.21 / 0.89 | 0.21 / 0.32 |
+| ED-05 | 1.00 / 0.79 | 1.00 / 1.00 |
+
+Why it is invalid. In 7 of 10 ablated cells every `edit_file` call (18 of them) was refused
+with "disabled (repeated-call protection)"; the probe had no `edit_file` call at all. The
+small-model rule (`guards::is_small_model`, ≤4B) disables `edit_file` before the first step
+and the category prefill (`Face::tools_for_categories`) hides disabled tools, so in the probe
+gemma never saw it and wrote whole files. The flat prefill (`Face::active_defs`, the
+`flat_prefill` path) does not drop `face.disabled`, so the ablated arm advertised a tool the
+loop then refused, and the model spent its steps on it (ED-04 unattended: five refusals, then
+`create_file` with a 115-byte repo.py, collateral destroyed). Two gaps, bead `boubou-8km`: the
+flat path advertises what the face will refuse, and the small-model edit rule is a kernel
+compensation with no switch, so "kernel off" is not reachable for the models the kernel is for.
+`anti_loop` also only governs the streak notes; the duplicate-call blocker stayed on.
+
+What the run does say. ED-01 unattended is the one clean comparison (no `edit_file` on either
+side): with the gates on, `finish` after an untested rewrite was refused ("no check ran"), the
+model ran the tests and scored 1.00; with the gates off the same model wrote `workdir/slug.py`
+into an invented subdirectory after twelve read-only calls and finished at 0.00 on its own
+word. One cell, n=1, suggestive only. The ablation stays open until the two gaps have a design.
+
+## The ablation made real: one switch list, `kernel` = all (2026-10-30, bead boubou-8km)
+
+Design. An ablation names one kernel compensation and runs the loop without it, so a bench
+score with and without is that compensation's contribution. The kernel is what the loop does
+around the model because small models stumble; it is not the loop's infrastructure (tool
+dispatch, compaction and pruning, the iteration cap and the end-of-turn rules, the safety
+rings) and not the product policy (`TurnPolicy`). Every compensation therefore carries a
+switch, the switches are listed in one module with the mechanism each turns off, and `kernel`
+is every switch at once: the only arm that measures the kernel, and it must be reachable for
+the models the kernel exists for. A compensation without a switch is a measurement the
+project cannot make. Switching one off leaves the model the raw loop, never a half state the
+loop then punishes: a tool the face will refuse is never advertised, on any path.
+
+What changed (`agent/ablation.rs`, the paragraph above is its module doc). Two switches
+added: `small_model` (the ≤4B protocol: `edit_file` hidden from the first step, the shell
+hint) and `salvage` (format-leak salvage, the profile's finish-prose rescue included).
+`anti_loop` now covers every call-pattern ladder, not only the repeat-streak notes: the
+duplicate-call block, idle nudges, the failure ladder (missing-argument repair, redirect
+hints, the three-failure `edit_file` disable), the research and plan-tool streaks, the
+shotgun-edit hint and the stale-plan reminder. `finish_gate`, `finish_gate_text_only`,
+`verify_feedback`, `corrector` and `flat_prefill` are unchanged. The run logs
+`[ablation] off: …` and names any word that is not a switch. `ToolFace::active_defs`, the
+flat-prefill list, now drops disabled tools like the category list does; the refusal text no
+longer claims "repeated-call protection" for a tool disabled for another reason. Tests:
+`ablation.rs` (kernel is every switch, a typo turns nothing off), `face.rs` (a disabled tool
+is advertised on no path), `tests/agent_loop.rs` (a duplicate call runs again under
+`anti_loop`; a 2B model is refused `edit_file` until `small_model` or `kernel` is set, then
+the edit runs). 507 Rust tests, clippy clean.
+
+The ≤4B edit rule, and a correction. The rule is Mingbird's `_small_model` (`ollama_agent.py`
+3710–3718): parameter count parsed from the model tag, at or below 4B `edit_file` goes into
+`_disabled_tools` before the first step. Mingbird's only stated reason is the comment on the
+separate three-failure disable ("edit_file is the tool small models most easily get stuck
+on"); the pre-emptive version generalised that to "never offer it below 4B" with no
+measurement attached, and the port carried it over with its own comment ("exact-match
+protocol is the top failure mode") and no measurement either. The gemma probe entry above
+blamed "wholesale `create_file` rewrites of files it should have edited" on the model. That
+was wrong: the model was never offered `edit_file`; the kernel made it rewrite whole files,
+and the collateral those rewrites destroyed (ED-03, ED-04 coding) is the rule's cost, not the
+model's. Whether the rule has a benefit is now a measurable question, and the first answer is
+the `kernel` arm recorded below.

@@ -96,9 +96,10 @@ change (step 10 below) and not drift.
 
 Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 
-- **Ablations** (`AGENT_ABLATION=…`): the bench's way of switching pieces off for a
-  measurement. The two finish-gate ablations are one input to `TurnPolicy::turn`; the
-  others (`flat_prefill`, `corrector`) are still read where they act.
+- **Ablations** (`AGENT_ABLATION=…`, `agent/ablation.rs`): the bench's way of switching a
+  compensation off for a measurement. The switches are listed in one module with the
+  mechanism each turns off, and `kernel` is all of them; the two finish-gate switches are
+  one input to `TurnPolicy::turn`, the others are read where they act.
 - **`RunParams` itself** carries kernel knobs (`num_ctx`, `think`, `prune_keep`, the profile)
   and policy side by side. Fine while the kernel is the only crate that builds one; the
   product crates will construct their own.

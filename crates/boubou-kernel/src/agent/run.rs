@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
+use super::ablation;
 use super::chat::DynBackend;
 use super::chat::{ChatBackend, StreamPiece};
 use super::corrector::{self, Verdict};
@@ -571,8 +572,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // The policy the session last ran under (`<name>.meta.json`): a session resumed on
         // another surface says it changed harness rather than doing so silently.
         let previous_policy = session.and_then(|s| session::recorded_policy(sessions_dir, s));
-        let gates_ablated =
-            params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
+        let gates_ablated = params.ablated(ablation::FINISH_GATE)
+            || params.ablated(ablation::FINISH_GATE_TEXT_ONLY);
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
@@ -602,6 +603,22 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     prof.name,
                     prof.describe(),
                     prof.note
+                );
+            }
+            if !params.ablation.is_empty() {
+                let (off, unknown) = ablation::describe(&params.ablation);
+                log!(
+                    "[ablation] off: {}{}",
+                    if off.is_empty() {
+                        "nothing".to_string()
+                    } else {
+                        off.join(", ")
+                    },
+                    if unknown.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (not a switch, ignored: {})", unknown.join(", "))
+                    }
                 );
             }
         }
@@ -747,10 +764,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     .any(|m| m.content.starts_with(DISPATCH_NOTE_MARK));
             }
         }
-        let small_model = turn.working && guards::is_small_model(model);
+        // The ≤4B protocol, inherited from Mingbird's `_small_model` and unmeasured there:
+        // edit_file hidden from the first step so the model rewrites whole files, and the
+        // shell-teaching hint. Its first measurement is the `small_model` ablation.
+        let small_model =
+            turn.working && guards::is_small_model(model) && !params.ablated(ablation::SMALL_MODEL);
+        // The call-pattern ladders below, all off under one switch.
+        let anti_loop = !params.ablated(ablation::ANTI_LOOP);
+        let salvage_on = !params.ablated(ablation::SALVAGE);
         tools.set_slim_output(params.slim_output);
         if small_model {
-            // ≤4B: edit_file's exact-match protocol is the top failure mode; rewrite instead.
             face.disabled.insert("edit_file".to_string());
         }
         let mut edit_guard = EditConvergenceGuard::default();
@@ -795,7 +818,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             dedupe_trailing_assistant(&mut messages);
             let ct: Vec<Value> = match (&cats, turn.route == Route::Question) {
                 (_, true) => face.chat_tool_defs(),
-                (Some(c), false) if !params.ablated("flat_prefill") => {
+                (Some(c), false) if !params.ablated(ablation::FLAT_PREFILL) => {
                     let mut defs = face.tools_for_categories(c);
                     defs.extend(tools.mcp_tool_defs(c, &face.extra, face.offline));
                     defs
@@ -1026,7 +1049,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     );
                 }
             }
-            if tcs.is_empty() && turn.route != Route::Question {
+            if salvage_on && tcs.is_empty() && turn.route != Route::Question {
                 // Format-leak salvage (guards/leak.rs): the model wrote its call as text.
                 if let Some(s) = leak::salvage(&content, params.profile.finish_prose_rescue) {
                     let names: Vec<&str> =
@@ -1224,7 +1247,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     res = if malformed {
                         format!("[invalid tool name {shown:?}: it contains whitespace or markup, which is chat-template text that leaked into the call's name. The name must be exactly one entry from your tool list; a shell command belongs in the `command` argument of run_bash.]")
                     } else if face.is_disabled(n) {
-                        format!("[tool {shown} is disabled (repeated-call protection). Do not try to read the same content through another tool: write the output file with create_file, or call finish if you already have enough.]")
+                        format!("[tool {shown} is disabled for this run. Do not try to read the same content through another tool: write the output file with create_file, or call finish if you already have enough.]")
                     } else {
                         format!("[tool {shown} is not available (not in the tool list assembled for this run: either its category was not loaded, or the name does not exist). Do not invent tool names: create_file for output files, edit_file/create_file to change files, read_file to read; the full list is in your tool definitions.]")
                     };
@@ -1275,7 +1298,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     });
                     messages.push(Message::tool_output(res));
                     continue;
-                } else if calls.is_duplicate(&name, &sig_json) {
+                } else if anti_loop && calls.is_duplicate(&name, &sig_json) {
                     // Exactly the same call as last time: the result will not change.
                     let res = format!("[blocked: you just made this exact {name} call (identical arguments); the result will not change. Change strategy: read_file to see the real state, or try a different approach.]");
                     log!("[{i}] ⚠️ duplicate call blocked: {name}");
@@ -1478,7 +1501,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                             &command, &res,
                                         ));
                                         test_guard_warns += 1;
-                                        let h = if params.ablated("verify_feedback") {
+                                        let h = if params.ablated(ablation::VERIFY_FEEDBACK) {
                                             "last line of the output".to_string()
                                         } else {
                                             hint
@@ -1694,7 +1717,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 if failed_call {
                     let k = ledger.on_failed(&name, &sig_json);
                     if turn.working
-                        && !params.ablated("corrector")
+                        && !params.ablated(ablation::CORRECTOR)
                         && missing_arg_key(&res).is_none()
                         && ledger.consult(&name, &sig_json, k)
                     {
@@ -1842,7 +1865,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             "Hint: run_bash runs Windows shell (cmd) commands and cannot execute Python code directly. Do it this way: write the code to a .py file with create_file, then run it with run_bash: python filename.py",
                         ));
                     }
-                    match calls.on_failure(&name, missing_arg_key(&res)) {
+                    let failure = if anti_loop {
+                        calls.on_failure(&name, missing_arg_key(&res))
+                    } else {
+                        Failure::Quiet
+                    };
+                    match failure {
                         Failure::MissingArg { key, streak: st } => {
                             // Missing-argument ladder: gemma-class models drop `path` about one
                             // call in eight and then copy their own failed call from the
@@ -1896,7 +1924,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
 
                 // Repeat-success streaks.
-                match calls.on_streak(&name, &sig_json, !params.ablated("anti_loop")) {
+                match calls.on_streak(&name, &sig_json, anti_loop) {
                     Streak::Note { count } => {
                         messages.push(Message::user(format!(
                             "⚠️ You have called {name} {count} times in a row. If the results are similar or nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish). If you are doing a batch of steps with different arguments each time, that is fine; carry on."
@@ -1927,7 +1955,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             || idle_streak == idle::TASK_IDLE_NUDGE_2)
                             .then(|| idle::task_nudge(idle_streak))
                     };
-                    if let Some(note) = note {
+                    if let Some(note) = note.filter(|_| anti_loop) {
                         idle_notes += 1;
                         log!("[{i}] ⚠️ idle streak: {idle_streak} read-only calls without progress, nudge {idle_notes}");
                         messages.push(Message::user(note));
@@ -1939,11 +1967,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 // wrong place), and the same query over and over (a new query is progress).
                 let research =
                     calls.on_research(&name, &sig_json, res.starts_with(idle::NO_RESULTS_MARK));
-                if research.no_results_twice {
+                if anti_loop && research.no_results_twice {
                     log!("[{i}] ⚠️ two web searches in a row found nothing");
                     messages.push(Message::user(idle::NO_RESULTS_NOTE));
                 }
-                if let Some(streak) = research.disable {
+                if let Some(streak) = research.disable.filter(|_| anti_loop) {
                     for t in RESEARCH_ALL {
                         face.disable(t);
                     }
@@ -1952,14 +1980,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     )));
                 }
                 // Plan-tool loop: same (action,index) 6× in a row, or 15 todo calls without output.
-                if let Some((same, count)) = calls.on_todo(&name) {
+                if let Some((same, count)) = calls.on_todo(&name).filter(|_| anti_loop) {
                     face.disable("todo");
                     messages.push(Message::user(format!(
                         "⚠️ todo is now disabled (the same call {same} times in a row / {count} calls with no real work). Switch to producing tools now: create_file for output files, run_bash to verify; if you need to record a plan, write it into an output file."
                     )));
                 }
                 // Shotgun-edit guard counts only landed edits.
-                if n == "edit_file" && res.starts_with("[edited") {
+                if anti_loop && n == "edit_file" && res.starts_with("[edited") {
                     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
                     if let Some(hint) = edit_guard.observe(path) {
                         log!("[{i}] ⚠️ shotgun-edit hint: {path}");
@@ -1995,7 +2023,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                 }
                 // Stale-plan reminder (never a block, twice at most).
-                if turn.working && todo_nudge_warns < 2 && todo_stale >= TODO_STALE_NUDGE {
+                if anti_loop
+                    && turn.working
+                    && todo_nudge_warns < 2
+                    && todo_stale >= TODO_STALE_NUDGE
+                {
                     let (t_done, t_all) = todo_progress(&load_todo(hdir));
                     if t_all > 0 && t_done < t_all {
                         let stale = todo_stale;

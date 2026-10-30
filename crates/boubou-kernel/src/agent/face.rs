@@ -363,13 +363,39 @@ impl ToolFace {
         self.filter_offline(defs)
     }
 
-    /// `active_tool_defs`: everything currently active (the flat-prefill fallback).
+    /// `active_tool_defs`: everything currently active (the flat-prefill fallback). A
+    /// disabled tool is refused at call time, so it is not advertised here either: the
+    /// model is never shown a tool the loop will then punish it for calling.
     pub fn active_defs(&self) -> Vec<Value> {
         let defs = self
             .active
             .iter()
+            .filter(|n| !self.disabled.contains(*n))
             .filter_map(|n| schema_of(n).cloned())
             .collect();
         self.filter_offline(defs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(defs: &[Value]) -> Vec<String> {
+        defs.iter()
+            .filter_map(|d| d["function"]["name"].as_str().map(String::from))
+            .collect()
+    }
+
+    #[test]
+    fn a_disabled_tool_is_advertised_on_no_path() {
+        let mut face = ToolFace::new();
+        let cats: BTreeSet<String> = [CAT_FILES.to_string()].into_iter().collect();
+        assert!(names(&face.tools_for_categories(&cats)).contains(&"edit_file".to_string()));
+        assert!(names(&face.active_defs()).contains(&"edit_file".to_string()));
+        face.disable("edit_file");
+        assert!(!names(&face.tools_for_categories(&cats)).contains(&"edit_file".to_string()));
+        assert!(!names(&face.active_defs()).contains(&"edit_file".to_string()));
+        assert!(face.is_disabled("edit_file"));
     }
 }
