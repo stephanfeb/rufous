@@ -2421,6 +2421,80 @@ fn the_sandbox_flag_pins_the_child_policy() {
 }
 
 #[test]
+fn a_session_resumed_under_another_policy_says_so() {
+    // Refactor step 9: the session's meta names the policy of its last turn. Resumed under
+    // the same policy nothing is said; resumed under another one the log names both, and
+    // the meta then records the new one. A session Mingbird wrote (no key) is not a change.
+    let d = tempfile::tempdir().expect("tmp");
+    let logs: Arc<Mutex<Vec<String>>> = Arc::default();
+    let run_under = |policy: TurnPolicy, msgs: Vec<Message>| {
+        let sink = Arc::clone(&logs);
+        let mut a = agent_with(d.path(), &[], "", "Hello.").with_sink(move |e| {
+            if let AgentEvent::Log(l) = e {
+                sink.lock().expect("lock").push(l);
+            }
+        });
+        a.params.policy = policy;
+        a.run(msgs, Some("s9"), None).expect("loop")
+    };
+    let changed = |logs: &Arc<Mutex<Vec<String>>>| -> Vec<String> {
+        let mut g = logs.lock().expect("lock");
+        let found = g
+            .iter()
+            .filter(|l| l.contains("ran under"))
+            .cloned()
+            .collect();
+        g.clear();
+        found
+    };
+    let sdir = d.path().join("sessions");
+
+    let mut out = run_under(TurnPolicy::general(), start("hi there"));
+    assert!(
+        changed(&logs).is_empty(),
+        "a fresh session has no previous policy"
+    );
+    assert_eq!(
+        boubou_kernel::agent::session::recorded_policy(&sdir, "s9").as_deref(),
+        Some("general")
+    );
+
+    out.push(Message::user("and again"));
+    let mut out = run_under(TurnPolicy::general(), out);
+    assert!(changed(&logs).is_empty(), "same policy: nothing to say");
+
+    out.push(Message::user("now from the editor"));
+    let out = run_under(TurnPolicy::coding(), out);
+    let said = changed(&logs);
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert_eq!(
+        said[0],
+        "[policy] session s9 ran under general; this turn runs under coding"
+    );
+    assert_eq!(
+        boubou_kernel::agent::session::recorded_policy(&sdir, "s9").as_deref(),
+        Some("coding"),
+        "the meta follows the turn that ran"
+    );
+    assert!(out.len() > 3);
+
+    // Mingbird's meta has no policy key: a session it wrote resumes without a change line.
+    let meta = sdir.join("s9.meta.json");
+    let mut m: serde_json::Map<String, Value> =
+        serde_json::from_str(&std::fs::read_to_string(&meta).expect("meta")).expect("json");
+    m.remove("policy");
+    std::fs::write(&meta, Value::Object(m).to_string()).expect("write");
+    run_under(
+        TurnPolicy::unattended(),
+        start("a task from the batch harness"),
+    );
+    assert!(
+        changed(&logs).is_empty(),
+        "no recorded policy is not a change"
+    );
+}
+
+#[test]
 fn a_preset_lists_its_gates_one_by_one() {
     // The coding product's expected shape, by changing the preset alone: the
     // named-deliverable gate on, every other gate off. The task names fix_summary.md and it

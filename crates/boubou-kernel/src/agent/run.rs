@@ -532,6 +532,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let elapsed_path = budget::elapsed_meta_for(&ckpt_path);
         let ctx_budget = f64::from(params.num_ctx);
         let policy = params.turn_policy();
+        // The policy the session last ran under (`<name>.meta.json`): a session resumed on
+        // another surface says it changed harness rather than doing so silently.
+        let previous_policy = session.and_then(|s| session::recorded_policy(sessions_dir, s));
         let gates_ablated =
             params.ablated("finish_gate") || params.ablated("finish_gate_text_only");
 
@@ -574,6 +577,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     &messages,
                     Some(workdir),
                     Some(hdir),
+                    policy.name,
                     transcript,
                 );
                 if session.is_some() {
@@ -614,6 +618,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 "[child-mode] sandbox installed: tools={:?} workdir={}",
                 face.active,
                 workdir.display()
+            );
+        }
+        if let Some(prev) = previous_policy
+            .as_deref()
+            .filter(|prev| *prev != policy.name)
+        {
+            log!(
+                "[policy] session {} ran under {prev}; this turn runs under {}",
+                session.unwrap_or_default(),
+                policy.name
             );
         }
         if !policy.is_unattended() {

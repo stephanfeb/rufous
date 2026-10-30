@@ -4,7 +4,9 @@
 
 use std::path::Path;
 
-use boubou_kernel::agent::session::{load_session_meta, save_session, Transcript};
+use boubou_kernel::agent::session::{
+    load_session_meta, merge_session_meta, recorded_policy, save_session, Transcript,
+};
 use boubou_kernel::ollama::{Message, Role};
 use serde_json::json;
 
@@ -46,7 +48,7 @@ fn first_turn_compacted(dir: &Path) -> Vec<Message> {
     ];
     t.flush(dir, Some(S), &compacted);
     assert_eq!(lines(dir).len(), 7, "the summary is logged");
-    save_session(dir, Some(S), &compacted, None, None, &mut t);
+    save_session(dir, Some(S), &compacted, None, None, "unattended", &mut t);
     assert_eq!(cursor(dir), Some(4));
     compacted
 }
@@ -144,4 +146,31 @@ fn a_persisted_cursor_beats_the_line_count_on_a_checkpoint_resume() {
     Transcript::new().flush(d.path(), Some(S), &ctx);
     assert_eq!(lines(d.path()).len(), 8);
     assert_eq!(cursor(d.path()), Some(8));
+}
+
+#[test]
+fn a_session_records_the_policy_it_ran_under() {
+    // Refactor step 9: the meta file names the turn policy, beside Mingbird's own keys, so
+    // a resume on another surface can tell the policy changed. A session Mingbird saved
+    // has no such key and reads as unknown; its own keys survive our merge.
+    let d = tempfile::tempdir().expect("tmp");
+    assert_eq!(recorded_policy(d.path(), S), None, "no session yet");
+    let mut t = Transcript::new();
+    let ctx = vec![Message::system("sys"), Message::user("task")];
+    let mut mingbird = serde_json::Map::new();
+    mingbird.insert("title".into(), json!("Inventory fix"));
+    merge_session_meta(d.path(), S, mingbird);
+    assert_eq!(
+        recorded_policy(d.path(), S),
+        None,
+        "Mingbird wrote no policy"
+    );
+    save_session(d.path(), Some(S), &ctx, None, None, "general", &mut t);
+    assert_eq!(recorded_policy(d.path(), S).as_deref(), Some("general"));
+    let meta = load_session_meta(d.path(), S);
+    assert_eq!(meta.get("title"), Some(&json!("Inventory fix")));
+    assert_eq!(meta.get("status"), Some(&json!("running")));
+    // The next turn under another policy overwrites the key: the meta holds the latest.
+    save_session(d.path(), Some(S), &ctx, None, None, "coding", &mut t);
+    assert_eq!(recorded_policy(d.path(), S).as_deref(), Some("coding"));
 }

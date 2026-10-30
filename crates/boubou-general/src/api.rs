@@ -325,6 +325,7 @@ pub fn session_rows(st: &AppState, limit: usize) -> Vec<Value> {
                 "title": if title.is_empty() { name.clone() } else { title },
                 "mtime": mtime,
                 "status": s("status"),
+                "policy": s("policy"),
                 "task": s("task").chars().take(80).collect::<String>(),
             })
         })

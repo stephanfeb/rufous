@@ -929,3 +929,16 @@ text, tool-face change, context reset and the finish gates. Measured: `run.rs` 2
 lines, `ladders.rs` 975 lines (with 8 unit tests), mutable locals in `Agent::run` 55 → 38.
 Behaviour unchanged apart from two log lines (the duplicate-call refusal no longer prints
 its count; a sixth structural-400 repair now also logs the 4xx stop line). 479 tests.
+
+## Sessions record their policy (refactor step 9, 2026-10-30)
+
+`save_session` writes `policy` (the turn policy's name) into `<name>.meta.json` next to
+Mingbird's `updated`, `task`, `status`, `msgs` and `workdir`. Mingbird merges into that file
+rather than rewriting it, so the key survives a Mingbird turn on the same session; a session
+Mingbird saved has no key and resumes without comment. At the start of a run the loop reads
+the recorded name and, when it differs from the policy about to run, logs `[policy] session X
+ran under A; this turn runs under B` before the usual policy line; the products keep choosing
+the policy (web chat: the batch toggle; `boubou run`/`chat`; the editor: `coding`), the
+kernel only says when a resume changes harness. The web UI's session list carries the name
+as `policy`. Tests: `session::a_session_records_the_policy_it_ran_under`,
+`agent_loop::a_session_resumed_under_another_policy_says_so`.

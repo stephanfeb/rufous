@@ -11,7 +11,10 @@
 //!   touches the model context, the GUI renders history from here.
 //! - `<sessions>/<name>.meta.json`: merged metadata (`updated`, `task`, `status`, `msgs`,
 //!   `workdir`, plus whatever the GUI wrote, e.g. `title`).
-//!   Boubou adds `transcript_next`, the transcript cursor (see [`Transcript::flush`]).
+//!   Boubou adds `transcript_next`, the transcript cursor (see [`Transcript::flush`]), and
+//!   `policy`, the name of the turn policy the last turn ran under (see
+//!   [`recorded_policy`]). Mingbird merges into this file rather than rewriting it, so
+//!   both keys survive a Mingbird turn on the same session.
 //! - `<sessions>/<name>.todo.json`: snapshot of the plan, bound to the session.
 //! - `<sessions>/<name>.files/`: the harness directory of a relocated session (ACP):
 //!   `todo.json`, `backups/` (previous versions of edited files, the CLI's `<file>.bak`),
@@ -118,6 +121,18 @@ pub fn load_session_meta(dir: &Path, name: &str) -> Map<String, Value> {
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default()
+}
+
+/// The turn policy the session last ran under, as `save_session` recorded it in the meta
+/// file. `None` for a session Mingbird wrote or one saved before the key existed. The loop
+/// compares it with the policy of the turn about to run and says so when they differ, so a
+/// session resumed on another surface (web chat, editor, `boubou run`) never changes
+/// harness silently.
+pub fn recorded_policy(dir: &Path, name: &str) -> Option<String> {
+    load_session_meta(dir, name)
+        .get("policy")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// `_merge_session_meta`: update fields without clobbering what others wrote.
@@ -249,12 +264,14 @@ fn session_status(msgs: &[Message]) -> &'static str {
 }
 
 /// `save_session`: transcript first, then the context JSON, the todo snapshot and meta.
+/// `policy` is the name of the turn policy this turn ran under, recorded in the meta file.
 pub fn save_session(
     dir: &Path,
     name: Option<&str>,
     msgs: &[Message],
     workdir: Option<&Path>,
     plan_dir: Option<&Path>,
+    policy: &str,
     transcript: &mut Transcript,
 ) {
     let Some(name) = name else {
@@ -289,6 +306,7 @@ pub fn save_session(
     upd.insert("task".into(), Value::String(task));
     upd.insert("status".into(), Value::String(session_status(msgs).into()));
     upd.insert("msgs".into(), Value::from(msgs.len()));
+    upd.insert("policy".into(), Value::String(policy.to_string()));
     if let Some(wd) = workdir {
         let abs = std::path::absolute(wd).unwrap_or_else(|_| wd.to_path_buf());
         upd.insert(

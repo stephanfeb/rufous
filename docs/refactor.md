@@ -99,8 +99,6 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 - **`RunParams` itself** carries kernel knobs (`num_ctx`, `think`, `prune_keep`, the profile)
   and policy side by side. Fine while the kernel is the only crate that builds one; the
   product crates will construct their own.
-- **The run log and the decision sidecar** record the policy by name but the session files
-  do not: a session resumed on another surface silently changes policy.
 
 ## Progress
 
@@ -114,7 +112,7 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 | 6 | The finish gates are named units the policy lists (`Gate`, `Gates`) | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | done |
 | 7 | `child_mode` split: sandbox and tool face stay as safety; the rest is the `child` preset | `run.rs` reads `child` only where the sandbox or the dispatch receipt needs it | done |
 | 8 | Kernel boundary inside `boubou-kernel`: the ladders, compaction, retry, the corrector ledger and salvage are modules the policy-driven loop calls (`agent/ladders.rs`, `guards/leak.rs`) | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | done |
-| 9 | Sessions record the policy they ran under | a resumed session keeps its policy or says it changed | open |
+| 9 | Sessions record the policy they ran under (`policy` in `<name>.meta.json`, a key Mingbird's merge preserves) | a resumed session keeps its policy or says it changed: the loop logs `[policy] session X ran under A; this turn runs under B` and the meta follows the turn that ran | done |
 | 10 | `general` and `coding` diverge where measurement says so | the equality test is replaced by one that states the difference and why | open |
 | 11 | The chat CLI, the prompts and the skills move into the product crates | `boubou-cli` holds wiring and `run` only; each product crate owns its preset's prompts and skills | open |
 | 12 | Repositories split: kernel, general-purpose agent, coding agent | each product repository depends on a published kernel version; two of the three signals above hold | open |
