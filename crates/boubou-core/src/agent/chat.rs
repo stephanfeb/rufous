@@ -254,8 +254,16 @@ impl OllamaBackend {
                 on_piece(StreamPiece::Think(t));
                 thinking.push_str(t);
             }
-            if !m.tool_calls.is_empty() {
-                tool_calls = m.tool_calls.clone();
+            // Ollama streams each tool call in its own chunk (0.8+, seen on 0.40: two
+            // `list_dir` calls arrive as two chunks, `function.index` 0 and 1), so the
+            // calls accumulate. Replacing the list with each chunk's, as Mingbird does,
+            // kept only the last call of a multi-call turn (review 2026-10-29). A server
+            // that resends the cumulative list is tolerated: an identical call is not
+            // appended twice.
+            for tc in &m.tool_calls {
+                if !tool_calls.contains(tc) {
+                    tool_calls.push(tc.clone());
+                }
             }
             if chunk.prompt_eval_count.is_some() {
                 prompt_eval = chunk.prompt_eval_count;
