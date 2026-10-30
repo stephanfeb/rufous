@@ -59,7 +59,10 @@ are not carried over; Boubou ships no Python runtime.
 ## Compatibility with Mingbird
 
 Boubou reads Mingbird's data directory unchanged (`~/.ollama_agent`, or `BOUBOU_HOME` /
-`MINGBIRD_HOME`): the same `config.json`, `mcp.json`, `skills/` and sessions.
+`MINGBIRD_HOME`): the same `config.json`, `mcp.json`, `skills/` and sessions. Values
+Mingbird accepts load here too (a boolean `slim_output`, numbers in `ollama_env`, `"1"` for
+`offline_mode`), and a key Boubou cannot read is dropped with a warning on stderr rather than
+stopping the binary; only a file that is not JSON is an error.
 Tool schemas are the same JSON Mingbird sends, so prompts and the bench numbers carry over.
 
 ## Build

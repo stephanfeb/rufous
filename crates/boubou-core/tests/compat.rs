@@ -41,6 +41,64 @@ fn missing_config_is_defaults_and_unknown_keys_are_ignored() {
 }
 
 #[test]
+fn config_values_mingbird_tolerates_load_instead_of_refusing_to_start() {
+    // The v3.0.0 boolean slim_output, a numeric env value and a string offline switch:
+    // each is read the way `appconfig.py` reads it rather than failing the whole load.
+    let text = r#"{
+        "slim_output": true,
+        "ollama_env": {"OLLAMA_NUM_GPU": 1, "OLLAMA_FLASH_ATTENTION": true, "UNSET": null},
+        "offline_mode": "1",
+        "models": {"fast": "gemma4:e2b"}
+    }"#;
+    let (cfg, dropped) = Config::from_json(text).expect("loads");
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert_eq!(cfg.slim_output, SlimOutput::On);
+    assert_eq!(cfg.ollama_env["OLLAMA_NUM_GPU"], "1");
+    assert_eq!(cfg.ollama_env["OLLAMA_FLASH_ATTENTION"], "true");
+    assert!(!cfg.ollama_env.contains_key("UNSET"));
+    assert!(cfg.offline_mode);
+    assert_eq!(cfg.models["fast"], "gemma4:e2b");
+
+    let (cfg, _) = Config::from_json(r#"{"slim_output": false}"#).expect("loads");
+    assert_eq!(
+        cfg.slim_output,
+        SlimOutput::Auto,
+        "false meant auto in 3.0.0"
+    );
+    let (cfg, _) = Config::from_json(r#"{"slim_output": "ON", "offline_mode": 0}"#).expect("loads");
+    assert_eq!(cfg.slim_output, SlimOutput::On);
+    assert!(!cfg.offline_mode);
+}
+
+#[test]
+fn a_key_boubou_cannot_read_is_dropped_with_a_note_and_the_rest_loads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let p = dir.path().join("config.json");
+    let text = r#"{
+        "ollama_host": "http://gpu-box:11434",
+        "decider": {"mode": "shadow", "threshold": "high"},
+        "slim_output": "sometimes",
+        "models": {"fast": "gemma4:e2b"}
+    }"#;
+    let (cfg, dropped) = Config::from_json(text).expect("loads");
+    assert_eq!(cfg.ollama_host, "http://gpu-box:11434");
+    assert_eq!(cfg.models["fast"], "gemma4:e2b");
+    assert_eq!(cfg.decider, Default::default());
+    assert_eq!(cfg.slim_output, SlimOutput::Auto);
+    assert_eq!(dropped.len(), 2, "{dropped:?}");
+    assert!(dropped.iter().any(|d| d.contains("`decider`")));
+    assert!(dropped.iter().any(|d| d.contains("`slim_output`")));
+    // The file path too: `boubou doctor` must start on such a file.
+    std::fs::write(&p, text).expect("write");
+    let loaded = Config::load_from(&p).expect("a mistyped key is not fatal");
+    assert_eq!(loaded, cfg);
+    // What is not JSON at all is still an error, and so is a document that is not an object.
+    std::fs::write(&p, "{\"ollama_host\": ").expect("write");
+    assert!(Config::load_from(&p).is_err());
+    assert!(Config::from_json("[1, 2]").is_err());
+}
+
+#[test]
 fn config_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let p = dir.path().join("nested/config.json");
