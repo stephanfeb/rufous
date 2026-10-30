@@ -1260,3 +1260,49 @@ was wrong: the model was never offered `edit_file`; the kernel made it rewrite w
 and the collateral those rewrites destroyed (ED-03, ED-04 coding) is the rule's cost, not the
 model's. Whether the rule has a benefit is now a measurable question, and the first answer is
 the `kernel` arm recorded below.
+
+## tier6_editor with gemma4:e2b, the kernel off (2026-10-30, the first valid ablation)
+
+`AGENT_ABLATION=kernel`, same axes as the probe (32k, coding and unattended), results in
+`bench/results/surface_editor/gemma_e2b_kernel_off`. Every cell's transcript carries
+`[ablation] off:` with all eight switches, no refusal and no intervention was logged, and
+`edit_file` was offered and used (28 calls across the run, 17 of them exact-match failures).
+Mean 0.64 against 0.72 with the kernel on, 15 minutes against 6.
+
+| task | kernel on, coding / unattended | kernel off, coding / unattended |
+|---|---|---|
+| ED-01 | 1.00 / 1.00 | 1.00 / 1.00 |
+| ED-02 | 1.00 / 1.00 | 0.71 / 0.43 |
+| ED-03 | 0.29 / 0.00 | 0.29 / 0.29 |
+| ED-04 | 0.21 / 0.89 | 0.32 / 0.32 |
+| ED-05 | 1.00 / 0.79 | 1.00 / 1.00 |
+| mean | 0.72 | 0.64 |
+| finish accepted after a failing last check | 0 of 10 | 6 of 10 |
+
+Cell by cell, from the harness lines and the score details. ED-01: the raw model made the
+one-line fix with `edit_file` in four or five calls and ran the tests itself, faster than
+either kernel-on cell; the gates that fired there last time were not needed this time (n=1).
+ED-02: coding landed one edit, ran the tests (2 passed, 4 failed), wrote the note and finished
+"fixed"; unattended spent 458 seconds and 40 calls on ten `edit_file` attempts (seven
+exact-match failures), seven failing test runs and six empty turns in a row, which the
+hard reset (infrastructure, not a switch) ended, then finished "fixed". With the kernel on
+both cells scored 1.00: the ≤4B rule made the model rewrite the file whole, and the test
+re-run gate confirmed it. ED-03 unattended rose from 0.00 to 0.29 because the kernel-on
+failure was the invented `workdir/` subdirectory, which did not recur; the kernel-off edits
+hit the real file but changed `collapse_spaces` and two other untouched definitions as well,
+and the model finished after four failing test runs. ED-04: coding made fourteen edit
+attempts, ten failed, five failing test runs, finished with `fetchAll` still in
+`service.py`; unattended landed three edits, ran three failing tests, finished "successfully
+renamed". With the kernel on, unattended reached 0.89 by rewriting two files, appending to
+the third and running the tests green. ED-05 is an explanation task on which the kernel is
+idle; the probe's 0.79 was the referee not finding the mechanism named, noise at n=1.
+
+Reading. On this model and these five briefs the kernel is worth 0.08 of mean score and
+nine minutes, and the log lines say which parts earned it. The finish gates: six of ten
+kernel-off cells ended with a success claim over a failing last check, none did with the
+gates on. The failure ladder: without the three-failure `edit_file` disable and the redirect
+hints the model loops on exact-match misses (ED-02 unattended, ED-04 coding). The ≤4B rule
+cuts both ways: its whole-file rewrites won ED-02 and ED-04 unattended and lost ED-03 and
+ED-04 coding to collateral, so it is not settled by this arm and needs its own single-switch
+run (`AGENT_ABLATION=small_model`), as does `finish_gate` alone. The earlier reading that the
+kernel sat idle on the surface tiers held for qwen3.5:9b; for a 2B model it did not.
