@@ -180,6 +180,13 @@ def test_ed05_is_explained_not_changed(tmp_path):
         sys.modules.pop("duration", None)
     any_of = t["final_artifacts"][1]["params"]["any_of"]
     assert "fullmatch" in any_of and "suffix" in any_of
+    # A generic paragraph that never names the mechanism must not pass (gemma4:e2b, 2026-10-30,
+    # scored 1.0 on the bare 'm' entry from zero tool calls).
+    bluff = ("This behavior is likely due to how parse_duration is implemented. Many duration "
+             "parsers expect a specific format, so '1h30' may be invalid while '1h30m' with the 'm' is accepted.")
+    assert not any(s.lower() in bluff.lower() for s in any_of), [s for s in any_of if s.lower() in bluff.lower()]
+    honest = "The regex is matched with fullmatch and the minutes group requires the m suffix, so '1h30' has no match."
+    assert any(s.lower() in honest.lower() for s in any_of)
 
 
 def test_ch01_ch02_expected_values_are_in_the_notes():

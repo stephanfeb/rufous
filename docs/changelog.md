@@ -1117,3 +1117,23 @@ tasks and the remaining question for `coding` is no longer the test guard. The n
 deliverable gate has not been needed in either run (ED-02's `fix_note.md` written under
 `coding` both times, `named_files_missing` empty everywhere).
 
+## tier6_editor with gemma4:e2b (2026-10-30, a capability probe)
+
+`bench/results/surface_editor/gemma_e2b`, same rig, 2B model: mean 0.72 (coding 0.70,
+unattended 0.74) in 6 minutes, no crash, no timeout, against qwen3.5:9b's 0.96. The harness held:
+the only gate firings were correct (ED-01 unattended: "files changed, no check ran" produced a
+test run; ED-02 unattended: the re-run of the model's own `python test_rates.py` passed), the
+duplicate-call ladder absorbed five `list_dir` repeats, and the plan-files gate refused twice
+over a file the model's own plan misnamed (`slugify.py`). The failures are the model's:
+wholesale `create_file` rewrites of files it should have edited (ED-03 both presets, ED-04
+coding, where it also appended a second copy of `service.py` to itself), an invented `workdir/`
+subdirectory it created both files in while running the untouched root tests green (ED-03
+unattended, scored 0, finished "implemented"), and going silent two replies in a row under
+`coding` with the rename two-thirds done (ED-04, 0.21; the same model finished the task under
+`unattended` at 0.89). ED-05 coding scored 1.00 from zero tool calls with a generic paragraph
+about "how duration parsers typically work": the only referee word it matched was `'m'`. That
+is a bench defect, not a model result: ED-05's `contains_any` list dropped the bare
+`'m'`/`"m"`/`` `m` `` entries the same day, so a guess cannot pass without naming the mechanism;
+the four qwen3.5:9b replies still pass (`regex`, `suffix`, `fullmatch`, `pattern`), the two
+gemma replies score 0 on that check, and `test_surface.py` holds the bluff out.
+

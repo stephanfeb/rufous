@@ -500,7 +500,7 @@ if __name__ == "__main__":
             {"artifact": "reply.md", "check": "contains_any",
              "params": {"any_of": ["fullmatch", "suffix", "regex", "regular expression", "pattern",
                                    "requires the m", "requires an m", "needs the m", "needs an m",
-                                   "without the m", "without an m", "'m'", '"m"', "`m`"]}},
+                                   "without the m", "without an m"]}},
         ],
     )
 
