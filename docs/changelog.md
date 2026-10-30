@@ -1137,3 +1137,36 @@ is a bench defect, not a model result: ED-05's `contains_any` list dropped the b
 the four qwen3.5:9b replies still pass (`regex`, `suffix`, `fullmatch`, `pattern`), the two
 gemma replies score 0 on that check, and `test_surface.py` holds the bluff out.
 
+## tier7_chat: general vs unattended (2026-10-30)
+
+`bench/results/surface_chat`, qwen3.5:9b, ctx 32k, one replication, `--policy
+general,unattended`, the five chat briefs, binary at 7dd90bd. Every cell scored 1.00; the whole
+run took 6 minutes.
+
+| task | general calls / wall | unattended calls / wall | note |
+|---|---|---|---|
+| CH-01 owner and date from notes/ | 6 / 35s | 2 / 8s | unattended took the question route and answered in text |
+| CH-02 brief.md from notes/ | 11 / 39s | 7 / 42s | |
+| CH-03 tidy inbox/ | 16 / 45s | 27 / 109s, exit 1 | files all placed before the run died (below) |
+| CH-04 Q2 travel from the CSV | 1 / 34s | 1 / 23s | one `run_bash` each |
+| CH-05 small talk | 0 / 7s | 5 / 21s | unattended read four files, including the referee, before answering; nothing created |
+
+Two presets, same scores, and on three of five tasks the batch harness was faster than the chat
+preset, because its question route answers in text from one or two calls while the general
+prompt plans first. The chat preset's wins are the shape of the turn: CH-05 answered from zero
+calls, and nothing it did needed a gate. `reply.md` from the finish summary or last text held
+the answer for every unattended cell, so the driver change (reply for every policy) did its job.
+
+CH-03 unattended is a kernel bug, not a model one. The model called `read_file` on
+`inbox/images/screenshot 2026-10-02.png`, a 0-byte fixture; Boubou attached it as multimodal
+input, Ollama answered `HTTP 400: decode image: png: invalid format: invalid checksum`, and
+the loop treated the 4xx as fatal ("retrying is pointless, stopped"), exit 1, after the tidy
+was already complete. A server rejecting an attachment should drop the attachment and tell
+the model the image could not be decoded, not end the run (bd boubou-am3). The two artefact-gate
+refusals in that cell were over names the summary abbreviated (`2026-10-02.png` for
+`screenshot 2026-10-02.png`), which is the gate's rule working on a sloppy summary.
+
+Step 10 reading for `general`: nothing here says the chat preset needs a gate, and nothing says
+the batch harness is worse at chat-shaped work once the question route fires. The difference
+the products exist for is the turn shape and the prompt, not the protections.
+
