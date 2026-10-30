@@ -654,7 +654,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         if !child {
             log!("[decider] {}", intent.describe());
             if interactive {
-                log!("[interactive] editor session: task route for every turn; a text reply or finish ends the turn; finish gates off");
+                log!("[interactive] editor session (context {} tokens): task route for every turn; a text reply or finish ends the turn; finish gates off", params.num_ctx);
             }
             // Shadow and on modes leave a labelling trace per session (boubou-acy.3): the log
             // line alone reached no file on any surface. A run without a session name shares

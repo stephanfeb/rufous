@@ -130,15 +130,42 @@ pub trait AgentFactory: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct StandardFactory {
     pub cfg: Config,
+    /// `boubou acp --ctx`: the context window for every editor session, over `AGENT_CTX`.
+    pub num_ctx: Option<u32>,
+}
+
+/// The loop parameters for one editor turn: the environment's defaults as for the CLI
+/// (`AGENT_CTX` and the rest), then what an editor session needs. The editor is interactive,
+/// so a text reply or `finish` ends the turn and the batch gates are off; the plan, backups
+/// and trash go beside the session files, not into the project; and `num_ctx`, from
+/// `boubou acp --ctx`, sets the context window. An editor passes no environment, so without
+/// the flag the window is the 131072-token default and the model loads with a KV cache sized
+/// for it (qwen3.5:9b: 17 GB under Zed, bead boubou-0lg).
+pub fn turn_params(
+    model: String,
+    cwd: PathBuf,
+    sessions_dir: &Path,
+    session: &str,
+    num_ctx: Option<u32>,
+) -> boubou_core::Result<RunParams> {
+    let mut params = RunParams::from_env(model, cwd)?;
+    params.interactive = true;
+    params.harness_dir = Some(session::harness_dir(sessions_dir, session));
+    if let Some(n) = num_ctx {
+        params.num_ctx = n;
+    }
+    Ok(params)
 }
 
 impl AgentFactory for StandardFactory {
     fn new_turn(&self, setup: TurnSetup) -> boubou_core::Result<Box<dyn TurnRunner>> {
-        let mut params = RunParams::from_env(setup.model, setup.cwd)?;
-        // The editor is interactive: a text reply or finish ends the turn, no batch gates.
-        params.interactive = true;
-        // Plan, backups and trash go beside the session files, not into the project.
-        params.harness_dir = Some(session::harness_dir(&setup.sessions_dir, &setup.session));
+        let params = turn_params(
+            setup.model,
+            setup.cwd,
+            &setup.sessions_dir,
+            &setup.session,
+            self.num_ctx,
+        )?;
         let mut agent = Agent::standard(params, &self.cfg)?
             .with_sink(setup.sink)
             .with_stop(setup.stop);

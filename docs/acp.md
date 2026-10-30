@@ -10,10 +10,15 @@ own permission dialog.
 
 ```sh
 cargo build --release
-./target/release/boubou acp --model gemma4:e2b      # or any tag from `boubou models`
+./target/release/boubou acp --model gemma4:e2b --ctx 32768   # any tag from `boubou models`
 ```
 
-The model can also come from `BOUBOU_MODEL`. Display names from `config.json` `models` are
+`--ctx` is the context window, in tokens, for every editor session. The CLI reads `AGENT_CTX`,
+but an editor starts the agent with no environment, so without the flag the window is the
+131072-token default and the model loads with a KV cache sized for it (qwen3.5:9b: 17 GB
+resident under Zed). The editor turns measured so far peak at 6 to 13k tokens, so 32768 is
+plenty; the window is printed in the first log line of every turn. The model can also come
+from `BOUBOU_MODEL`. Display names from `config.json` `models` are
 accepted. Ollama is started if it is down; an OpenAI-compatible or cloud engine in
 `config.json` is used as for the CLI. stdout carries the protocol, so all diagnostics go to
 stderr: `RUST_LOG=boubou_acp=info` shows the harness lines (`[decider]`, `[profile]`, gates).
@@ -28,7 +33,7 @@ Agent Settings → External Agents → Add Agent → Add Custom Agent, or in `se
     "Boubou": {
       "type": "custom",
       "command": "/absolute/path/to/boubou",
-      "args": ["acp", "--model", "gemma4:e2b"],
+      "args": ["acp", "--model", "gemma4:e2b", "--ctx", "32768"],
       "env": {}
     }
   }

@@ -98,6 +98,10 @@ enum Cmd {
         /// Model tag (or a display name from `config.json` `models`); `BOUBOU_MODEL` otherwise.
         #[arg(long)]
         model: Option<String>,
+        /// Context window in tokens for every editor session (`AGENT_CTX` otherwise, default
+        /// 131072). Editors pass no environment, so this is how the window is set.
+        #[arg(long)]
+        ctx: Option<u32>,
     },
     /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
     Serve {
@@ -225,7 +229,7 @@ fn main() -> Result<()> {
                 pc.enabled, pc.child_model, pc.hard_cap
             );
         }
-        Cmd::Acp { model } => {
+        Cmd::Acp { model, ctx } => {
             let key = match model.or_else(|| std::env::var("BOUBOU_MODEL").ok()) {
                 Some(m) if !m.trim().is_empty() => m,
                 _ => anyhow::bail!("boubou acp needs --model <tag> (or BOUBOU_MODEL)"),
@@ -237,7 +241,7 @@ fn main() -> Result<()> {
             {
                 eprintln!("[boubou acp] could not start ollama; run `ollama serve` first");
             }
-            let agent = boubou_acp::BoubouAcp::standard(cfg.clone(), agent_home(), model);
+            let agent = boubou_acp::BoubouAcp::standard(cfg.clone(), agent_home(), model, ctx);
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(agent.serve_stdio())
                 .map_err(|e| anyhow::anyhow!("acp: {e}"))?;

@@ -557,3 +557,29 @@ async fn a_restarted_agent_loads_the_session_replays_it_and_continues() {
     assert_eq!(opened.len(), 2);
     assert!(opened[1] > opened[0] + 1, "{opened:?}");
 }
+
+#[test]
+fn an_editor_turn_is_interactive_keeps_its_files_beside_the_session_and_takes_the_given_window() {
+    use boubou_acp::runner::turn_params;
+    let d = tempfile::tempdir().expect("tmp");
+    let sessions = d.path().join("sessions");
+    let p = turn_params(
+        "m".into(),
+        d.path().to_path_buf(),
+        &sessions,
+        "acp_1030_120000",
+        Some(32_768),
+    )
+    .expect("params");
+    assert!(p.interactive);
+    assert_eq!(p.num_ctx, 32_768);
+    assert_eq!(
+        p.harness_dir.as_deref(),
+        Some(sessions.join("acp_1030_120000.files").as_path())
+    );
+    // Without the flag the environment decides, as for the CLI.
+    let p = turn_params("m".into(), d.path().to_path_buf(), &sessions, "s", None).expect("params");
+    if std::env::var("AGENT_CTX").is_err() {
+        assert_eq!(p.num_ctx, boubou_core::agent::DEFAULT_NUM_CTX);
+    }
+}

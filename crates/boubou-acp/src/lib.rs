@@ -76,8 +76,14 @@ impl std::fmt::Debug for BoubouAcp {
 
 impl BoubouAcp {
     /// The production agent: the user's `config.json`, the real engine and executor.
-    pub fn standard(cfg: boubou_core::config::Config, home: PathBuf, model: String) -> Self {
-        Self::with_factory(home, model, Arc::new(StandardFactory { cfg }))
+    /// `num_ctx` is `boubou acp --ctx`, the context window for every session.
+    pub fn standard(
+        cfg: boubou_core::config::Config,
+        home: PathBuf,
+        model: String,
+        num_ctx: Option<u32>,
+    ) -> Self {
+        Self::with_factory(home, model, Arc::new(StandardFactory { cfg, num_ctx }))
     }
 
     pub fn with_factory(home: PathBuf, model: String, factory: Arc<dyn AgentFactory>) -> Self {
@@ -125,13 +131,13 @@ impl ConnectTo<AcpClient> for BoubouAcp {
             .on_receive_request(
                 {
                     let sessions = sessions.clone();
+                    let sessions_dir = sessions_dir.clone();
                     async move |req: NewSessionRequest,
                                 responder: Responder<NewSessionResponse>,
                                 _cx: ConnectionTo<AcpClient>| {
                         if !req.cwd.is_absolute() {
                             return responder.respond_with_error(
                                 Error::invalid_params().data(serde_json::json!({
-                    let sessions_dir = sessions_dir.clone();
                                     "message": "cwd must be an absolute path"
                                 })),
                             );
