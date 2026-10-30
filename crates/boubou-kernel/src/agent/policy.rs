@@ -96,7 +96,10 @@ pub enum Gate {
     /// Gate 1: something was delivered: a file or command, body text, or a substantive
     /// summary (two refusals).
     Delivery,
-    /// Gate 2: the workdir's Python tests pass (three refusals, then let through).
+    /// Gate 2: the turn's own verification holds at finish: a check that passed before
+    /// later file changes is re-executed through the tool path, and a turn that changed
+    /// files in a tested workdir without running any check is asked for one (three
+    /// refusals, then let through). See `agent/testguard.rs`.
     Tests,
     /// Gate 2b: the summary claims no verified outcome the turn's commands do not back,
     /// and reports no success over a failed check (two refusals).

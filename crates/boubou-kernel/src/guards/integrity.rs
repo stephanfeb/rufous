@@ -384,6 +384,25 @@ pub fn is_verification_command(command: &str) -> bool {
     command.split(['\n', ';', '&', '|']).any(segment_verifies)
 }
 
+/// May the harness re-execute this verification command at finish? Every segment must run
+/// a check or only read, and nothing may be redirected to a file: `pytest && git commit`
+/// would commit twice, `pytest > out.txt` would write. Stderr to stdout or to /dev/null is
+/// not a write.
+pub fn rerunnable_verification(command: &str) -> bool {
+    let stripped = command
+        .replace("2>&1", "")
+        .replace("2>/dev/null", "")
+        .replace(">/dev/null", "");
+    if stripped.contains('>') {
+        return false;
+    }
+    stripped
+        .split(['\n', ';', '&', '|'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .all(|s| segment_verifies(s) || is_read_only_command(s))
+}
+
 /// Does one shell segment *run* a check? The program in program position (after
 /// `VAR=x`, `sudo`, `timeout 5`, `uv run`, …) must be a test runner, a tool under a verifying
 /// subcommand, an interpreter given a test-named script or module, or a test-named script

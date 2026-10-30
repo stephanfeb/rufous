@@ -1053,3 +1053,35 @@ between its implementation and a test expectation that contradicted the brief, w
 duplicate edit blocked. Post-edit feedback (boubou-po1 item 3) and the edit tiers (boubou-bk9.3)
 are the mechanisms that address it; the named-file gate is not.
 
+## Finish gate 2 replaced: the turn's own verification, not a guessed runner (2026-10-30)
+
+The measurement above showed every unattended refusal was the ported test guard misreading
+`unittest discover`'s "NO TESTS RAN" as a failing suite. A first fix added a third runner
+(run self-running `test_*.py` as scripts); it was withdrawn before commit as one more layer on
+the same mistake: the harness guessing a project's test command from the filesystem.
+
+Design. The finish gate verifies what the turn itself verified. The loop records every shell
+command and file write with its exit code, and the claims gate already reads that record to
+refuse a summary that claims a result nothing backs or that contradicts a failed check, and to
+let an honest failure report through. The one case the record cannot settle is a check that
+passed before later file changes. For that case the gate re-executes the model's own command
+through the same tool path (`ToolRunner::run_tool`, so the safety rings and output caps
+apply) and takes the new exit code: a pass becomes a fresh record and the finish stands, a
+failure is refused with the output, quoting the command. When the turn changed files in a
+workdir that has tests and ran no check at all, the gate asks for one and names no runner. It
+never chooses a test command, never falls back, and does nothing when the last check failed,
+because honesty about failure is the claims gate's business. A stale check that also writes
+(`pytest && git commit`, a redirect) is not re-executed; the claims gate's lexical stale rule
+stands for it.
+
+Consequences. The claims gate's stale rule ("passed but N actions that can change files ran
+after it") now fires only for checks the harness must not re-run; for the rest the re-run
+settles it, so a model that edits after a green run and finishes is accepted when the check
+still passes instead of being told to run it again. `has_tests` recognises test files by name
+in any language. Three refusals, then let through, as before. `agent/testguard.rs` is 130
+lines where the runner chain was; `tests/testguard.rs` (6) and four loop tests in
+`tests/agent_loop.rs` cover accept, refuse, not-rerunnable and no-check-ran, with a scripted
+tool runner that can answer differently on the re-run. 500 Rust tests, clippy clean. The
+`coding` and `general` presets have no gates and are unaffected; `unattended` and `child`
+inherit it. tier6_editor unattended is to be run again; the before numbers are above.
+

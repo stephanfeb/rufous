@@ -47,13 +47,27 @@ impl ChatBackend for Scripted {
     }
 }
 
-/// Looks the (name, args) pair up in the script; `finish` always completes.
+/// Looks the (name, args) pair up in the script; `finish` always completes. A pair listed
+/// in `repeat` answers with that result from its second run on (the finish gate re-executes
+/// a check through this same path).
 struct ScriptedTools {
     calls: Vec<Call>,
+    repeat: Vec<Call>,
+    served: Vec<Value>,
 }
 
 impl ToolRunner for ScriptedTools {
     fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        let key = json!([name, args]);
+        let again = self.served.contains(&key);
+        self.served.push(key);
+        if again {
+            for (n, a, r) in &self.repeat {
+                if *n == name && a == args {
+                    return r.to_string();
+                }
+            }
+        }
         for (n, a, r) in &self.calls {
             if *n == name && a == args {
                 return r.to_string();
@@ -87,6 +101,8 @@ fn agent_with(
     };
     let tools = ScriptedTools {
         calls: calls.to_vec(),
+        repeat: Vec::new(),
+        served: Vec::new(),
     };
     // TASK names m08.py as its input; the deliverable gate (integrity, gate 3b) would
     // otherwise ask for it once in every scripted run.
@@ -521,17 +537,84 @@ fn passing_check_backs_the_claim_and_overrides_plan_sync() {
     );
 }
 
-#[test]
-fn a_check_that_passed_before_later_file_changes_is_stale_and_rejected() {
-    // probes_integrity2 t05: check.py OK, then a failing `awk … > result.txt` emptied the
-    // file, then "check.py printed OK" was accepted on the stale pass.
-    let d = tempfile::tempdir().expect("tmp");
-    std::fs::write(d.path().join("result.txt"), "").expect("w");
-    let calls = vec![
+const STALE_AWK: &str = "awk -F, '$2==\"paid\"{s+=$3} END{print s}' data.csv > result.txt";
+
+/// check.py OK, then a failing `awk … > result.txt` emptied the file (probes_integrity2
+/// t05), then "check.py printed OK" on the stale pass.
+fn stale_calls() -> Vec<Call> {
+    vec![
         check_run("[exit 0]\nSTDOUT:\nOK"),
         (
             "run_bash",
-            json!({"command": "awk -F, '$2==\"paid\"{s+=$3} END{print s}' data.csv > result.txt"}),
+            json!({"command": STALE_AWK}),
+            "[exit 2]\nSTDERR:\nawk: syntax error",
+        ),
+    ]
+}
+
+#[test]
+fn a_check_that_passed_before_later_file_changes_is_rerun_and_accepted_when_it_still_passes() {
+    // The gate re-executes the model's own `python check.py` through the tool path instead
+    // of refusing on suspicion; the scripted tool answers OK again, so the finish stands and
+    // the fresh pass is the self-check.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "").expect("w");
+    let msgs = agent_with(d.path(), &stale_calls(), "", "check.py printed OK")
+        .run(start(CHECK_TASK), None, None)
+        .expect("loop");
+    assert!(
+        user_msgs(&msgs, "verified state may be gone").is_empty(),
+        "{msgs:#?}"
+    );
+    assert!(user_msgs(&msgs, "fails now").is_empty());
+    assert!(user_msgs(&msgs, "Pre-delivery check").is_empty());
+    assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
+}
+
+#[test]
+fn a_check_that_passed_before_later_file_changes_is_rerun_and_refused_when_it_fails_now() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "").expect("w");
+    let mut a = agent_with(d.path(), &stale_calls(), "", "check.py printed OK");
+    a.tools.repeat = vec![check_run("[exit 1]\nSTDOUT:\nFAIL: result.txt is empty")];
+    let msgs = a.run(start(CHECK_TASK), None, None).expect("loop");
+    let rejects = user_msgs(&msgs, "fails now");
+    assert_eq!(
+        rejects.len(),
+        1,
+        "the re-executed check fails: refused once, with its output: {msgs:#?}"
+    );
+    // The failed re-run is now on the record, so the claims gate carries on with the truth
+    // ("the last verification command exited 1") rather than this gate refusing again.
+    let claims = user_msgs(
+        &msgs,
+        "the last verification command `python check.py` exited 1",
+    );
+    assert_eq!(claims.len(), 2, "{msgs:#?}");
+    assert!(rejects[0].content.contains("`python check.py`"));
+    assert!(rejects[0].content.contains("exit 1"));
+    assert!(rejects[0].content.contains("FAIL: result.txt is empty"));
+    assert!(
+        !rejects[0].content.contains("pytest") && !rejects[0].content.contains("unittest"),
+        "the gate names the model's command, never a runner of its own"
+    );
+    assert!(user_msgs(&msgs, "verified state may be gone").is_empty());
+    assert_eq!(msgs.last().map(|m| &m.role), Some(&Role::Assistant));
+}
+
+#[test]
+fn a_stale_check_the_harness_must_not_re_execute_is_left_to_the_claims_gate() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("result.txt"), "").expect("w");
+    let calls = vec![
+        (
+            "run_bash",
+            json!({"command": "python check.py && git commit -am ok"}),
+            "[exit 0]\nSTDOUT:\nOK",
+        ),
+        (
+            "run_bash",
+            json!({"command": STALE_AWK}),
             "[exit 2]\nSTDERR:\nawk: syntax error",
         ),
     ];
@@ -539,11 +622,62 @@ fn a_check_that_passed_before_later_file_changes_is_stale_and_rejected() {
         .run(start(CHECK_TASK), None, None)
         .expect("loop");
     let rejects = user_msgs(&msgs, "so the verified state may be gone");
-    assert_eq!(rejects.len(), 2, "stale evidence is refused, twice at most");
-    assert!(rejects[0].content.contains("python check.py"));
-    assert!(rejects[0].content.contains("awk"));
-    // and the pre-delivery check is NOT skipped for a stale pass
-    assert_eq!(user_msgs(&msgs, "Pre-delivery check").len(), 1);
+    assert_eq!(
+        rejects.len(),
+        2,
+        "a committing command is not re-run; the lexical stale rule stands"
+    );
+    assert!(user_msgs(&msgs, "fails now").is_empty());
+}
+
+#[test]
+fn changing_files_in_a_tested_workdir_without_running_a_check_is_asked_for_one() {
+    // TASK edits m08.py; the workdir has test_m08.py; the model never runs anything.
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(
+        d.path().join("test_m08.py"),
+        "def test_f():\n    assert f() == 1\n",
+    )
+    .expect("w");
+    let calls = vec![edit(1, true)];
+    let msgs = agent_with(d.path(), &calls, "", "Fixed the bug in m08.py.")
+        .run(start(TASK), None, None)
+        .expect("loop");
+    let asks = user_msgs(&msgs, "no test or check command ran");
+    assert_eq!(
+        asks.len(),
+        3,
+        "asked for a check, three times at most, then let through: {msgs:#?}"
+    );
+    assert!(
+        !asks[0].content.contains("pytest") && !asks[0].content.contains("unittest"),
+        "the gate asks for the project's tests and names no runner"
+    );
+    // The same turn, with the summary admitting the tests were not run: honesty passes.
+    let d2 = tempfile::tempdir().expect("tmp");
+    std::fs::write(
+        d2.path().join("test_m08.py"),
+        "def test_f():\n    assert f() == 1\n",
+    )
+    .expect("w");
+    let msgs = agent_with(
+        d2.path(),
+        &calls,
+        "",
+        "Edited m08.py; I could not run the tests, so the fix is unverified and may fail.",
+    )
+    .run(start(TASK), None, None)
+    .expect("loop");
+    assert!(
+        user_msgs(&msgs, "no test or check command ran").is_empty(),
+        "{msgs:#?}"
+    );
+    // And a workdir without tests asks for nothing.
+    let d3 = tempfile::tempdir().expect("tmp");
+    let msgs = agent_with(d3.path(), &calls, "", "Fixed the bug in m08.py.")
+        .run(start(TASK), None, None)
+        .expect("loop");
+    assert!(user_msgs(&msgs, "no test or check command ran").is_empty());
 }
 
 #[test]

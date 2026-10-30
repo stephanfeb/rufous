@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use super::chat::DynBackend;
 use super::chat::{ChatBackend, StreamPiece};
@@ -32,7 +32,7 @@ use super::openai::OpenAiBackend;
 use super::policy::{Gate, Prompt, Route};
 use super::prompt;
 use super::session::{self, Transcript};
-use super::testguard::{self, TestVerdict};
+use super::testguard::{self, FinishCheck, RerunOutcome};
 use super::{AgentEvent, RunParams};
 use crate::decider::{DeciderMode, LayeredDecider};
 use crate::exec::Executor;
@@ -1414,39 +1414,77 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         ));
                         continue;
                     }
-                    // Gate 2: tests in the workdir must pass (3 refusals, then let through).
+                    // Gate 2: the turn's own verification must hold at finish (testguard.rs).
+                    // A check that passed before later file changes is re-executed through
+                    // the tool path and recorded; a turn that changed files in a tested
+                    // workdir without running any check is asked for one. The gate names no
+                    // runner, and a summary that admits failure is the claims gate's business
+                    // (3 refusals, then let through).
                     if turn.gates.has(Gate::Tests)
-                        && testguard::has_python_tests(workdir)
                         && test_guard_warns < 3
+                        && !integrity::admits_failure_about(&summary, "")
                     {
-                        let (verdict, thint) = testguard::run_test_guard(workdir);
-                        match verdict {
-                            TestVerdict::Skip => {
-                                log!("[{i}] test guard skipped: no pytest/python in this environment, tests cannot be verified automatically");
+                        match testguard::finish_check(workdir, &cmd_records) {
+                            FinishCheck::Nothing => {}
+                            FinishCheck::NotRerunnable(c) => {
+                                log!(
+                                    "[{i}] test guard: `{}` passed before later changes but is not safe to re-run (compound or writing command); the claims gate decides",
+                                    crate::text::head(&c, 60)
+                                );
                             }
-                            TestVerdict::Fail => {
+                            FinishCheck::NoCheckRan => {
                                 test_guard_warns += 1;
-                                let h = if params.ablated("verify_feedback") {
-                                    "last line of pytest output".to_string()
-                                } else {
-                                    thint
-                                };
-                                let mut bak_hint = String::new();
-                                if h.contains("SyntaxError") || h.contains("IndentationError") {
-                                    if let Some(b) = first_py_bak(&bak_dir) {
-                                        bak_hint = format!("Syntax error detected. A backup is available to roll back: restore the matching .bak (e.g. copy {b} over the original), or rebuild the file.\n");
-                                    }
-                                }
-                                log!("[{i}] ⚠️ tests failing, finish rejected ({test_guard_warns}/3; let through after 3)");
+                                log!("[{i}] ⚠️ files changed in a tested workdir and no check ran; finish rejected ({test_guard_warns}/3; let through after 3)");
                                 messages.push(Message::user(format!(
-                                    "⚠️ Your finish was rejected: the tests in the directory are failing.\nExact failure: {h}\n{bak_hint}Use read_file to look at the failing code and make the tests and implementation agree. Run them with whatever the environment has: python -m pytest -q; without pytest use python -m unittest or python test_xxx.py directly. Finish once everything is green (rejection {test_guard_warns}/3; after 3 rejections finish will be let through)."
+                                    "⚠️ Your finish was rejected: this turn changed files and the directory has tests, but no test or check command ran. Run the project's tests with run_bash and finish with what they printed; if they cannot be run, say so in the summary (rejection {test_guard_warns}/3; after 3 rejections finish will be let through)."
                                 )));
                                 messages.push(Message::tool_output(
-                                    "[finish rejected: tests not all green. Fix the implementation and tests, then finish.]",
+                                    "[finish rejected: no check ran after the changes. Run the tests, then finish.]",
                                 ));
                                 continue;
                             }
-                            TestVerdict::Pass => {}
+                            FinishCheck::Rerun(command) => {
+                                let short = crate::text::head(&command, 60).to_string();
+                                let res = tools.run_tool("run_bash", &json!({"command": command}));
+                                match testguard::rerun_outcome(&res) {
+                                    RerunOutcome::CouldNotRun => {
+                                        log!("[{i}] test guard: re-ran `{short}` after later changes but it could not run here; the claims gate decides");
+                                    }
+                                    RerunOutcome::Passed => {
+                                        cmd_records.push(integrity::CommandRecord::from_result(
+                                            &command, &res,
+                                        ));
+                                        log!("[{i}] test guard: re-ran `{short}` after later changes: still passes");
+                                    }
+                                    RerunOutcome::Failed { exit, hint } => {
+                                        cmd_records.push(integrity::CommandRecord::from_result(
+                                            &command, &res,
+                                        ));
+                                        test_guard_warns += 1;
+                                        let h = if params.ablated("verify_feedback") {
+                                            "last line of the output".to_string()
+                                        } else {
+                                            hint
+                                        };
+                                        let mut bak_hint = String::new();
+                                        if h.contains("SyntaxError")
+                                            || h.contains("IndentationError")
+                                        {
+                                            if let Some(b) = first_py_bak(&bak_dir) {
+                                                bak_hint = format!("Syntax error detected. A backup is available to roll back: restore the matching .bak (e.g. copy {b} over the original), or rebuild the file.\n");
+                                            }
+                                        }
+                                        log!("[{i}] ⚠️ re-ran `{short}` after later changes: exit {exit}; finish rejected ({test_guard_warns}/3; let through after 3)");
+                                        messages.push(Message::user(format!(
+                                            "⚠️ Your finish was rejected: your own check `{short}` passed earlier, but after the later changes it fails now (exit {exit}).\nExact failure: {h}\n{bak_hint}Make the implementation and the tests agree, run `{short}` again, and finish once it passes; if it cannot pass, say so in the summary (rejection {test_guard_warns}/3; after 3 rejections finish will be let through)."
+                                        )));
+                                        messages.push(Message::tool_output(
+                                            "[finish rejected: the check that passed earlier fails after the later changes. Fix, re-run it, then finish.]",
+                                        ));
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                     }
                     // Gate 2b (integrity): the summary must not claim a verified outcome the
