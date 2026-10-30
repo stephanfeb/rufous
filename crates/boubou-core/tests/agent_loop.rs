@@ -515,7 +515,10 @@ fn passing_check_backs_the_claim_and_overrides_plan_sync() {
         "a passing check is the self-check; no re-injection (probes_integrity2 t00/t04)"
     );
     let todo = std::fs::read_to_string(d.path().join("todo.json")).expect("todo");
-    assert!(!todo.contains("false"), "todo synced for the model: {todo}");
+    assert!(
+        todo.contains("\"done\":false"),
+        "the plan is the model's record: the harness must not tick steps it did not see happen: {todo}"
+    );
 }
 
 #[test]

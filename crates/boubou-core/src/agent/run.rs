@@ -1539,15 +1539,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     {
                         let (t_done, t_all) = todo_progress(&load_todo(hdir));
                         if t_all > 0 && t_done < t_all && integrity::verified_at_end(&cmd_records) {
-                            log!("[{i}] plan out of sync ({t_done}/{t_all}) but the last command was a passing check; plan synced, finish allowed");
+                            // A passing check says the work is done, not that every planned
+                            // step was taken: the plan is the model's record and stays as it
+                            // wrote it (the harness used to tick everything, falsifying it).
+                            log!("[{i}] plan out of sync ({t_done}/{t_all}) but the last command was a passing check; finish allowed, plan left as is");
                             todo_gate_warns = 2;
-                            let mut t = load_todo(hdir);
-                            for item in &mut t {
-                                item.done = true;
-                            }
-                            if let Err(e) = crate::todo::save_todo(hdir, &t) {
-                                log!("[{i}] todo sync failed: {e}");
-                            }
                         } else if t_all > 0
                             && t_done < t_all
                             && integrity::admits_failure_about(&summary, "")
