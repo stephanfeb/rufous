@@ -100,6 +100,17 @@ pub enum SlimOutput {
     Off,
 }
 
+impl SlimOutput {
+    /// `on`/`off` as a setting; `auto` is none (the context size decides).
+    pub fn as_bool(self) -> Option<bool> {
+        match self {
+            SlimOutput::Auto => None,
+            SlimOutput::On => Some(true),
+            SlimOutput::Off => Some(false),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for SlimOutput {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         match Value::deserialize(d)? {

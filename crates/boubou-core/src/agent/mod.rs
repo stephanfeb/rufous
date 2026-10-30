@@ -55,14 +55,19 @@ pub struct RunParams {
     pub workdir: PathBuf,
     pub num_ctx: u32,
     pub num_predict: i32,
-    /// `AGENT_TEMP`: unset = omit from request.
+    /// `AGENT_TEMP`: unset (or not a number) = omit from request.
     pub temperature: Option<f32>,
-    /// `AGENT_THINK`: unset = omit; `1` = on; `0` = off.
+    /// `AGENT_THINK`: unset = omit; `1`/`true`/`yes`/`on` = on; anything else = off.
     pub think: Option<bool>,
     /// `AGENT_SYSTEM_FILE`: replacement system prompt.
     pub system_file: Option<PathBuf>,
-    /// `AGENT_SLIM_OUTPUT`, or automatic when `num_ctx <= 32K`.
+    /// Trim long command output. Resolved by [`RunParams::apply_config`] as Mingbird's
+    /// `slim_output_mode`: `AGENT_SLIM_OUTPUT` > `config.json` `slim_output` > automatic
+    /// when `num_ctx <= 32K`. Until then, the environment or the automatic rule.
     pub slim_output: bool,
+    /// `AGENT_SLIM_OUTPUT` as a switch (`1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`);
+    /// unset or another word = no override.
+    pub slim_output_env: Option<bool>,
     /// `AGENT_KEEPALIVE`.
     pub keep_alive: String,
     /// `AGENT_TIME_BUDGET_SEC`: module-level fallback when `run` gets no explicit budget.
@@ -106,7 +111,7 @@ pub struct RunParams {
 impl RunParams {
     pub fn from_env(model: impl Into<String>, workdir: impl Into<PathBuf>) -> Result<Self> {
         let num_ctx = env_parse("AGENT_CTX")?.unwrap_or(DEFAULT_NUM_CTX);
-        let slim_env: Option<u8> = env_parse("AGENT_SLIM_OUTPUT")?;
+        let slim_env = parse_switch("AGENT_SLIM_OUTPUT", env_raw("AGENT_SLIM_OUTPUT").as_deref());
         let budget: Option<f64> = env_parse("AGENT_TIME_BUDGET_SEC")?;
         let model = model.into();
         let profile = crate::profile::builtin_for(&model);
@@ -115,15 +120,13 @@ impl RunParams {
             workdir: workdir.into(),
             num_ctx,
             num_predict: env_parse("AGENT_NUMPREDICT")?.unwrap_or(DEFAULT_NUM_PREDICT),
-            temperature: env_parse("AGENT_TEMP")?,
-            think: env_parse::<u8>("AGENT_THINK")?.map(|v| v != 0),
+            temperature: parse_temp(env_raw("AGENT_TEMP").as_deref()),
+            think: parse_think(env_raw("AGENT_THINK").as_deref()),
             system_file: std::env::var_os("AGENT_SYSTEM_FILE")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
-            slim_output: match slim_env {
-                Some(v) => v != 0,
-                None => num_ctx <= 32_768,
-            },
+            slim_output: slim_env.unwrap_or(num_ctx <= 32_768),
+            slim_output_env: slim_env,
             keep_alive: std::env::var("AGENT_KEEPALIVE")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
@@ -161,6 +164,7 @@ impl RunParams {
             think: None,
             system_file: None,
             slim_output: false,
+            slim_output_env: None,
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
             budget_env_sec: None,
             unattended: false,
@@ -192,9 +196,79 @@ impl RunParams {
         }
     }
 
+    /// Everything `config.json` contributes to a run: the model profile
+    /// ([`apply_profile`](Self::apply_profile)) and the `slim_output` mode, which the
+    /// environment overrides and the context size decides when both are silent (Mingbird's
+    /// `slim_output_mode`). The key used to be parsed and never read (review 2026-10-29).
+    pub fn apply_config(&mut self, cfg: &crate::config::Config) {
+        self.apply_profile(&cfg.profiles);
+        self.slim_output = resolve_slim_output(self.slim_output_env, cfg.slim_output, self.num_ctx);
+    }
+
     pub fn ablated(&self, flag: &str) -> bool {
         self.ablation.iter().any(|a| a == flag)
     }
+}
+
+/// `slim_output_mode`: environment switch > config `auto`/`on`/`off` > `num_ctx <= 32K`.
+pub fn resolve_slim_output(
+    env: Option<bool>,
+    cfg: crate::config::SlimOutput,
+    num_ctx: u32,
+) -> bool {
+    env.or(cfg.as_bool()).unwrap_or(num_ctx <= 32_768)
+}
+
+/// `AGENT_THINK` → tri-state as Mingbird's `_parse_think_env`: unset or empty = engine
+/// default; a switch word sets it; any other word is off, with a warning (Mingbird reads
+/// everything but `1` as off and says nothing).
+pub fn parse_think(raw: Option<&str>) -> Option<bool> {
+    let w = raw?.trim();
+    if w.is_empty() {
+        return None;
+    }
+    Some(crate::config::truthy(w).unwrap_or_else(|| {
+        tracing::warn!(
+            "AGENT_THINK={w:?} is not a switch word (1/0, on/off, yes/no, true/false); read as off"
+        );
+        false
+    }))
+}
+
+/// `AGENT_TEMP` → a number, or unset when it is not one: a typo in a launch script must
+/// not stop the agent (Mingbird's `_parse_temp_env`); it is logged instead.
+pub fn parse_temp(raw: Option<&str>) -> Option<f32> {
+    let w = raw?.trim();
+    if w.is_empty() {
+        return None;
+    }
+    match w.parse::<f32>() {
+        Ok(t) if t.is_finite() => Some(t),
+        _ => {
+            tracing::warn!("AGENT_TEMP={w:?} is not a number; ignored");
+            None
+        }
+    }
+}
+
+/// A switch variable: a switch word is the setting, an unknown word is a warning and no
+/// setting (the next source decides), unset or empty is no setting.
+pub fn parse_switch(name: &str, raw: Option<&str>) -> Option<bool> {
+    let w = raw?.trim();
+    if w.is_empty() {
+        return None;
+    }
+    let v = crate::config::truthy(w);
+    if v.is_none() {
+        tracing::warn!(
+            "{name}={w:?} is not a switch word (1/0, on/off, yes/no, true/false); ignored"
+        );
+    }
+    v
+}
+
+fn env_raw(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str) -> Result<Option<T>>

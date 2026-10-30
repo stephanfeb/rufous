@@ -92,7 +92,11 @@ boubou acp --model <model>      # Agent Client Protocol over stdio, for an edito
 
 Environment variables are inherited from Mingbird: `OLLAMA_HOST`, `OLLAMA_BIN`, `AGENT_CTX`,
 `AGENT_TEMP`, `AGENT_NUMPREDICT`, `AGENT_THINK`, `AGENT_SYSTEM_FILE`, `AGENT_SLIM_OUTPUT`,
-`AGENT_OFFLINE`. Ctrl-C in `run` or `chat` ends the run after the current step with the
+`AGENT_OFFLINE`. The switches take `1/0`, `on/off`, `yes/no` or `true/false`; a value that is
+not a number or a switch word is logged and ignored rather than stopping the agent, as in
+Mingbird. Command-output trimming follows `AGENT_SLIM_OUTPUT`, then `config.json`
+`slim_output` (`auto`/`on`/`off`), then the context size (on at 32K and below).
+Ctrl-C in `run` or `chat` ends the run after the current step with the
 session saved; a running command's process tree and any dispatched children are terminated.
 A second Ctrl-C quits at once.
 

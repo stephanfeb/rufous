@@ -145,10 +145,9 @@ pub fn params_from_prefs(
 ) -> boubou_core::Result<RunParams> {
     let mut p = RunParams::from_env(model, workdir.to_path_buf())?;
     if let Some(ctx) = prefs.get("ctx").and_then(Value::as_u64) {
+        // `Agent::standard` resolves slim output from this context size, the config and
+        // the environment.
         p.num_ctx = ctx as u32;
-        if std::env::var_os("AGENT_SLIM_OUTPUT").is_none() {
-            p.slim_output = p.num_ctx <= 32_768;
-        }
     }
     p.temperature = prefs.get("temp").and_then(Value::as_f64).map(|t| t as f32);
     if let Some(np) = prefs.get("num_predict").and_then(Value::as_i64) {

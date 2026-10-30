@@ -348,8 +348,9 @@ impl Agent<DynBackend, Executor> {
     /// server), plus the real executor in the workdir.
     pub fn standard(mut params: RunParams, cfg: &crate::config::Config) -> Result<Self> {
         // The model's profile fills the think/temperature defaults before the backend is
-        // built; the loop logs the resolved profile at run start.
-        params.apply_profile(&cfg.profiles);
+        // built (the loop logs the resolved profile at run start), and the config's
+        // `slim_output` mode is applied under the environment's override.
+        params.apply_config(cfg);
         let host = cfg.ollama_host();
         let offline = cfg.offline();
         let (backend, engine): (DynBackend, String) = if let Some(cp) = cfg.cloud_provider() {
