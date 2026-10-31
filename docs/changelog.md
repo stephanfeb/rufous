@@ -2417,3 +2417,23 @@ workspace if you provide a path", qwen r0 "Please try again if you wish to proce
 clause voiced). The one miss is unchanged in shape: qwen r1 turn 2 made no call, "as indicated
 by the system response from my previous attempt, there's a safety gate preventing me", the
 refusal read as a standing rule, 1 of 3 qwen cells in each of v5, v6, v7.
+
+## Longform and tracker scripts, release of 04:44, n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_lt_v1`, the regression check after the permission work (beads
+boubou-hzl, ik4, 77n, 3bv, sxx, bj4, zjy, dml). Longform: gemma 10/10 ×3, qwen 10, 10, 9
+(means 1.00 and 0.97), the baseline figures of 2026-10-31. Tracker: gemma 3, 1, 3 of 4 and
+qwen 1, 1, 1 (0.58 and 0.25; baseline 0.50 and 0.33), within a run of each other. Zero asks in
+all twelve cells, so ring 3's shell and interpreter targets and the declined-name list fired
+nothing false on work that never leaves the project; the only status tag in the run is one
+`⟂nochange`, no untagged tool error. qwen's one longform miss: asked how many `## ` headings
+report.md has, it said 8 from memory (no read; r0 and r1 said 7 the same way); the file has 7.
+Those files are malformed though every turn passed: qwen created the title without a trailing
+newline and `append_file` appends raw bytes, so line 1 is `# Heron report## Attendance` in all
+three cells (bead boubou-boubou-l3e); gemma writes its own newline. The tracker misses are one
+class, bead boubou-78s: of the twelve failing turns, eleven put the tasks into the `todo` tool
+instead of tasks.md (t1 create, t3 tick, t4 add), and t2 (say, no write) passed 6/6. Nothing
+drifted into source: gsw 0 everywhere. The script's name says drift; what it measures today is
+the plan tool standing in for a named file. The scope classifier put t4 ("feature 5 (the
+--year flag)") in `code` 6/6 while the other turns were `mixed`, bead boubou-gqw's "feature"
+word; no consequence here, no source write to hold.
