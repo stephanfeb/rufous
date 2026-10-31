@@ -810,11 +810,14 @@ fn ask(
     match confirmer.confirm(&req) {
         Verdict::Allow => Ok(false),
         Verdict::AllowAll => Ok(true),
-        // The clause after "stop" is bead boubou-77n: without it both 4B models read the
-        // sentence as a session rule and refused the user's own "try again" (2026-10-31).
+        // No reason in the user's refusal (bead boubou-3bv): with "outside the working
+        // directory" in it, both 4B models quoted that phrase back as a system rule and
+        // refused the user's own "try again" 6/6 (2026-10-31), whatever the text said about
+        // who declined or about asking again. The dialog title already named the path. The
+        // retry clause is bead boubou-77n.
         Verdict::Deny if confirmer.attended() => Err(Refusal {
             text: format!(
-                "[safety gate: the user declined this: {tool} on {target}, {reason}. Do not do it another way or write it somewhere else; say what you could not do and stop. If the user asks for it again, make the same call again: the question is asked each time and they may allow it then.]"
+                "[safety gate: the user declined this call: {tool} on {target}. Do not do it another way or write it somewhere else; say what you could not do. If the user asks for it again, make the same call again: they are asked each time and may allow it.]"
             ),
             by_user: true,
         }),

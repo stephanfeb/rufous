@@ -527,15 +527,16 @@ fn the_deny_text_says_who_declined_and_forbids_the_workaround() {
     let mut attended = Gate::new(SafetyPolicy::default(), Box::new(Says(Verdict::Deny)));
     let msg = attended.check(&write, d.path()).expect("declined");
     assert!(
-        msg.starts_with("[safety gate: the user declined this: create_file on "),
+        msg.starts_with("[safety gate: the user declined this call: create_file on "),
         "{msg}"
     );
-    assert!(msg.contains("outside the working directory"), "{msg}");
+    // No reason phrase: "outside the working directory" was quoted back as a system rule.
+    assert!(!msg.contains("outside"), "{msg}");
     assert!(
         msg.contains("Do not do it another way or write it somewhere else"),
         "{msg}"
     );
-    assert!(msg.contains("say what you could not do and stop"), "{msg}");
+    assert!(msg.contains("say what you could not do."), "{msg}");
     assert!(
         msg.contains("If the user asks for it again, make the same call again"),
         "{msg}"
@@ -545,8 +546,8 @@ fn the_deny_text_says_who_declined_and_forbids_the_workaround() {
         .check(&bash("echo hello > /tmp/boubou_convo_perm.txt"), d.path())
         .expect("declined");
     assert!(
-        msg.contains("the user declined this: run_bash on ")
-            && msg.contains("/tmp/boubou_convo_perm.txt, outside the working directory"),
+        msg.contains("the user declined this call: run_bash on ")
+            && msg.contains("/tmp/boubou_convo_perm.txt."),
         "{msg}"
     );
     let mut headless = Gate::headless(SafetyPolicy::default());

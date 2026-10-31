@@ -120,7 +120,10 @@ running another harness should check theirs does the equivalent.
   gemma4:e4b (0/3, the substitute write again), and both models then read "stop" as a session
   rule and refused the user's own retry (*measured*, 2026-10-31, n=3). So: a refusal needs a
   mechanism behind it where the behaviour matters (the declined file name is now refused at any
-  other path for the turn) and a clause that scopes it to the call.
+  other path for the turn: turn 1 went to 6/6) and words alone do not scope it: a clause telling
+  the model to retry when asked again moved nothing (turn 2 0/6), and all six replies quoted the
+  explanatory phrase "outside the working directory" back as a system rule, not the user's
+  choice (*measured*, 2026-10-31, n=3; bead boubou-3bv tries the text without the reason).
 
 ## 5. Per-model notes
 

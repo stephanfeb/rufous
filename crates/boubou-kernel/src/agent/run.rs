@@ -2081,7 +2081,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                         Failure::Redirect { count } => {
                             let path_refused = res.contains("outside the working directory")
-                                || res.contains("out of bounds");
+                                || res.contains("out of bounds")
+                                || res.contains("the user declined this call");
                             let hint = if path_refused {
                                 "⚠️ The rejected path is outside the working directory. All of the task's input files are already in your working directory: run list_dir(path='.') now, read the files it lists, and do not touch any path outside the working directory again."
                             } else if n == "run_bash" {
