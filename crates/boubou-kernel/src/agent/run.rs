@@ -1523,9 +1523,24 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 log!(
                     "[{i}|+{}s] ⚙ {name} {} -> {}",
                     t0.elapsed().as_secs(),
-                    text::head(&sig_json, 60),
+                    text::head(&sig_json, 160),
                     text::head(&res, 90)
                 );
+                // A failed command's first stderr line as a protocol fact (bead boubou-bk9.14):
+                // the bench reads it to count failures the shell or an interpreter reported,
+                // the class a harness rewrite of the command produces.
+                if n == "run_bash" {
+                    if let Some((exit, _out, err)) = crate::agent::history::bash_sections(&res) {
+                        if exit != "[exit 0]" {
+                            let first = err
+                                .lines()
+                                .map(str::trim)
+                                .find(|l| !l.is_empty())
+                                .unwrap_or("");
+                            log!("[{i}] 🐚 {exit}: {}", text::head(first, 120));
+                        }
+                    }
+                }
                 if let Some((from, to)) = crate::exec::rebased_path(&res) {
                     log!("[{i}] 📁 path rebased: {from} → {to}");
                 }
@@ -2036,6 +2051,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 // Repeat-success streaks.
                 match calls.on_streak(&name, &sig_json, anti_loop) {
                     Streak::Note { count } => {
+                        log!("[{i}] ⚠️ streak note: {name} {count} in a row, last call repeated");
                         messages.push(Message::user(format!(
                             "⚠️ You have called {name} {count} times in a row and the last call repeated the one before it. If nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish)."
                         )));
@@ -2043,6 +2059,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     Streak::Disable { count } => {
                         // Only a true loop: same tool 8×, same arguments 4× in a row.
                         face.disable(n);
+                        log!("[{i}] ⚠️ {name} {count} in a row is now disabled");
                         messages.push(Message::user(format!(
                             "⚠️ {name} has been called {count} times in a row and is now disabled. Stop repeating it and get on with the real work (write files / run / call finish)."
                         )));

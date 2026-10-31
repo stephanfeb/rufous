@@ -5,6 +5,7 @@ Both arms print the same transcript shape (Boubou mirrors Mingbird's CLI output)
   [ctx: 1582/32768 = 4%]                       prompt tokens before a turn
   [N|+Ns] ⚙ tool {"args"...} -> result head     a tool call and the head of its result
   [N] ⚠️ text                                    a guard firing (English in Boubou, Chinese in Mingbird)
+  [N] 🐚 [exit N]: text                          a failed command's first stderr line (Boubou)
 so one parser scores both. The counts reported, alongside the artefact score:
 
   tool_calls            ⚙ lines
@@ -58,6 +59,13 @@ COMPACT = re.compile(r"^\[(?:context compaction|上下文压缩) L(\d)(?P<failed
 PRUNE = re.compile(r"^\[context pruning: (\d+) older tool result")
 # Idle-streak guard (boubou-9c5): `[12] ⚠️ idle streak: 8 read-only calls … nudge 1` / `… refused (2)`
 IDLE = re.compile(r"^\[\d+\] ⚠️ idle streak: (\d+) read-only calls")
+# Harness-caused damage (bead boubou-bk9.14). `[i] 🐚 [exit N]: <first stderr line>` follows a
+# failed run_bash; a line the shell or an interpreter wrote about the command's own text is
+# the class a harness rewrite of the command produces (2026-10-31: four in a row).
+SHELL_LINE = re.compile(r"^\[\d+\] 🐚 \[exit (-?\d+)\]: (.*)$")
+SHELL_ERR = re.compile(r"unescaped newline|unterminated string|command not found|syntax error|"
+                       r"unexpected EOF|unexpected end of file|not a valid identifier|bad substitution", re.I)
+STREAK_NOTE = "⚠️ streak note:"
 BANNER = "===== TASK COMPLETE ====="
 FORCED_END = ("[wrap-up]", "[收尾]", "===== MAX ITERATIONS =====")
 # Files the task text names: `shortlist.md`, `clean_data.py`, `fig_arrhenius.png` …
@@ -95,7 +103,8 @@ def parse_transcript(text):
     m.update(tool_calls=0, failed_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
              compaction_max_level=0, prunes=0, pruned_results=0,
              budget_nudges=0, idle_notes=0, idle_streak_max=0, forced_end=False, finish_accepted=False,
-             corrector_calls=0, corrector_fixes=0, corrector_giveups=0)
+             corrector_calls=0, corrector_fixes=0, corrector_giveups=0,
+             shell_errors=0, bak_calls=0, streak_notes=0, harness_notes=0)
     calls = []
     clean = _strip(text)
     m["finish_accepted"] = BANNER in clean
@@ -111,6 +120,11 @@ def parse_transcript(text):
         if idl:
             m["idle_notes"] += 1
             m["idle_streak_max"] = max(m["idle_streak_max"], int(idl.group(1)))
+        sh = SHELL_LINE.match(line)
+        if sh:
+            if SHELL_ERR.search(sh.group(2)):
+                m["shell_errors"] += 1
+            continue
         pr = PRUNE.match(line)
         if pr:
             m["prunes"] += 1
@@ -126,6 +140,8 @@ def parse_transcript(text):
             name, result = c.group(3), c.group(5) or ""
             m["tool_calls"] += 1
             calls.append((name, result))
+            if ".bak" in (c.group(4) or ""):
+                m["bak_calls"] += 1
             if result.startswith("[tool error:"):
                 m["failed_calls"] += 1
             ex = EXIT.search(result) if name == "run_bash" else None
@@ -135,6 +151,9 @@ def parse_transcript(text):
         w = WARN.match(line)
         if w:
             msg = w.group(2)
+            if msg.startswith("streak note:"):
+                m["streak_notes"] += 1
+                continue
             if "corrector consulted" in msg:
                 m["corrector_calls"] += 1
                 if "fix ran ok" in msg:
@@ -146,6 +165,8 @@ def parse_transcript(text):
                 if any(n in msg for n in needles):
                     m[metric] += 1
                     break
+    # Every note the loop put into the model's context short of a refusal.
+    m["harness_notes"] = m["streak_notes"] + m["idle_notes"] + m["budget_nudges"]
     # The finish that stood is the last ⚙ finish (the banner follows it); was the last command
     # before it a failure?
     m["finished_after_fail"] = 0

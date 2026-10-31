@@ -509,7 +509,13 @@ impl Executor {
     }
 
     /// Alias → coerce → parse → gate, without executing. `Err` is the text to return.
-    fn prepare(&mut self, name: &str, args: &Value) -> std::result::Result<ToolInvocation, String> {
+    /// Public for the replay corpus (`tests/replay.rs`), which pins what the harness does to
+    /// a call a real model made.
+    pub fn prepare(
+        &mut self,
+        name: &str,
+        args: &Value,
+    ) -> std::result::Result<ToolInvocation, String> {
         let name = resolve_alias(name);
         let mut map = coerce_object(name, args).map_err(|e| format!("[tool error: {e}]"))?;
         coerce_args(name, &mut map)?;

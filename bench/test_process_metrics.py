@@ -166,3 +166,34 @@ def test_corrector_lines_are_counted_separately():
     assert m["corrector_fixes"] == 1
     assert m["loop_interceptions"] == 1
     assert m["finish_refusals"] == 0
+
+
+HARNESS_DAMAGE = """\
+[0|+4s] ⚙ run_bash {"command":"sed -i '' \"s/a/b\\nc/\" lib/x.dart"} -> [exit 1]
+[0] 🐚 [exit 1]: sed: 1: "s/a/b ...": unescaped newline inside substitute pattern
+[1|+6s] ⚙ run_bash {"command":"python3 -c \"print(1)\""} -> [exit 127]
+[1] 🐚 [exit 127]: sh: line 2: import: command not found
+[2|+8s] ⚙ run_bash {"command":"rm -f /Users/me/proj/lib/networking/host_service.dart.bak 2>&1 || true"} -> [exit 0]
+[3|+9s] ⚙ run_bash {"command":"dart analyze lib/"} -> [exit 1]
+[3] 🐚 [exit 1]: error - main.dart:14:7 - The named parameter 'debugLocale' isn't defined.
+[4|+10s] ⚙ run_bash {"command":"flutter clean"} -> [exit 0]
+[4] ⚠️ streak note: run_bash 5 in a row, last call repeated
+[5] ⚠️ idle streak: 12 read-only calls without progress, nudge 1
+[6] ⏱ budget nudge injected (4min used)
+[7|+20s] ⚙ run_bash {"command":"flutter clean"} -> [exit 0]
+[7] ⚠️ run_bash 8 in a row is now disabled
+"""
+
+
+def test_harness_damage_counters():
+    m = pm.parse_transcript(HARNESS_DAMAGE)
+    # Two shell-level failures (the sed newline and the split python program); the dart
+    # analyzer's own error is the program's, not the shell's.
+    assert m["shell_errors"] == 2
+    assert m["nonzero_exits"] == 3
+    assert m["bak_calls"] == 1
+    assert m["streak_notes"] == 1
+    assert m["idle_notes"] == 1 and m["budget_nudges"] == 1
+    assert m["harness_notes"] == 3
+    assert m["loop_interceptions"] == 1, "the disable line counts as before"
+    assert [k for _l, k in lrab_h2h.PROCESS_COLS][-3:] == ["shell_errors", "bak_calls", "harness_notes"]

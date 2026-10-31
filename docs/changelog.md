@@ -2014,3 +2014,29 @@ cancel mid-tool. The backup copies under the session's `.files/backups/` hold ea
 content as of the last snapshot before a writing command, which for host_service.dart is
 already the wrong class; `std::fs::copy` on macOS keeps the source's modification time, so
 a copy's timestamp is not when it was taken.
+
+## Replay corpus and harness-damage counters (2026-10-31, beads boubou-bk9.13, boubou-bk9.14)
+
+The two correctives named in the previous entry. `bench/replay_extract.py` reads a Boubou
+session transcript, takes the assistant tool calls from an index, rewrites the session's
+working directory to `{workdir}` and writes one JSON line per call into
+`crates/boubou-kernel/tests/replay/<corpus>.jsonl`; `tests/replay.rs` runs every corpus file
+against a fresh relocated executor per entry: `as_written` means `Executor::prepare` (now
+pub) hands the shell exactly the model's command, unblocked; `blocked` means the gate
+refuses; an object expectation runs `run_tool` over a fixture and checks `starts_with`,
+`contains`, `not_contains` and `snapshots` (backup copies under the harness directory). The
+first corpus is the current-build part of the live Zed session: 35 extracted bash commands
+(five whole-file heredocs over 1,500 characters and the `/tmp` writers left out) and four
+hand-written entries (the hidden-shutdown gate case, `read_file` on a directory, the
+`rm *.dart` snapshot, the redirect's backup note). All 39 hold; 4 of the 35 extracted
+commands contain a sequence the old unescape would have rewritten, so the corpus fails 4
+times on the code of this morning. The loop prints two new protocol facts: `[i] 🐚 [exit N]:
+<first stderr line>` after a failed `run_bash` and `[i] ⚠️ streak note: <tool> <n> in a row`
+(the disable gets `[i] ⚠️ <tool> <n> in a row is now disabled`, caught by the existing guard
+needle); the ⚙ line's arguments head grew from 60 to 160 characters so a path's tail is
+visible. `process_metrics.py` turns them into `shell_errors` (stderr lines matching the
+shell's or an interpreter's complaint about the command text), `bak_calls` (arguments
+mentioning `.bak`) and `harness_notes` (streak notes + idle nudges + budget nudges), three
+new summary columns `shell`, `bak`, `notes`. Tests: `test_harness_damage_counters` (the dart
+analyzer's own error is not a shell error), the replay test. The kernel states facts and the
+bench owns the classification, so both arms are read the same way. Release binary rebuilt.

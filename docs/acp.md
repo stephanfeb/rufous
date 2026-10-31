@@ -113,3 +113,10 @@ shown) and then continues the conversation from where it stopped. An unknown id 
 Session modes, and the client's `terminal` capability (`run_bash` runs in Boubou's own
 process, the editor shows its output as a tool result). The SDK ships weekly with frequent
 major versions; the dependency is pinned exactly and bumped on purpose.
+
+Not Boubou's to add: editing an earlier message and resuming from it (Zed's rewind). Zed
+gates it on a client-generated message id and a `truncate` hook that its external-agent
+connection does not implement for any agent, and the protocol has no method for it (checked
+2026-10-31 against Zed `main`, `crates/agent_servers/src/acp/{v1,v2}.rs`, and schema 1.13);
+the "not supported" notice appears for every ACP agent. When ACP specifies it, Boubou's side
+is a truncation of the session's message list and files to the named user message.

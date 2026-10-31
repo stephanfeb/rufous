@@ -96,7 +96,7 @@ fn call_target(args: &Value) -> Option<String> {
 /// The `[exit N]\nSTDOUT:\n…\nSTDERR:\n…` shape of `format_bash_out`, split into the exit
 /// line and the two streams (the `(tail)` variant included). Lines the harness appends after
 /// the streams (`[auto-backed up: …]`, `[hint: …]`) are dropped from stderr.
-fn bash_sections(result: &str) -> Option<(&str, &str, &str)> {
+pub(crate) fn bash_sections(result: &str) -> Option<(&str, &str, &str)> {
     let exit = result.lines().next()?.trim();
     if !exit.starts_with("[exit ") {
         return None;

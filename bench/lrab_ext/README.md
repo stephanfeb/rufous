@@ -111,3 +111,25 @@ a cell that crashed or read the files and quit is not paid the collateral credit
 | CH-03 | tidy `inbox/` into `images/`, `docs/`, `data/` and say what went where | every file under the right folder, none loose |
 | CH-04 | travel spend in Q2 from `expenses.csv` and the highest month | `reply.md` has the total and `May` |
 | CH-05 | "what can you help me with in this folder?" | `reply.md` 15+ words; fixtures untouched; no new files (a `todo.json` counts) |
+
+## Harness-caused damage counters (bead boubou-bk9.14)
+
+Three process-table columns read the loop's protocol lines for the class of loss the score
+cannot see: the model did the right thing and the harness made it fail or wasted its call.
+`shell` counts `[i] 🐚 [exit N]: <first stderr line>` lines (printed after a failed
+`run_bash`) whose text is the shell's or an interpreter's complaint about the command itself
+(`unescaped newline`, `unterminated string`, `command not found`, `syntax error`, `unexpected
+EOF`); `bak` counts calls whose arguments mention `.bak`; `notes` counts the streak notes,
+idle nudges and budget nudges put into the model's context. Read them before and after any
+change to `exec.rs` or a ladder. On 2026-10-31 a live editor session had four shell errors in
+a row from the old command unescape and eight `.bak` calls from the backup note's wording;
+both would have shown here had the columns existed.
+
+## Replay corpus (bead boubou-bk9.13)
+
+The tool calls real models made are regression data: `bench/replay_extract.py` turns a
+Boubou session transcript into `crates/boubou-kernel/tests/replay/<corpus>.jsonl` (the
+session's working directory becomes `{workdir}`), and `cargo test -p boubou-kernel --test
+replay` runs every entry through `Executor::prepare` (`as_written`: the shell gets exactly
+that command, unblocked) or `run_tool` with a fixture. Add the calls of any session that
+showed a harness fault, with the fixture that reproduces it, before fixing it.
