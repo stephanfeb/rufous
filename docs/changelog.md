@@ -2385,3 +2385,18 @@ no finish gate bounces under the coding policy (noted on bead boubou-78s). gemma
 turn: on the user's "try again" its one call wrote the name into the project and landed,
 because the declined list is per turn (bead boubou-dml: keep it across turns, asking instead of
 refusing). Turn 2's other miss (qwen r2) made no call, the usual "system restriction" reply.
+
+## Declined names survive the turn (bead boubou-dml, 2026-10-31)
+
+`Gate::declined_writes` entries now carry `turns_ago`; `set_scope` ages them instead of
+clearing them and drops them after `DECLINED_TURNS` (5). The same name at another path is
+still refused without asking within the turn (bead boubou-sxx); in a later turn the user is
+asked (`write the declined file name elsewhere: <name> (declined at <path> in an earlier
+turn), now <new path>`), Allow writes and forgets the entry, Deny returns the substitute text
+and keeps it. An allowed write at the declined path (the retry that succeeded) forgets the
+entry too, by file tool or shell target. Unattended refuses as in-turn. The gemma r1 sequence
+of the v6 reading (declined in turn 1, written into the project on "try again") now asks. No
+prompt text changed. Tests: `tests/safety.rs` (three new), `tests/declined_write.rs` (the
+executor sequence across three turns). To measure: permission script n=3 per model; gemma's
+turn 2 should lose the substitute route; watch the longform and tracker scripts, which never
+decline, for a new ask shape.

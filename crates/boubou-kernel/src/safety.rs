@@ -1148,11 +1148,14 @@ pub struct Gate {
     scope_cleared: bool,
     /// Shadow mode's would-have-asked notes, drained by the loop for its log.
     pub scope_notes: Vec<String>,
-    /// Writes the user declined this turn, `(file name, declined path)` (bead boubou-sxx):
-    /// gemma4:e4b answered a declined `/tmp/x.txt` by writing `x.txt` into the project 3/3
-    /// and reporting success, whatever the refusal said. The same name at another path in
-    /// the same turn is the substitution and is refused without asking.
-    declined_writes: Vec<(String, PathBuf)>,
+    /// Writes the user declined (bead boubou-sxx): gemma4:e4b answered a declined
+    /// `/tmp/x.txt` by writing `x.txt` into the project 3/3 and reporting success, whatever
+    /// the refusal said. The same name at another path in the same turn is the substitution
+    /// and is refused without asking; in a later turn it is asked about (bead boubou-dml:
+    /// on the user's "try again" gemma wrote the name into the project once the list had
+    /// been cleared). An entry is forgotten when the declined path is later allowed, or
+    /// after [`DECLINED_TURNS`] turns.
+    declined_writes: Vec<Declined>,
     /// The last refusal [`Gate::check`] issued, as data; `None` after a pass.
     last_refusal: Option<Refused>,
 }
@@ -1164,6 +1167,17 @@ impl std::fmt::Debug for Gate {
             .field("allow_all", &self.allow_all)
             .finish()
     }
+}
+
+/// How many turn boundaries a declined write is remembered across.
+pub const DECLINED_TURNS: u8 = 5;
+
+/// A write the user declined: the file name, where it was declined, and how many turns ago.
+#[derive(Debug, Clone)]
+struct Declined {
+    name: String,
+    path: PathBuf,
+    turns_ago: u8,
 }
 
 const FILE_TOOLS: [&str; 7] = [
@@ -1223,33 +1237,73 @@ impl Gate {
     }
 
     /// Arm the scope gate for a turn (`None` disarms); a new scope forgets an earlier
-    /// turn's allowance.
+    /// turn's allowance. Declined writes age by a turn and the oldest are forgotten.
     pub fn set_scope(&mut self, scope: Option<Scope>, mode: ScopeGateMode) {
         self.scope = scope.filter(|_| mode != ScopeGateMode::Off);
         self.scope_mode = mode;
         self.scope_cleared = false;
-        self.declined_writes.clear();
+        for d in &mut self.declined_writes {
+            d.turns_ago = d.turns_ago.saturating_add(1);
+        }
+        self.declined_writes
+            .retain(|d| d.turns_ago <= DECLINED_TURNS);
     }
 
-    /// Remember a write the user declined, so its name cannot reappear elsewhere this turn.
+    /// Remember a write the user declined, so its name cannot reappear elsewhere unasked.
     fn note_declined(&mut self, real: &Path) {
+        if self.declined_writes.iter().any(|d| d.path == real) {
+            return;
+        }
         if let Some(name) = real.file_name().map(|n| n.to_string_lossy().into_owned()) {
-            self.declined_writes.push((name, real.to_path_buf()));
+            self.declined_writes.push(Declined {
+                name,
+                path: real.to_path_buf(),
+                turns_ago: 0,
+            });
         }
     }
 
-    /// The refusal for a write that repeats a declined file name at another path.
-    fn substitute_of(&self, real: &Path) -> Option<String> {
-        let name = real.file_name()?.to_string_lossy();
-        let (_, declined) = self
+    /// The user allowed a write at this path: nothing is left to substitute for.
+    fn forget_declined(&mut self, real: &Path) {
+        self.declined_writes.retain(|d| d.path != real);
+    }
+
+    /// A write that repeats a declined file name at another path: the refusal text when
+    /// it is the substitution (same turn, or the user declines it again), `None` when it
+    /// may go on. In a later turn the user is asked, since "put it in the project instead"
+    /// is a thing they may have said; Allow forgets the entry, Deny keeps it.
+    fn substitute_of(&mut self, tool: &str, real: &Path, workdir: &Path) -> Option<String> {
+        let name = real.file_name()?.to_string_lossy().into_owned();
+        let d = self
             .declined_writes
             .iter()
-            .find(|(n, p)| *n == name && p.as_path() != real)?;
-        Some(format!(
+            .find(|d| d.name == name && d.path.as_path() != real)?
+            .clone();
+        let text = format!(
             "[safety gate: the user declined writing {name} at {}; writing it at {} instead is the same thing somewhere else. Say what you could not do and stop.]",
-            declined.display(),
+            d.path.display(),
             real.display()
-        ))
+        );
+        if d.turns_ago == 0 || self.policy.unattended {
+            return Some(text);
+        }
+        let req = ConfirmRequest {
+            tool,
+            target: format!(
+                "{name} (declined at {} in an earlier turn), now {}",
+                d.path.display(),
+                real.display()
+            ),
+            action: "write the declined file name elsewhere",
+            workdir,
+        };
+        match self.confirmer.confirm(&req) {
+            Verdict::Allow | Verdict::AllowAll => {
+                self.declined_writes.retain(|e| e.path != d.path);
+                None
+            }
+            Verdict::Deny => Some(text),
+        }
     }
 
     /// `_gate_check`: the refusal text, or `None` to let the call through. The five rings
@@ -1328,11 +1382,10 @@ impl Gate {
                 }
             }
             let targets = resolved_targets(command, workdir, &self.policy.allow_dirs);
-            if let Some(text) = targets
-                .iter()
-                .find_map(|(real, _)| self.substitute_of(real))
-            {
-                return self.refuse(RefusalKind::Substitute, true, text);
+            for (real, _) in &targets {
+                if let Some(text) = self.substitute_of(name, real, workdir) {
+                    return self.refuse(RefusalKind::Substitute, true, text);
+                }
             }
             if self.allow_all.contains("run_bash") {
                 return None;
@@ -1351,6 +1404,7 @@ impl Gate {
                         if allok {
                             self.allow_all.insert("run_bash");
                         }
+                        self.forget_declined(&real);
                         None
                     }
                     Err(r) => {
@@ -1386,7 +1440,7 @@ impl Gate {
             if let Some(path) = inv.file_path().filter(|p| !p.is_empty()) {
                 let (real, _) = safe_path(workdir, path, &self.policy.allow_dirs);
                 if WRITE_TOOLS.contains(&name) {
-                    if let Some(text) = self.substitute_of(&real) {
+                    if let Some(text) = self.substitute_of(name, &real, workdir) {
                         return self.refuse(RefusalKind::Substitute, true, text);
                     }
                 }
@@ -1409,6 +1463,9 @@ impl Gate {
                         Ok(allok) => {
                             if allok {
                                 self.allow_all.insert(file_tool(name));
+                            }
+                            if WRITE_TOOLS.contains(&name) {
+                                self.forget_declined(&real);
                             }
                             None
                         }

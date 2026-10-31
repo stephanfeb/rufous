@@ -619,17 +619,170 @@ fn a_declined_write_cannot_reappear_under_the_same_name_elsewhere_this_turn() {
         .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
         .expect("asked and declined");
     assert!(again.contains("the user declined this"), "{again}");
-    // A new turn forgets.
+    // A new turn does not forget (bead boubou-dml): the name elsewhere is asked about, and
+    // this confirmer says no.
     gate.set_scope(None, boubou_kernel::scope::ScopeGateMode::Off);
-    assert!(gate
+    let later = gate
         .check(&create("boubou_convo_perm.txt"), d.path())
-        .is_none());
+        .expect("asked and declined");
+    assert!(later.contains("same thing somewhere else"), "{later}");
     // A headless refusal is nobody's decision and records nothing.
     let mut headless = Gate::headless(SafetyPolicy::default());
     assert!(headless
         .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
         .is_some());
     assert!(headless
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .is_none());
+}
+
+// The declined name across turns (bead boubou-dml): gemma4:e4b r1 of the v6 reading waited
+// for the user's "try again" and wrote the name into the project once the per-turn list was
+// gone. Later turns ask; an allowed retry at the declined path, or an Allow to the question,
+// forgets the entry; so does age.
+
+type Asked = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+struct Script {
+    answers: std::collections::VecDeque<boubou_kernel::safety::Verdict>,
+    /// The `action` of every question, shared with the test.
+    asked: Asked,
+}
+
+impl Script {
+    fn new(answers: &[boubou_kernel::safety::Verdict]) -> (Self, Asked) {
+        let asked = Asked::default();
+        (
+            Self {
+                answers: answers.iter().copied().collect(),
+                asked: asked.clone(),
+            },
+            asked,
+        )
+    }
+}
+
+impl boubou_kernel::safety::Confirmer for Script {
+    fn confirm(
+        &mut self,
+        req: &boubou_kernel::safety::ConfirmRequest<'_>,
+    ) -> boubou_kernel::safety::Verdict {
+        self.asked
+            .lock()
+            .expect("asked")
+            .push(req.action.to_string());
+        self.answers
+            .pop_front()
+            .unwrap_or(boubou_kernel::safety::Verdict::Deny)
+    }
+}
+
+#[test]
+fn a_declined_name_in_a_later_turn_is_asked_about_and_an_allow_forgets_it() {
+    use boubou_kernel::safety::Verdict::{Allow, Deny};
+    use boubou_kernel::scope::ScopeGateMode::Off;
+    let d = tempfile::tempdir().expect("tmp");
+    let create = |path: &str| ToolInvocation::CreateFile {
+        path: path.into(),
+        content: "hello".into(),
+        replace: false,
+    };
+    // Turn 1: declined. Turn 2: the name in the project is asked about; the user says no.
+    // Turn 3: asked again; the user says yes; the write goes on and the entry is gone.
+    let (script, asked) = Script::new(&[Deny, Deny, Allow]);
+    let mut gate = Gate::new(SafetyPolicy::default(), Box::new(script));
+    gate.set_scope(None, Off);
+    assert!(gate
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .is_some());
+    gate.set_scope(None, Off);
+    let sub = gate
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .expect("asked and declined");
+    assert!(sub.contains("same thing somewhere else"), "{sub}");
+    gate.set_scope(None, Off);
+    assert!(gate
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .is_none());
+    assert!(gate
+        .check(&create("sub/boubou_convo_perm.txt"), d.path())
+        .is_none());
+    // The questions asked: the boundary, then the declined name twice, with the two paths.
+    assert_eq!(
+        *asked.lock().expect("asked"),
+        [
+            "access",
+            "write the declined file name elsewhere",
+            "write the declined file name elsewhere"
+        ]
+    );
+}
+
+#[test]
+fn an_allowed_retry_at_the_declined_path_forgets_the_name() {
+    use boubou_kernel::safety::Verdict::{Allow, Deny};
+    use boubou_kernel::scope::ScopeGateMode::Off;
+    let d = tempfile::tempdir().expect("tmp");
+    let create = |path: &str| ToolInvocation::CreateFile {
+        path: path.into(),
+        content: "hello".into(),
+        replace: false,
+    };
+    let mut gate = Gate::new(
+        SafetyPolicy::default(),
+        Box::new(Script::new(&[Deny, Allow]).0),
+    );
+    assert!(gate
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .is_some());
+    gate.set_scope(None, Off);
+    // "Try again": the same call, allowed this time.
+    assert!(gate
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .is_none());
+    // The name in the project is now ordinary work: no question, no refusal.
+    assert!(gate
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .is_none());
+    // Through the shell the same: a declined redirect, then the allowed retry forgets.
+    let mut gate = Gate::new(
+        SafetyPolicy::default(),
+        Box::new(Script::new(&[Deny, Allow]).0),
+    );
+    assert!(gate
+        .check(&bash("echo hello > /tmp/boubou_convo_perm.txt"), d.path())
+        .is_some());
+    gate.set_scope(None, Off);
+    assert!(gate
+        .check(&bash("echo hello > /tmp/boubou_convo_perm.txt"), d.path())
+        .is_none());
+    assert!(gate
+        .check(&bash("echo hello > boubou_convo_perm.txt"), d.path())
+        .is_none());
+}
+
+#[test]
+fn a_declined_name_is_forgotten_after_enough_turns() {
+    use boubou_kernel::safety::{Verdict::Deny, DECLINED_TURNS};
+    use boubou_kernel::scope::ScopeGateMode::Off;
+    let d = tempfile::tempdir().expect("tmp");
+    let create = |path: &str| ToolInvocation::CreateFile {
+        path: path.into(),
+        content: "hello".into(),
+        replace: false,
+    };
+    let mut gate = Gate::new(SafetyPolicy::default(), Box::new(Says(Deny)));
+    assert!(gate
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .is_some());
+    for _ in 0..DECLINED_TURNS {
+        gate.set_scope(None, Off);
+        assert!(gate
+            .check(&create("boubou_convo_perm.txt"), d.path())
+            .is_some());
+    }
+    gate.set_scope(None, Off);
+    assert!(gate
         .check(&create("boubou_convo_perm.txt"), d.path())
         .is_none());
 }
