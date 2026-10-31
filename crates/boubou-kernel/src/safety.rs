@@ -7,7 +7,7 @@
 //! | 0 | child sandbox | sub-agents are default-deny with no escalation path (not yet ported) |
 //! | 1 | [`DANGER_CMD`], [`PS_HIGH_RISK`] | irreversible system damage: refused outright, no exit |
 //! | 2 | [`risk_classify`] | uninstall / environment mutation (ask when attended, deny unattended); recursive delete and `find -delete` only inside the workspace, judged after `~`/`$HOME` expansion and any `cd` earlier in the command; a target or `cd` the gate cannot evaluate is refused |
-//! | 3 | [`bash_boundary_target`], [`BASH_ESCAPE_PATTERNS`], [`safe_path`], [`SENSITIVE_PATTERNS`], [`SYSTEM_DIRS`] | boundary and sensitive access go to the [`Confirmer`] (attended: user decides; unattended: refused); a shell command's redirect, `tee`, `cp`/`mv`/`install` destination is judged as a file-tool path |
+//! | 3 | [`bash_boundary_target`], [`BASH_ESCAPE_PATTERNS`], [`safe_path`], [`SENSITIVE_PATTERNS`], [`SYSTEM_DIRS`] | boundary and sensitive access go to the [`Confirmer`] (attended: user decides; unattended: refused); a shell command's redirect, `tee`, `cp`/`mv`/`install` destination and the absolute path literals inside inline interpreter code (`python3 -c`, `node -e`, a heredoc into an interpreter) are judged as file-tool paths |
 //! | 4 | `.mingbird_trash`, `.bak`, overwrite guard (in the executor) | damage that gets through rings 0–3 stays reversible |
 //!
 //! Orthogonal mechanisms that are *not* part of the gate: the crawl guard (context
@@ -791,26 +791,162 @@ pub fn write_targets(cmd: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// The first path a shell command writes outside the workdir and the `allow_dirs`, resolved
-/// as the file tools resolve theirs ([`safe_path_from`] after home expansion and the `cd`
-/// before it). `None` when every target is inside, a device file, or one the gate cannot
+/// Programs that run code handed to them on the command line or on stdin.
+const INTERPRETERS: [&str; 24] = [
+    "python",
+    "python2",
+    "python3",
+    "pythonw",
+    "perl",
+    "ruby",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "php",
+    "osascript",
+    "lua",
+    "luajit",
+    "rscript",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "pwsh",
+    "powershell",
+    "jq",
+];
+
+/// Flags that mean "the next argument is the program text".
+const INLINE_CODE_FLAGS: [&str; 7] = ["-c", "-e", "-E", "-r", "-p", "--eval", "eval"];
+
+/// Absolute and home path literals inside inline interpreter code, each with the byte
+/// offset of its segment (bead boubou-zjy, conversation rig 2026-10-31: after a redirect and a
+/// file tool were declined, qwen3.5:4b wrote the file with `python3 -c "open('/tmp/x',
+/// 'w')…"` and nothing asked). A segment whose program is an interpreter running `-c`/`-e`
+/// code, reading stdin (`-`) or a heredoc has its text searched for `/…` and `~…` tokens
+/// after a quote, bracket, space or `=`; the program's own path is not an operand, a lone
+/// `/`, a `//…` (a URL's or a comment's) and `/dev/…` are skipped. For a heredoc or stdin the
+/// rest of the command is the code. No attempt to tell a read from a write: the file tools
+/// ask for any access outside the working directory, and the shell matches them.
+pub fn code_paths(cmd: &str) -> Vec<(usize, String)> {
+    static PATH_LIT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:^|[\s"'`(=,:\[{])((?:~|/)[^\s"'`(),;:\]\[{}<>|&]*)"#).expect("regex")
+    });
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut pos = 0;
+    for seg in cmd.split(SEGMENT_SEPARATORS) {
+        let off = pos;
+        pos += seg.len() + 1;
+        let Some(rest) = interpreter_rest(seg) else {
+            continue;
+        };
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let inline = words.iter().any(|w| INLINE_CODE_FLAGS.contains(w));
+        let stdin = words.contains(&"-") || rest.contains("<<");
+        if !inline && !stdin {
+            continue;
+        }
+        // The segments were split on `(` and `)` too, so the code is taken from the whole
+        // command: the quoted argument after the flag, or everything after a heredoc/stdin.
+        let code: &str = if stdin {
+            &cmd[off..]
+        } else {
+            inline_code_span(&cmd[off..]).unwrap_or(rest.as_str())
+        };
+        for cap in PATH_LIT.captures_iter(code) {
+            let p = cap.get(1).expect("group").as_str();
+            if p.len() < 2 || p.starts_with("//") || p.starts_with("/dev/") {
+                continue;
+            }
+            out.push((off, p.to_string()));
+        }
+    }
+    out
+}
+
+/// The words after the first interpreter in a segment, through any wrappers before it
+/// (`sudo`, `env`, `timeout 5`). The interpreters are wrappers to [`program_of`], so that
+/// ring 1 sees `rm -rf /` inside `python3 -c "…"`; here they are the program.
+fn interpreter_rest(seg: &str) -> Option<String> {
+    let words: Vec<&str> = seg.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() && is_assignment(words[i]) {
+        i += 1;
+    }
+    loop {
+        let w = words.get(i)?;
+        if w.starts_with('#') {
+            return None;
+        }
+        let base = program_basename(w).to_lowercase();
+        if INTERPRETERS.contains(&base.as_str()) {
+            return Some(words[i + 1..].join(" "));
+        }
+        if !COMMAND_WRAPPERS.contains(&base.as_str()) {
+            return None;
+        }
+        i += 1;
+        while let Some(a) = words.get(i) {
+            if a.starts_with('#') {
+                return None;
+            }
+            if !is_wrapper_option(a) {
+                break;
+            }
+            i += 1;
+            if WRAPPER_FLAGS_WITH_VALUE.contains(a) {
+                i += 1;
+            }
+        }
+    }
+}
+
+/// The program text after the first inline-code flag in `tail`: the quoted argument that
+/// follows it (to its closing quote), or the bare word.
+fn inline_code_span(tail: &str) -> Option<&str> {
+    let mut earliest: Option<(usize, usize)> = None;
+    for flag in INLINE_CODE_FLAGS {
+        let pat = format!("{flag} ");
+        for (i, _) in tail.match_indices(&pat) {
+            if i == 0 || tail.as_bytes()[i - 1] == b' ' {
+                let end = i + pat.len();
+                if earliest.is_none_or(|(s, _)| i < s) {
+                    earliest = Some((i, end));
+                }
+            }
+        }
+    }
+    let (_, start) = earliest?;
+    let rest = tail[start..].trim_start();
+    let first = rest.chars().next()?;
+    if first == '"' || first == '\'' {
+        let body = &rest[1..];
+        let end = body.find(first).unwrap_or(body.len());
+        return Some(&body[..end]);
+    }
+    rest.split_whitespace().next()
+}
+
+/// The first path a shell command reaches outside the workdir and the `allow_dirs`: a write
+/// target ([`write_targets`]) or a path literal in inline interpreter code ([`code_paths`]),
+/// resolved as the file tools resolve theirs ([`safe_path_from`] after home expansion and the
+/// `cd` before it). `None` when every target is inside, a device file, or one the gate cannot
 /// evaluate (`> $OUT`, a `cd $X` before it): a variable in a redirect is ordinary in a
 /// script and the write, unlike a recursive delete, is bounded to one file.
 pub fn bash_boundary_target(cmd: &str, workdir: &Path, allow_dirs: &[PathBuf]) -> Option<PathBuf> {
-    resolved_write_targets(cmd, workdir, allow_dirs)
+    resolved_targets(cmd, workdir, allow_dirs)
         .into_iter()
         .find_map(|(real, inside)| (!inside).then_some(real))
 }
 
-/// Every definite write target of a shell command as `(resolved path, inside)`; device
-/// files and targets the gate cannot evaluate are left out.
-fn resolved_write_targets(
-    cmd: &str,
-    workdir: &Path,
-    allow_dirs: &[PathBuf],
-) -> Vec<(PathBuf, bool)> {
+/// Every definite path a shell command writes or names in inline code, as
+/// `(resolved path, inside)`; device files and targets the gate cannot evaluate are left out.
+fn resolved_targets(cmd: &str, workdir: &Path, allow_dirs: &[PathBuf]) -> Vec<(PathBuf, bool)> {
     let mut out = Vec::new();
-    for (off, t) in write_targets(cmd) {
+    for (off, t) in write_targets(cmd).into_iter().chain(code_paths(cmd)) {
         let ShellPath::Known(p) = expand_shell_path(&t) else {
             continue;
         };
@@ -1191,7 +1327,7 @@ impl Gate {
                     return self.refuse(RefusalKind::Risk, r.by_user, r.text);
                 }
             }
-            let targets = resolved_write_targets(command, workdir, &self.policy.allow_dirs);
+            let targets = resolved_targets(command, workdir, &self.policy.allow_dirs);
             if let Some(text) = targets
                 .iter()
                 .find_map(|(real, _)| self.substitute_of(real))

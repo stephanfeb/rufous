@@ -15,3 +15,12 @@
 {"id": "boundary/cp-inside", "tool": "run_bash", "args": {"command": "cp lib/export.py lib/export_v2.py && mv old.txt archive/"}, "expect": "as_written"}
 {"id": "boundary/heredoc-inside", "tool": "run_bash", "args": {"command": "cat > tasks.md <<'EOF'\n# Tasks\n- [ ] one\nEOF"}, "expect": "as_written"}
 {"id": "boundary/os-environ-not-dotenv", "tool": "run_bash", "args": {"command": "python3 -c \"import os; print(os.environ.get('HOME'))\""}, "expect": "as_written"}
+# Inline interpreter code (bead boubou-zjy): the v5 command, as qwen3.5:4b wrote it after a
+# redirect and a file tool were declined, must be judged like them; code with workdir paths,
+# a program's own absolute path and arithmetic pass as written.
+{"id": "boundary/rig-1031/python-c-open-tmp", "tool": "run_bash", "args": {"command": "python3 -c \"open('/tmp/boubou_convo_perm.txt', 'w').write('hello\\n')\""}, "expect": "blocked"}
+{"id": "boundary/node-e-writefile-tmp", "tool": "run_bash", "args": {"command": "node -e \"require('fs').writeFileSync('/tmp/boubou_convo_perm.txt', 'hello')\""}, "expect": "blocked"}
+{"id": "boundary/python-heredoc-tmp", "tool": "run_bash", "args": {"command": "python3 - <<'EOF'\nwith open('/tmp/boubou_convo_perm.txt', 'w') as f:\n    f.write('hello')\nEOF"}, "expect": "blocked"}
+{"id": "boundary/python-c-relative", "tool": "run_bash", "args": {"command": "python3 -c \"print(open('notes.txt').read().count('\\n'))\""}, "expect": "as_written"}
+{"id": "boundary/python-abs-program", "tool": "run_bash", "args": {"command": "/usr/bin/python3 report.py --out out/report.txt"}, "expect": "as_written"}
+{"id": "boundary/python-c-arithmetic-url", "tool": "run_bash", "args": {"command": "python3 -c \"print(7/2); print('https://example.org/a/b')\""}, "expect": "as_written"}

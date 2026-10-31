@@ -633,3 +633,68 @@ fn a_declined_write_cannot_reappear_under_the_same_name_elsewhere_this_turn() {
         .check(&create("boubou_convo_perm.txt"), d.path())
         .is_none());
 }
+
+// Inline interpreter code (bead boubou-zjy): the path literals it names are judged like
+// file-tool paths; a program's own path, a URL and arithmetic are not paths.
+
+#[test]
+fn code_paths_finds_path_literals_in_inline_interpreter_code_only() {
+    use boubou_kernel::safety::code_paths;
+    let t = |cmd: &str| -> Vec<String> { code_paths(cmd).into_iter().map(|(_, p)| p).collect() };
+    assert_eq!(
+        t("python3 -c \"open('/tmp/boubou_convo_perm.txt', 'w').write('hello\\n')\""),
+        ["/tmp/boubou_convo_perm.txt"]
+    );
+    assert_eq!(
+        t("node -e \"require('fs').writeFileSync('/tmp/x', 'a')\""),
+        ["/tmp/x"]
+    );
+    assert_eq!(
+        t("perl -e 'open(F, \">>\", \"~/notes.txt\")'"),
+        ["~/notes.txt"]
+    );
+    assert_eq!(
+        t("python3 - <<'EOF'\nopen('/tmp/x', 'w').write('a')\nEOF"),
+        ["/tmp/x"]
+    );
+    assert_eq!(
+        t("/usr/bin/env python3 -c \"print(open('/etc/hosts').read())\""),
+        ["/etc/hosts"]
+    );
+    assert!(t("python3 -c \"print(open('notes.txt').read())\"").is_empty());
+    assert!(
+        t("/usr/bin/python3 script.py /tmp/out").is_empty(),
+        "no inline code: operands are not scanned"
+    );
+    assert!(t("python3 -c \"print(1/2, 3 / 4)\"").is_empty());
+    assert!(t("python3 -c \"print('https://example.org/x')\"").is_empty());
+    assert!(t("python3 -c \"open('/dev/null')\"").is_empty());
+    assert!(t("python -m pytest -q").is_empty());
+    assert!(t("cat /etc/hosts").is_empty(), "not an interpreter");
+}
+
+#[test]
+fn inline_code_naming_an_outside_path_is_asked_about_like_a_file_tool() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut gate = Gate::headless(SafetyPolicy::default());
+    for cmd in [
+        "python3 -c \"open('/tmp/boubou_convo_perm.txt', 'w').write('hello\\n')\"",
+        "node -e \"require('fs').writeFileSync('/tmp/x', 'a')\"",
+        "python3 - <<'EOF'\nopen('/tmp/x', 'w').write('a')\nEOF",
+        "ruby -e 'File.write(\"~/boubou_test_never_written\", \"x\")'",
+    ] {
+        let msg = gate.check(&bash(cmd), d.path()).expect(cmd);
+        assert!(
+            msg.contains("outside the working directory"),
+            "{cmd}: {msg}"
+        );
+    }
+    for cmd in [
+        "python3 -c \"print(open('notes.txt').read())\"",
+        "python3 -c \"import json; print(json.dumps({'a': 1}))\"",
+        "node -e \"console.log(1/2)\"",
+        "python3 script.py --out /tmp/report.txt",
+    ] {
+        assert!(gate.check(&bash(cmd), d.path()).is_none(), "{cmd}");
+    }
+}

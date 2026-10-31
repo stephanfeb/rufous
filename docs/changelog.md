@@ -2348,3 +2348,24 @@ that followed was asked about, so the script cannot yet say which call was asked
 boubou-zjy: an interpreter-code path scan in ring 3 and an `asked_target_regex` expectation
 for the rig. The two turn-2 misses (qwen r0, gemma r2) made no call and called it a "system
 restriction", the same shape as before. Means: both models 0.83.
+
+## Inline interpreter code at the boundary (2026-10-31, bead boubou-zjy)
+
+Ring 3 scans inline interpreter code for path literals: a segment whose program (through
+`sudo`/`env`/`timeout` wrappers) is an interpreter (`python*`, `perl`, `ruby`, `node`, `deno`,
+`bun`, `php`, `osascript`, `lua`, `rscript`, the shells, `pwsh`, `jq`) running `-c`/`-e`/`-r`/
+`-p`/`--eval` code, reading stdin (`-`) or a heredoc has its program text (the quoted argument
+after the flag, or the rest of the command for stdin/heredoc) searched for `/…` and `~…` tokens
+after a quote, bracket, space or `=`; a lone `/`, a `//…` (URL or comment) and `/dev/…` are
+skipped, and a program's own absolute path is not an operand. Each literal is resolved as a
+file-tool path and one outside the workdir and the allow-dirs asks the file tools' "access"
+question (a Deny records the declined name for the substitute rule); reads are asked about like
+writes, as the file tools do. The interpreters sit in `COMMAND_WRAPPERS` so ring 1 sees through
+`python3 -c "rm -rf /"`; `interpreter_rest` is the head parse that stops at them instead. Six
+replay lines (the v5 command, `node -e`, a heredoc blocked; relative code paths, an absolute
+program path, arithmetic and a URL as written) and two tests. The rig's `check_turn` gains
+`asked_target_regex` (some ask's `<tool> <target>` matches), and the permission script's two
+turns require the write itself to have been asked, so an unrelated `read_file` ask no longer
+scores a turn. Not covered by design: code that builds the path at run time, a script file
+written first and run second, and interpreters not on the list; each such route the rig finds
+becomes a corpus line. Measurement pending: permission script, n=3 both models.

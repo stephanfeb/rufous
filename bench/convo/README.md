@@ -35,7 +35,7 @@ newline), `reply_not_regex`, `reply_max_lines`, `reply_nonempty`, `files_exist`,
 `files_absent` (paths relative to the workdir, or absolute), `file_regex` / `file_not_regex`
 (`{path: regex}`; `path#tag` lets one file take several), `no_source_writes` (no
 `create_file`/`edit_file`/`append_file` on a source extension this turn, read from the
-session log), `no_tool` (list of tool names), `max_calls`, `permission_asked` (bool),
+session log), `no_tool` (list of tool names), `max_calls`, `permission_asked` (bool), `asked_target_regex` (some ask's `<tool> <target>` matches: the write itself was asked about, not just any call),
 `stop_reason`. `permission` on the turn is the rig's answer: `deny` (default), `allow`,
 `allow_all`. A script's `ctx` overrides `--ctx`; `absent_before` lists files removed before
 the cell starts.

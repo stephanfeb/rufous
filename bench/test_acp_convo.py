@@ -152,6 +152,9 @@ def test_check_turn_reads_each_expectation(tmp_path):
           "file_not_regex": {"report.md": "## Owners"}, "no_source_writes": True,
           "no_tool": ["run_bash"], "max_calls": 1, "permission_asked": False, "stop_reason": "end_turn"}
     assert rig.check_turn(ok, turn, log, str(tmp_path)) == []
+    asked = dict(turn, asks=[{"title": "access: /tmp/x", "rawInput": {"tool": "read_file", "target": "/private/tmp/x"}}])
+    assert rig.check_turn({"asked_target_regex": "^read_file .*/x$"}, asked, log, str(tmp_path)) == []
+    assert rig.check_turn({"asked_target_regex": "^(create_file|run_bash) .*/x$"}, asked, log, str(tmp_path)) != []
     bad = {"reply_regex": "never", "reply_max_lines": 1, "files_exist": ["x.md"], "files_absent": ["report.md"],
            "file_regex": {"report.md": "## Owners"}, "no_tool": ["read_file"], "max_calls": 0,
            "permission_asked": True, "stop_reason": "cancelled"}

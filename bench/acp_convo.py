@@ -315,6 +315,14 @@ def check_turn(expect, turn, log_turn, workdir):
         fails.append(f"{len(calls)} calls > {expect['max_calls']}")
     if "permission_asked" in expect and bool(turn["asks"]) != bool(expect["permission_asked"]):
         fails.append(f"permission asked={bool(turn['asks'])}, expected {expect['permission_asked']}")
+    if "asked_target_regex" in expect:
+        # At least one ask in the turn was about this call: `<tool> <target>` from the
+        # dialog's rawInput (bead boubou-zjy: a pass from an unrelated ask hid an unasked write).
+        rx = expect["asked_target_regex"]
+        shown = [f"{(a.get('rawInput') or {}).get('tool', '?')} {(a.get('rawInput') or {}).get('target', a.get('title', ''))}"
+                 for a in turn["asks"]]
+        if not any(re.search(rx, s_) for s_ in shown):
+            fails.append(f"no ask matches /{rx}/ (asks: {shown})")
     return fails
 
 
