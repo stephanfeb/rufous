@@ -439,11 +439,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let stop = Arc::new(AtomicBool::new(false));
         backend.set_cancel(stop.clone());
         tools.set_stop(stop.clone());
-        let skill_dirs = vec![
-            params.workdir.join("skills"),
-            home.join("skills"),
-            crate::skills::install_dir().join("skills"),
-        ];
+        let skill_dirs =
+            crate::skills::standard_dirs(&params.workdir, &home, &crate::skills::install_dir());
         let mut face = ToolFace::new();
         for t in &params.profile.hide_tools {
             face.disable(t);

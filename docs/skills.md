@@ -2,12 +2,29 @@
 
 A Boubou "skill" is an operating manual for the model (a .md file). Normally the agent only knows each skill's name and one-line description (saving tokens); when it needs one it loads the full text with `skills(load)`. This is "progressive loading".
 
+## Two shapes
+A skill is either a flat file, `<dir>/<name>.md`, or a folder, `<dir>/<name>/SKILL.md`, the
+[Agent Skills](https://agentskills.io) convention that Claude Code, Codex, Cursor and others read.
+Both carry the same `name` / `description` frontmatter and are listed and loaded the same way. A
+folder may hold `scripts/`, `references/` and `assets/` beside `SKILL.md`; when the model loads the
+skill, the body ends with those files as absolute paths so it can `read_file` or `run_bash` them
+(at most 20 are named). A folder without `name` in its frontmatter is named after the folder. The
+convention's folded multi-line `description` and nested `metadata` block are accepted;
+`allowed-tools` is read but not acted on, since Boubou's tools are gated by the safety rings. A
+skill written for another harness therefore works as it is: drop the folder in, no copying.
+
 ## Directories and precedence
 Lookup order (on a name clash, the earlier one wins):
 1. `<workdir>/skills/` -- skills specific to the current task
-2. `~/.ollama_agent/skills/` -- global skills you installed yourself (recommended location)
-3. `<install dir>/skills/` -- a `skills/` directory beside the binary, if you keep one there
-4. the skills built into the product -- compiled into the binary from `crates/boubou-general/skills/` (documents, folders, research) and `crates/boubou-coding/skills/` (code); the `boubou` binary carries both sets, an editor session sees the coding ones, the web UI and `boubou chat` the general-purpose ones
+2. `<workdir>/.agents/skills/` and `<workdir>/.claude/skills/` -- the project's skills in the shared convention, the directories other harnesses read too
+3. `~/.ollama_agent/skills/` -- global skills you installed yourself (recommended location)
+4. `~/.agents/skills/` and `~/.claude/skills/` -- your global skills in the shared convention
+5. `<install dir>/skills/` -- a `skills/` directory beside the binary, if you keep one there
+6. the skills built into the product -- compiled into the binary from `crates/boubou-general/skills/` (documents, folders, research) and `crates/boubou-coding/skills/` (code); the `boubou` binary carries both sets, an editor session sees the coding ones, the web UI and `boubou chat` the general-purpose ones
+
+Discovery costs no prompt text: the listing is the `skills` tool's result, and a skill is prefilled
+only when it carries Boubou's `triggers:` or `autoload:` keys, which skills from other harnesses do
+not.
 
 ## Installing your own skill
 Put a .md file in `~/.ollama_agent/skills/` with two lines of metadata at the top:

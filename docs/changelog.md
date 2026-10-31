@@ -1860,3 +1860,25 @@ client's file handlers were never called. Out of scope and documented: `delete_f
 `list_dir`, `search_files`, images, commands and their backups, existence checks (the
 protocol has no method for them), and the `terminal` capability. Not yet verified in Zed
 itself; that remains the first item of boubou-m64.
+
+## Skill folders in the Agent Skills shape (2026-10-31, bead boubou-w3i.1)
+
+First item of the extensibility epic boubou-w3i, from the capability review of the same day
+(system prompt, skills, extensibility against the plugin ecosystem). Boubou's skills were flat
+`skills/*.md` files in three directories; the convention the other harnesses share is a folder
+per skill, `<name>/SKILL.md` with the same frontmatter and optional `scripts/`, `references/`
+and `assets/` beside it, read from `.agents/skills` and `.claude/skills` in the project and in
+the home. This repository already carried one (`.agents/skills/beads`, the beads tool's own)
+that Boubou could not see. Discovery now takes both shapes in every lookup directory, the
+lookup list gained the four conventional directories between the project's own `skills/` and
+Boubou's home (one `standard_dirs` the loop, the `skills` tool and the CLI all use, where the
+loop and the tool each kept a copy), the frontmatter parser takes the convention's folded
+`description` and nested `metadata`, a folder without `name` is named after its folder, and
+loading a folder skill appends its companion files as absolute paths, the convention's third
+disclosure level, paid only on load (a test reads the listed script back through
+`read_file`). Prompt cost by default: none. The listing is the `skills` tool's result, not
+prompt text, and a standard skill has no `triggers`/`autoload`, so nothing is prefilled unless
+the user adds those keys; the token reading on a small profile that the epic asks for is
+therefore owed only when a folder skill is prefilled, which the existing cap of three per task
+still bounds. Not done: `allowed-tools` (the safety rings gate tools, not a skill), acting on
+`metadata`, `.cursor/rules`.
