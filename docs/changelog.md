@@ -1769,3 +1769,22 @@ no-change answer quotes the line with its number, in the tool test and through t
 module test covers a multi-line new text spanning two lines. 524 tests. After-measurement:
 tier6 gemma4:e2b `--runs 3` against `gemma_e2b_edit_match`; the read is `all=true` sent
 (should be none), the no-change count, and ED-06 and ED-04 under coding.
+
+## Fail-fast check of the follow-up: ED-06 alone, three runs (2026-10-31, `gemma_e2b_edit_match2`)
+
+Six cells, 6 minutes, binary d156d4e. `all=true` sent: 0 of 13 calls (was 150 of 175 across
+the tier). No-change answers: 0 (was 67 in these six cells); nothing ever reached the
+already-applied state, so there was nothing to repeat. Misses: 0. Count refusals: 11.
+Edits landed: 2. Whole-file rewrites: 2. Scores 1.00, 0.00, 1.00 / 1.00, 1.00, 0.00, mean
+0.67 under both policies, the same as `gemma_e2b_edit_match` and below the 0.81 of the
+pre-bk9.3 folder, which four whole-file rewrites had earned.
+
+The shape left is one mechanism in every failing cell: the model quotes the one shared line,
+is told it is found twice and to include more surrounding lines, and re-sends the identical
+call; the duplicate block takes the repeats, the corrector gives up ("only proposed
+read_file") and blocks the tool, and the cell ends in a whole-file rewrite (two cells, 1.00),
+or an honest "failed to modify" finish (two cells, 0.00). Two cells widened the quote on their
+own and landed it (1.00). The refusal is true and the model cannot act on "include more
+surrounding lines": the same finding as the no-change answer, an instruction where the state
+was needed. Next design, filed as a bead: the count refusal shows the N places with their line
+numbers and the lines around each, so the model sees what distinguishes them and copies one.
