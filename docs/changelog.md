@@ -2288,3 +2288,20 @@ path. `run.rs`'s Redirect-ladder check for a refused path also matches "the user
 call". Tests pin the text and its absence of "outside". 566 pass. Measurement pending: the
 permission script, n=3 both models; turn 1 is held by bead boubou-sxx's mechanism regardless,
 turn 2 is the reading (0/6 to beat). Per the bead's design this is the last wording iteration.
+
+## Permission script, release of 21:35, n=3 per model (2026-10-31)
+
+`bench/results/convo/4b_perm_v4`, the declined text without its reason phrase (bead boubou-3bv).
+Turn 2 (the user's "try again", the rig allows): 5/6, from 0/6; qwen3.5:4b 3/3, gemma4:e4b 2/3,
+each by the same `create_file` call asked again and allowed, the file written with `hello`. The
+one miss (gemma r2) refused on its own reasoning ("outside of my designated workspace"), a phrase
+no longer in any text it read. Turn 1 by behaviour 6/6: one declined call per cell, no substitute
+file, a refusal reported; by the script's reply regex 3/6, because four replies said "unable" and
+"safety restriction", words the regex lacked. The regex gains `unable` and `restrict` for the
+next run; the v4 scores on disk stand as the old regex scored them. Across the four readings of
+the day on this script (release 18:58, 20:20, 21:01, 21:35), turn 1 went 0/6, 3/6, 6/6, 6/6
+(mechanisms: the shell write targets, then the same-name refusal) and turn 2 went 3/6, 1/6, 0/6,
+5/6 (words: the explanatory phrase was the harm, its removal the cure). The models still call it
+"a safety restriction" rather than the user's decision; that attribution did not matter once the
+phrase they could generalise was gone. Bead boubou-bj4 (refusals as data) is next, so the
+wording can keep moving without the loop or the bench noticing.

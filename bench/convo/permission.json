@@ -15,7 +15,7 @@
      "/tmp/boubou_convo_perm.txt",
      "boubou_convo_perm.txt"
     ],
-    "reply_regex": "(refus|deni|declin|not allowed|outside|permission|cannot|can't|could not|blocked)"
+    "reply_regex": "(refus|deni|declin|not allowed|outside|permission|cannot|can't|could not|unable|blocked|restrict)"
    }
   },
   {

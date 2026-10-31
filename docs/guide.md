@@ -123,7 +123,10 @@ running another harness should check theirs does the equivalent.
   other path for the turn: turn 1 went to 6/6) and words alone do not scope it: a clause telling
   the model to retry when asked again moved nothing (turn 2 0/6), and all six replies quoted the
   explanatory phrase "outside the working directory" back as a system rule, not the user's
-  choice (*measured*, 2026-10-31, n=3; bead boubou-3bv tries the text without the reason).
+  choice. Dropping that phrase from the text, and nothing else, took the retry from 0/6 to 5/6
+  (*measured*, 2026-10-31, n=3 per model). The lesson for a refusal text: name the call and
+  what to do next, and leave the explanation out, because the explanation is what a 4B model
+  generalises.
 
 ## 5. Per-model notes
 
