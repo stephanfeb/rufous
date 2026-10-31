@@ -22,11 +22,19 @@
 //! - `<sessions>/<name>.decisions.jsonl`: one line per System One decision when the decider
 //!   is in `shadow` or `on` mode (Boubou addition, bead boubou-acy.3); the labelled-set
 //!   builder ingests these as `shadow:<name>` candidates.
+//! - `<sessions>/<name>.log`: the loop's protocol lines (`⚙` calls, `[ctx: …]`, `🐚`, `⚠️`,
+//!   `[prompt]`, `[hooks]`), each behind a wall-clock timestamp, plus warnings mirrored
+//!   from tracing; written by [`SessionLog`] on every surface that names its session
+//!   (Boubou addition, bead boubou-bmq), so a live editor session is read by the same
+//!   bench parser as a CLI run. `AGENT_SESSION_LOG=0` switches it off.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 
 use serde_json::{Map, Value};
+
+use super::AgentEvent;
 
 use crate::ollama::{Message, Role};
 use crate::text;
@@ -51,6 +59,145 @@ pub fn state_path(sessions_dir: &Path, name: &str) -> PathBuf {
 /// ([`RunParams::harness_dir`](crate::agent::RunParams::harness_dir)).
 pub fn harness_dir(sessions_dir: &Path, name: &str) -> PathBuf {
     sessions_dir.join(format!("{name}.files"))
+}
+
+/// `<sessions>/<name>.log`: the session's protocol log ([`SessionLog`]).
+pub fn log_path(sessions_dir: &Path, name: &str) -> PathBuf {
+    sessions_dir.join(format!("{name}.log"))
+}
+
+/// The switch for the session log: `AGENT_SESSION_LOG` (`1/0`, `on/off`, …), on by default.
+pub fn session_log_enabled() -> bool {
+    super::parse_switch(
+        "AGENT_SESSION_LOG",
+        std::env::var("AGENT_SESSION_LOG").ok().as_deref(),
+    )
+    .unwrap_or(true)
+}
+
+struct LogFile {
+    path: PathBuf,
+    file: Mutex<std::fs::File>,
+}
+
+/// Every open session log, so a warning raised anywhere in the process (tracing) can be
+/// mirrored into the session it belongs to; dead entries are pruned on each broadcast.
+static OPEN_LOGS: Mutex<Vec<Weak<LogFile>>> = Mutex::new(Vec::new());
+
+/// The session's protocol log: the lines the CLI prints and the bench parses (`⚙`, `[ctx:
+/// …]`, `🐚`, `⚠️`, the compaction and finish banners), appended to `<sessions>/<name>.log`
+/// behind a `YYYY-MM-DD HH:MM:SS` timestamp, flushed per line. Under an editor nothing
+/// else keeps these lines (the ACP bridge has no channel for them and tracing is at WARN),
+/// so this file is what makes a live session measurable (bead boubou-bmq). Cloning shares
+/// the file.
+#[derive(Clone)]
+pub struct SessionLog(Arc<LogFile>);
+
+impl std::fmt::Debug for SessionLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionLog")
+            .field("path", &self.0.path)
+            .finish()
+    }
+}
+
+impl SessionLog {
+    /// Open (append) the log for `name`; `None` when the switch is off or the file cannot
+    /// be opened (a warning says why; the run goes on without it).
+    pub fn open(sessions_dir: &Path, name: &str) -> Option<Self> {
+        if !session_log_enabled() {
+            return None;
+        }
+        Self::open_always(sessions_dir, name)
+    }
+
+    /// [`SessionLog::open`] without the switch (tests).
+    pub fn open_always(sessions_dir: &Path, name: &str) -> Option<Self> {
+        let path = log_path(sessions_dir, name);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                let inner = Arc::new(LogFile {
+                    path,
+                    file: Mutex::new(file),
+                });
+                if let Ok(mut open) = OPEN_LOGS.lock() {
+                    open.retain(|w| w.strong_count() > 0);
+                    open.push(Arc::downgrade(&inner));
+                }
+                Some(Self(inner))
+            }
+            Err(e) => {
+                tracing::warn!(target: "boubou_kernel::session", "session log {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0.path
+    }
+
+    /// Append one entry: each of its non-empty lines behind a timestamp.
+    pub fn line(&self, text: &str) {
+        self.0.write(text);
+    }
+
+    /// What one [`AgentEvent`] contributes: the protocol lines (`Log`, which already carry
+    /// the `⚙` calls, `[ctx: …]` and the end banners) and errors. Streamed text, tool
+    /// receipts and context usage are not written twice.
+    pub fn record(&self, ev: &AgentEvent) {
+        match ev {
+            AgentEvent::Log(s) => self.line(s),
+            AgentEvent::Error(e) => self.line(&format!("[error] {e}")),
+            _ => {}
+        }
+    }
+
+    /// A sink that records each event here and then hands it to `inner`.
+    pub fn tee(
+        self,
+        mut inner: impl FnMut(AgentEvent) + Send + 'static,
+    ) -> impl FnMut(AgentEvent) + Send + 'static {
+        move |ev| {
+            self.record(&ev);
+            inner(ev);
+        }
+    }
+}
+
+impl LogFile {
+    fn write(&self, text: &str) {
+        if let Ok(mut f) = self.file.lock() {
+            // Each non-empty line of a multi-line entry (the finish banner) gets the
+            // stamp, so the file stays parseable line by line.
+            let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            for l in text.lines().filter(|l| !l.trim().is_empty()) {
+                let _ = writeln!(f, "{ts} {l}");
+            }
+            let _ = f.flush();
+        }
+    }
+}
+
+/// Mirror a warning (tracing `WARN`/`ERROR`, formatted by the caller) into every open
+/// session log as `[warn] …`, so the skills and fs messages sit in sequence with the calls.
+pub fn mirror_warning(line: &str) {
+    let Ok(mut open) = OPEN_LOGS.lock() else {
+        return;
+    };
+    open.retain(|w| w.strong_count() > 0);
+    for w in open.iter() {
+        if let Some(l) = w.upgrade() {
+            l.write(&format!("[warn] {line}"));
+        }
+    }
 }
 
 /// Write the checkpoint atomically (tmp + rename) so a hard kill never leaves half a JSON.
@@ -315,4 +462,77 @@ pub fn save_session(
         );
     }
     merge_session_meta(dir, name, upd);
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn the_session_log_keeps_the_protocol_lines_behind_a_timestamp() {
+        let d = tempfile::tempdir().expect("tmp");
+        let log = SessionLog::open_always(d.path(), "acp_test").expect("open");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let inner = seen.clone();
+        let mut sink = log
+            .clone()
+            .tee(move |ev| inner.lock().expect("lock").push(ev));
+        sink(AgentEvent::Log(
+            "[0|+1s] ⚙ list_dir {\"path\":\".\"} -> a".into(),
+        ));
+        sink(AgentEvent::Text("streamed".into()));
+        sink(AgentEvent::ContextUsage {
+            used: 10,
+            limit: 100,
+        });
+        sink(AgentEvent::Error("boom".into()));
+        sink(AgentEvent::Finished {
+            summary: "done".into(),
+        });
+        sink(AgentEvent::Log(
+            "\n===== TASK COMPLETE =====\n[TASK_COMPLETE] done".into(),
+        ));
+        mirror_warning("skills: skipping x");
+        let text = std::fs::read_to_string(log_path(d.path(), "acp_test")).expect("read");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5, "{text}");
+        for l in &lines {
+            assert!(
+                l.len() > 20 && l.as_bytes()[4] == b'-' && l.as_bytes()[19] == b' ',
+                "timestamp prefix: {l}"
+            );
+        }
+        assert!(lines[0].ends_with("⚙ list_dir {\"path\":\".\"} -> a"));
+        assert!(lines[1].ends_with("[error] boom"));
+        assert!(lines[2].ends_with("===== TASK COMPLETE ====="));
+        assert!(lines[3].ends_with("[TASK_COMPLETE] done"));
+        assert!(lines[4].ends_with("[warn] skills: skipping x"));
+        assert!(!text.contains("streamed"), "streamed text is not logged");
+        assert_eq!(
+            seen.lock().expect("lock").len(),
+            6,
+            "every event still reaches the inner sink"
+        );
+        drop(sink);
+        drop(log);
+        mirror_warning("after close");
+        let text = std::fs::read_to_string(log_path(d.path(), "acp_test")).expect("read");
+        assert!(
+            !text.contains("after close"),
+            "a closed log gets no mirrored warnings"
+        );
+    }
+
+    #[test]
+    fn the_switch_reads_the_usual_words() {
+        assert_eq!(
+            super::super::parse_switch("AGENT_SESSION_LOG", Some("0")),
+            Some(false)
+        );
+        assert_eq!(
+            super::super::parse_switch("AGENT_SESSION_LOG", Some("off")),
+            Some(false)
+        );
+        assert_eq!(super::super::parse_switch("AGENT_SESSION_LOG", None), None);
+    }
 }

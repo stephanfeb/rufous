@@ -334,6 +334,31 @@ async fn a_prompt_turn_streams_tool_calls_asks_permission_and_closes_with_the_su
         .filter(|n| n.starts_with(".agent_state"))
         .collect();
     assert!(listing.is_empty(), "{listing:?}");
+
+    // The session log (bead boubou-bmq): the editor keeps none of the loop's protocol
+    // lines, so they sit beside the session files, one `[turn]` line per prompt and the
+    // `⚙` line per call, each behind a timestamp the bench parser strips.
+    let log = cwd
+        .join("home")
+        .join("sessions")
+        .join(format!("{}.log", ns.session_id.0));
+    let text = std::fs::read_to_string(&log).unwrap_or_else(|e| panic!("{}: {e}", log.display()));
+    let turns: Vec<&str> = text.lines().filter(|l| l.contains("[turn] ")).collect();
+    assert_eq!(turns.len(), 2, "{text}");
+    assert!(
+        turns[0].ends_with("[turn] Set up the scratch note"),
+        "{}",
+        turns[0]
+    );
+    assert!(
+        text.lines().filter(|l| l.contains(" ⚙ ")).count() >= 2,
+        "a ⚙ line per tool call: {text}"
+    );
+    assert!(
+        text.lines()
+            .all(|l| l.len() > 20 && &l[4..5] == "-" && &l[19..20] == " "),
+        "every line starts with a timestamp: {text}"
+    );
 }
 
 #[tokio::test]

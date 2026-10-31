@@ -326,6 +326,18 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                         let text = prompt_text(&req.prompt);
                         let plan_dir =
                             boubou_kernel::agent::session::harness_dir(&sessions_dir, &name);
+                        // The session's protocol log (bead boubou-bmq): the editor keeps
+                        // none of the loop's lines, so they go beside the session files.
+                        let log = boubou_kernel::agent::session::SessionLog::open(
+                            &sessions_dir,
+                            &name,
+                        );
+                        if let Some(l) = &log {
+                            l.line(&format!(
+                                "[turn] {}",
+                                boubou_kernel::text::head(&text, 120).replace('\n', " ")
+                            ));
+                        }
                         let session_id = req.session_id.clone();
                         let (tx, rx) = mpsc::unbounded_channel::<BridgeMsg>();
                         spawn_turn(
@@ -338,9 +350,13 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 stop: stop.clone(),
                                 sink: {
                                     let tx = tx.clone();
-                                    Box::new(move |ev| {
+                                    let send = move |ev| {
                                         let _ = tx.send(BridgeMsg::Event(ev));
-                                    })
+                                    };
+                                    match log {
+                                        Some(l) => Box::new(l.tee(send)),
+                                        None => Box::new(send),
+                                    }
                                 },
                                 confirmer: Box::new(AcpConfirmer { tx: tx.clone() }),
                                 files: AcpFileStore::for_turn(

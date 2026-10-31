@@ -148,12 +148,49 @@ fn install_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Mirrors every `WARN`/`ERROR` tracing event into the open session logs
+/// ([`session::mirror_warning`]), so the skills and fs warnings sit in sequence with the
+/// calls of the session they belong to; stderr keeps its own copy as before.
+struct SessionLogMirror;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SessionLogMirror {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let meta = event.metadata();
+        if *meta.level() > tracing::Level::WARN {
+            return;
+        }
+        struct Msg(String);
+        impl tracing::field::Visit for Msg {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                } else {
+                    if !self.0.is_empty() {
+                        self.0.push(' ');
+                    }
+                    self.0.push_str(&format!("{}={value:?}", field.name()));
+                }
+            }
+        }
+        let mut msg = Msg(String::new());
+        event.record(&mut msg);
+        session::mirror_warning(&format!("{} {}: {}", meta.level(), meta.target(), msg.0));
+    }
+}
+
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .with_writer(std::io::stderr)
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into());
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(SessionLogMirror)
         .init();
 
     let cli = Cli::parse();
@@ -409,6 +446,9 @@ fn run_task(
     println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
     let session = opts.session.as_deref();
+    if let Some(s) = session {
+        agent.set_session_log(session::SessionLog::open(&sdir, s));
+    }
 
     let msgs: Vec<Message> = if opts.new {
         agent.task_messages(&task)

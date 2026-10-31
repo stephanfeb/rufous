@@ -125,6 +125,14 @@ change to `exec.rs` or a ladder. On 2026-10-31 a live editor session had four sh
 a row from the old command unescape and eight `.bak` calls from the backup note's wording;
 both would have shown here had the columns existed.
 
+The same lines are kept for live sessions since 2026-10-31 (bead boubou-bmq): every surface
+that names its session appends them to `~/.ollama_agent/sessions/<name>.log` behind a
+timestamp (the editor otherwise keeps none of them; the ACP bridge has no channel for log
+lines and tracing is at WARN), with a `[turn] <prompt head>` marker per editor prompt and
+tracing warnings mirrored in as `[warn] …`. `python3 bench/session_metrics.py <log>` prints
+the turns and the counters above for one session, so a Zed session is read the way a bench
+cell is. `process_metrics` strips the stamps, so the regexes are unchanged.
+
 ## Replay corpus (bead boubou-bk9.13)
 
 The tool calls real models made are regression data: `bench/replay_extract.py` turns a

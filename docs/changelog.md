@@ -2086,3 +2086,26 @@ bare, n = 3, scored on the tier plus `prompt_eval_count` and the process columns
 boubou-1uu notes the Elephant-Goldfish Model (egm.dev) as a spec-first method to compare,
 and the Goldfish reviewer as a small-model-shaped role; read the repository before adopting
 any of its prompts. No code changed.
+
+## Per-session log file (2026-10-31, bead boubou-bmq)
+
+Reading the Zed beads session (acp_1031_160446) meant reconstructing every count from the
+transcript, because under an editor none of the loop's protocol lines survive: the ACP
+bridge has no channel for `AgentEvent::Log` and tracing sits at WARN, so the `⚙` calls, the
+`[ctx: n/limit]` token readings, the `🐚` shell errors, the `⚠️` notes, `[prompt]` and
+`[hooks]` existed only for CLI runs. Now `session::SessionLog` appends them to
+`<sessions>/<name>.log`, each non-empty line behind a `YYYY-MM-DD HH:MM:SS` stamp, flushed
+per line, on every surface that names its session: the ACP server opens it per prompt and
+writes a `[turn] <prompt head>` marker first, `boubou run --session`, `boubou chat` and the
+web UI wrap their sinks through `Agent::with_session_log`. The kernel owns the type and a
+`tee` that records an event and passes it on, so the loop is untouched. The CLI's
+`SessionLogMirror` tracing layer copies every WARN/ERROR event into the open logs as
+`[warn] …`, so the skills and fs warnings sit in sequence with the calls (stderr keeps its
+copy). `AGENT_SESSION_LOG=0` switches the file off; a run with no session name writes
+nothing, as for the other session files. `bench/process_metrics.py` strips the stamps before
+its regexes, so the counters are unchanged, and `bench/session_metrics.py <log>` prints the
+turns and the counters for one live session. Tests: the kernel log test (stamps, errors, a
+multi-line banner, the mirror, no writes after close), the ACP turn test now asserts the
+file with two `[turn]` lines and a `⚙` per call, and a bench test parses a stamped sample to
+the same counts as the plain one. Not rebuilt into the release binary yet: Zed's Boubou
+process was running.

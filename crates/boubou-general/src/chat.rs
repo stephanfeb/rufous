@@ -7,7 +7,7 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use boubou_kernel::agent::session::load_session;
+use boubou_kernel::agent::session::{load_session, SessionLog};
 use boubou_kernel::agent::{Agent, ChatBackend, RunParams, ToolRunner};
 use boubou_kernel::ollama::Message;
 
@@ -33,6 +33,9 @@ pub fn repl<B: ChatBackend, T: ToolRunner>(
     budget_sec: Option<f64>,
 ) -> anyhow::Result<()> {
     let stop = agent.stop_flag();
+    if let Some(s) = session {
+        agent.set_session_log(SessionLog::open(sessions_dir, s));
+    }
     let mut msgs = session
         .and_then(|s| load_session(sessions_dir, s))
         .unwrap_or_else(|| {

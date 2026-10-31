@@ -574,6 +574,21 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         self.sink = Box::new(sink);
     }
 
+    /// Record the protocol lines in `log` ([`session::SessionLog`]) as well as sending them
+    /// to the sink. Call after the sink is set: the log wraps whatever sink is in place.
+    /// `None` (the switch is off, or no session is named) changes nothing.
+    pub fn with_session_log(mut self, log: Option<session::SessionLog>) -> Self {
+        self.set_session_log(log);
+        self
+    }
+
+    pub fn set_session_log(&mut self, log: Option<session::SessionLog>) {
+        if let Some(l) = log {
+            let inner = std::mem::replace(&mut self.sink, Box::new(|_| {}));
+            self.sink = Box::new(l.tee(inner));
+        }
+    }
+
     /// Build the opening message list for a fresh task. Skills whose triggers match the
     /// task (or that autoload) and the workdir's `SYSTEM.md` enter the system prompt here.
     /// A continued session rebuilds the prompt per turn in [`Agent::run`] from the route.

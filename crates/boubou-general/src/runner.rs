@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use boubou_kernel::agent::session::{load_session, sessions_dir};
+use boubou_kernel::agent::session::{load_session, sessions_dir, SessionLog};
 use boubou_kernel::agent::{Agent, AgentEvent, RunParams, TurnPolicy};
 use boubou_kernel::config::Config;
 use boubou_kernel::guards::budget::resolve_time_budget;
@@ -225,10 +225,11 @@ impl Spawner for AgentSpawner {
             bus.note(format!("[engine: {}]", agent.engine));
         }
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), confirmer);
+        let sdir = sessions_dir(&req.home);
         let mut agent = agent
             .with_sink(move |ev| publish(&sink_bus, ev))
+            .with_session_log(SessionLog::open(&sdir, &req.session))
             .with_stop(stop.clone());
-        let sdir = sessions_dir(&req.home);
         // Only the session's own file is continued. The workdir checkpoint is flushed from
         // the same messages every iteration, and falling back to it is the one path that can
         // splice another session's conversation into this one.

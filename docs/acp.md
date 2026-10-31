@@ -67,6 +67,7 @@ harness files in any mode.
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
 | `read_file`, `create_file`, `edit_file`, `append_file` | `fs/read_text_file` and `fs/write_text_file` when the client offered them at `initialize` (see below) |
 | `mcpServers` in `session/new` / `session/load` | added to Boubou's `mcp.json` and the project's `.mcp.json` for that session (stdio, HTTP; SSE tried as HTTP), routed by category like any other server |
+| the loop's protocol lines (`⚙`, `[ctx: …]`, `🐚`, `⚠️`, `[prompt]`, `[hooks]`) | not sent to the editor; written to `<sessions>/<name>.log` behind a timestamp, with a `[turn] <prompt head>` line per prompt and tracing warnings mirrored in, so `bench/session_metrics.py <log>` reads a live session with the bench's counters (`AGENT_SESSION_LOG=0` switches it off) |
 
 ## Turn semantics
 

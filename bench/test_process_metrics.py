@@ -185,6 +185,19 @@ HARNESS_DAMAGE = """\
 """
 
 
+def test_a_session_log_reads_like_a_run_log():
+    # `<session>.log` (bead boubou-bmq) stamps each line and adds `[turn]` markers; the
+    # counters must not move.
+    stamped = "\n".join(
+        "2026-10-31 17:16:44 " + l for l in ("[turn] Create a note\n" + BOUBOU).splitlines())
+    plain = pm.parse_transcript(BOUBOU)
+    logged = pm.parse_transcript(stamped)
+    for k in ("tool_calls", "failed_calls", "nonzero_exits", "peak_prompt_tokens",
+              "loop_interceptions", "finish_refusals", "finish_accepted", "harness_notes"):
+        assert logged[k] == plain[k], (k, logged[k], plain[k])
+    assert logged["tool_calls"] == 6
+
+
 def test_harness_damage_counters():
     m = pm.parse_transcript(HARNESS_DAMAGE)
     # Two shell-level failures (the sed newline and the split python program); the dart

@@ -49,6 +49,8 @@ import re
 import sys
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# A session log (`<session>.log`, bead boubou-bmq) puts a wall-clock stamp before each line.
+STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", re.M)
 CTX = re.compile(r"\[ctx: (\d+)/(\d+) = \d+%\]")
 CALL = re.compile(r"^\[(\d+)\|\+(\d+)s\] ⚙ (\S+) (.*?)(?: -> (.*))?$")
 WARN = re.compile(r"^\[(\d+)\] ⚠️ ?(.*)$")
@@ -94,7 +96,7 @@ GUARDS = [
 
 
 def _strip(text):
-    return ANSI.sub("", text)
+    return STAMP.sub("", ANSI.sub("", text))
 
 
 def parse_transcript(text):
