@@ -1570,3 +1570,41 @@ was never this rule; left for a rename of its own. The after-measurement is the 
 configuration at `--runs 3` against `gemma_e2b_x3`: ED-04 should rise, nothing else should
 move outside sd 0.07; qwen3.5:4b, now in the inventory and exactly on the old boundary, is the
 second model to run it on.
+
+## After the ≤4B rule, gemma4:e2b tier6_editor at three runs (2026-10-31, `gemma_e2b_no_small_rule`)
+
+Same configuration as the baseline `gemma_e2b_x3`, binary at 5318bc8 (rule removed):
+
+| | baseline (rule on) | after (rule gone) |
+|---|---|---|
+| mean over 30 cells | 0.748 | 0.825 |
+| run means | 0.66 / 0.80 / 0.78 | 0.82 / 0.77 / 0.89 |
+| sd across runs | 0.07 | 0.06 |
+| wall | 31 min | 31 min |
+
+| task | coding before → after | unattended before → after |
+|---|---|---|
+| ED-01 | 1.00 → 0.86 [0.57–1.00] | 1.00 → 1.00 |
+| ED-02 | 1.00 → 0.62 [0.43–1.00] | 1.00 → 0.90 [0.71–1.00] |
+| ED-03 | 0.57 → 0.57 | 0.67 → 0.71 |
+| ED-04 | 0.18 → 0.77 [0.32–1.00] | 0.25 → 0.81 [0.43–1.00] |
+| ED-05 | 1.00 → 1.00 | 0.81 → 1.00 |
+
+The difference on the mean is one standard deviation, so the mean is not the reading; the
+cells are. ED-04, the rule's cell, went from 0 of 6 to 4 of 6 full passes: the model edits
+`fetchAll` to `fetch_all` file by file and the tests go green. Its two losses are new
+mechanisms: `edit_file {"old":"fetchAll","new":"fetch_all"}` replaces one occurrence, so a
+file with two keeps the old name (coding r0, 0.32), and a second edit written against the
+text the first one had already changed fails "old text not found" and is retried verbatim
+(unattended r1). ED-02 coding is the rule's premise coming true: in two of three cells the
+first edit landed but was wrong, and every edit after it carried stale `old` text, failed,
+was blocked as a duplicate, and under `coding` the turn then ended (0.43 twice); ED-01 coding
+r1 is a wrong first edit finished without a test run. "Old text not found" misses: ED-01 4
+in 2 cells, ED-02 7 in 3, ED-03 4 in 2, ED-04 8 in 3; the ladders answered with fifteen
+duplicate blocks, three corrector give-ups and two missing-`path` repairs, and two cells
+(ED-03 unattended r1, ED-04 unattended r1) reached the three-failure disable and finished
+with `create_file`, which is the reactive form of the old rule doing its job on evidence.
+Reading: the rule's cost (whole-file rewrites losing the rename
+every time) is replaced by a smaller, better-shaped cost (exact-match misses after the
+model's own edit, and single-occurrence replacement), and that cost is exactly what `bk9.3`
+(matching tiers, argument repair, occurrence reporting) is for. The rule stays out.
