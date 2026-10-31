@@ -268,13 +268,25 @@ pub fn find(file: &str, old: &str, new: &str) -> Found {
 
 /// The whole lines of `file` covering the byte range `s..e`, 1-based inclusive numbers.
 fn lines_around(file: &str, s: usize, e: usize) -> (usize, usize, String) {
+    place(file, s, e, 0)
+}
+
+/// The whole lines covering `s..e` plus `context` lines each side, 1-based inclusive. The
+/// count refusal shows each place this way, so the model sees what distinguishes them
+/// instead of being told to "include more surrounding lines" (bead boubou-7td).
+pub fn place(file: &str, s: usize, e: usize, context: usize) -> (usize, usize, String) {
     let spans = line_spans(file);
+    if spans.is_empty() {
+        return (1, 1, String::new());
+    }
     let first = spans.iter().position(|&(_, _, nl)| s < nl).unwrap_or(0);
     let last = spans
         .iter()
         .rposition(|&(a, _, _)| a < e.max(s + 1))
         .unwrap_or(first)
         .max(first);
+    let first = first.saturating_sub(context);
+    let last = (last + context).min(spans.len() - 1);
     let (a, _, _) = spans[first];
     let (_, b, _) = spans[last];
     (first + 1, last + 1, file[a..b].to_string())
@@ -360,6 +372,11 @@ mod tests {
                 region: "def fetch_all(c):".into()
             }
         );
+        // Context lines each side, clipped at the file's ends.
+        let f = "a\nb\nc\nd\ne\n";
+        assert_eq!(place(f, 4, 5, 1), (2, 4, "b\nc\nd".into()));
+        assert_eq!(place(f, 0, 1, 2), (1, 3, "a\nb\nc".into()));
+        assert_eq!(place(f, 8, 9, 1), (4, 5, "d\ne".into()));
         // A multi-line new text: every line it touches, whole.
         match find("a\nb = 1\nc = 2\nd\n", "zzz", "= 1\nc =") {
             Found::AlreadyApplied {

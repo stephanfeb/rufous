@@ -641,8 +641,25 @@ impl Executor {
             edit_match::Found::Hits { tier, ranges } => {
                 let n = ranges.len();
                 if n > 1 && !all {
+                    // Each place with a line of context, so the model can copy the one it
+                    // means (bead boubou-7td): told to "include more surrounding lines" it
+                    // re-sent the same quote until the corrector blocked the tool.
+                    let mut places = String::new();
+                    for &(s0, e0) in ranges.iter().take(4) {
+                        let (a, b, region) = edit_match::place(&s, s0, e0, 1);
+                        let shown = head(&region, 400);
+                        let cut = if shown.len() < region.len() {
+                            "…"
+                        } else {
+                            ""
+                        };
+                        places.push_str(&format!("\nLines {a}–{b} read:\n{shown}{cut}"));
+                    }
+                    if n > 4 {
+                        places.push_str(&format!("\n(and {} more)", n - 4));
+                    }
                     return format!(
-                        "[edit failed: old text found {n} times in {path}; nothing was written. Include more of the surrounding lines in old so it matches exactly once, and edit each place separately.]"
+                        "[edit failed: old text found {n} times in {path}; nothing was written.{places}\nQuote one of these regions as old, exactly as shown, so it matches once; edit each place separately.]"
                     );
                 }
                 let new_used = if tier == edit_match::Tier::Unescaped {

@@ -1788,3 +1788,50 @@ own and landed it (1.00). The refusal is true and the model cannot act on "inclu
 surrounding lines": the same finding as the no-change answer, an instruction where the state
 was needed. Next design, filed as a bead: the count refusal shows the N places with their line
 numbers and the lines around each, so the model sees what distinguishes them and copies one.
+
+## The count refusal shows the places (2026-10-31, bead boubou-7td)
+
+Tool-side, under `edit_match`, no loop change. `[edit failed: old text found N times in
+<path>; nothing was written.]` is followed by each place (up to four, then "and k more") as
+`Lines a–b read:` with the whole lines holding the match and one line of context each side,
+then `Quote one of these regions as old, exactly as shown, so it matches once; edit each
+place separately.` On ED-06 that puts the two docstrings that distinguish `csv_line` from
+`tsv_line` in front of the model, where "include more of the surrounding lines" left it
+re-sending the same one-line quote until the corrector blocked the tool (4 of 6 cells in
+`gemma_e2b_edit_match2`). `edit_match::place` is the helper, shared with the no-change answer
+(context 0). Tests: the module clips context at both ends of the file; the tool test checks
+both regions and their numbers for a two-function file. 524 tests. Measured next on ED-06
+alone, gemma4:e2b and then qwen3.5:2b head to head, so the matcher's answers are read on two
+models before the full tier runs again.
+
+## ED-06 head to head: gemma4:e2b and qwen3.5:2b on the places-shown refusal (2026-10-31)
+
+Binary at the bk9.3 follow-ups (`edit_match::place`), ED-06 alone, both policies, three runs
+each; `gemma_e2b_edit_match3` and `qwen3_5_2b_ed06` (first run of qwen3.5:2b, no profile).
+
+| | gemma4:e2b | qwen3.5:2b |
+|---|---|---|
+| coding / unattended | 0.81 [0.43–1.00] / 1.00 | 1.00 / 1.00 |
+| wall | 5 min | 7 min |
+| edit calls / landed | 21 / 4 | 13 / 8 |
+| count refusals | 15 | 4 |
+| after a refusal, the next call landed / was the same quote again | 2 / 9 | 0 / 3 |
+| misses, `all=true`, tiers below exact | 0, 0, 0 | 0, 0, 0 |
+| no-change answers (followed by a repeat) | 2 (0) | 1 (0) |
+| whole-file rewrites | 4 | 1 |
+
+Reading. Showing the places did not change what the model does after the refusal: gemma
+re-sent the identical one-line quote nine times out of eleven, as it had with the plain
+instruction, and qwen did the same in the one cell where it met the refusal. Gemma's rise
+from 0.67 to 0.90 is three of four whole-file rewrites coming out right instead of two of
+four, which is noise, plus two cells where a later quote was wide enough. qwen3.5:2b passes
+all six cells because five of them quote the whole function, docstring included, on the
+first call and never meet the count; the matcher's answers are not gemma-shaped, and the
+tool is fine for a 2B model that quotes a unique region. The no-change answer, in its three
+appearances across both models, was followed by the next step and not by a repeat, which is
+what the follow-up asked of it, at n=3. Conclusion after two rounds on the refusal's wording:
+a 2B model does not act on a refusal of this kind however it is phrased, by instruction or by
+state; what decides the cell is whether its first quote is unique, and when it is not the
+whole-file rewrite is what rescues it. The refusal stays as it is (true, and the places are
+the right thing to show), and the wording is not iterated again. bk9.3's remaining
+measurement is the full tier once per model.

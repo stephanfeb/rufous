@@ -227,7 +227,9 @@ fn a_second_occurrence_is_refused_with_the_count_until_all_is_passed() {
     assert!(
         r.starts_with("[edit failed: old text found 2 times in store.py;")
             && !r.contains("all=true")
-            && r.contains("edit each place separately"),
+            && r.contains("Lines 1–3 read:\ndef a():\n    return fetchAll(c)\n\n")
+            && r.contains("Lines 4–5 read:\ndef b():\n    return fetchAll(c)\n")
+            && r.contains("Quote one of these regions as old"),
         "{r}"
     );
     assert!(std::fs::read_to_string(d.path().join("store.py"))
