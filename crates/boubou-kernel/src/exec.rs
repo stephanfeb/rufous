@@ -547,7 +547,7 @@ impl Executor {
             }
             return Ok(inv);
         }
-        let mut inv = match ToolInvocation::parse_map(name, &map) {
+        let inv = match ToolInvocation::parse_map(name, &map) {
             Ok(inv) => inv,
             Err(Error::UnknownTool(_)) => return Err("[unknown tool]".to_string()),
             Err(Error::ToolArgs { reason, .. }) => {
@@ -561,14 +561,22 @@ impl Executor {
             }
             Err(e) => return Err(format!("[tool error: {e}]")),
         };
-        // The gate must judge the string that runs: a literal `\n` in the argument is a
-        // real newline by the time the shell sees it, and the token-only danger rules split
-        // on newlines.
-        if let ToolInvocation::RunBash { command } = &mut inv {
-            *command = unescape_command(command);
-        }
         if let Some(blocked) = self.gate.check(&inv, &self.workdir) {
             return Err(blocked);
+        }
+        // The shell gets the command as the model wrote it (bead boubou-bk9.10: rewriting
+        // literal `\n` and `\"` into real characters broke sed replacements, `python -c`
+        // programs and quoted heredocs that were right as written). The gate still judges
+        // the unescaped form too, so a literal `\n` cannot hide a second command from the
+        // token-only danger rules, which split on newlines.
+        if let ToolInvocation::RunBash { command } = &inv {
+            let unescaped = unescape_command(command);
+            if unescaped != *command {
+                let shadow = ToolInvocation::RunBash { command: unescaped };
+                if let Some(blocked) = self.gate.check(&shadow, &self.workdir) {
+                    return Err(blocked);
+                }
+            }
         }
         Ok(inv)
     }
@@ -607,6 +615,11 @@ impl Executor {
         let p = self.workdir.join(path);
         if !p.exists() {
             return format!("[not found: {path}]");
+        }
+        // Said here, before any store is asked: an editor answers a directory with an
+        // internal error that tells the model nothing (live Zed, bead boubou-m64.3).
+        if p.is_dir() {
+            return format!("[not a file: {path} is a directory; use list_dir]");
         }
         let low = path.to_lowercase();
         if IMG_EXTS.iter().any(|e| low.ends_with(e)) {
@@ -934,8 +947,7 @@ impl Executor {
 
     // ---- commands ----
 
-    /// `command` is already unescaped ([`unescape_command`] runs in `prepare`, before the
-    /// safety gate), so what the gate inspected is exactly what the shell gets.
+    /// `command` runs as the model wrote it; `prepare` judged it and its unescaped form.
     fn run_bash(&mut self, command: &str) -> String {
         let cmd: &str = command;
         let snapped = bash_snapshot(cmd, &self.workdir, self.backup_root().as_deref());
@@ -955,12 +967,17 @@ impl Executor {
             );
         }
         let mut out = format_bash_out(run.code, &run.stdout, &run.stderr, self.slim_output);
+        // Worded so the model has nothing to act on: "[auto-backed up: X]" sent a 4B model
+        // hunting for X.bak eight times in one turn (live Zed 2026-10-31, bead boubou-bk9.11).
         if !snapped.is_empty() {
             if self.relocated() {
-                out.push_str(&format!("\n[auto-backed up: {}]", snapped.join(", ")));
+                out.push_str(&format!(
+                    "\n[backup of {} kept by the harness; nothing to clean up]",
+                    snapped.join(", ")
+                ));
             } else {
                 out.push_str(&format!(
-                    "\n[auto-backed up, can be rolled back: {} → same name with .bak]",
+                    "\n[backup of {} kept beside each as .bak for rollback; leave them]",
                     snapped.join(", ")
                 ));
             }
@@ -1250,10 +1267,11 @@ pub fn repair_escapes(path: &Path, content: &str) -> (String, bool) {
     (fixed, changed)
 }
 
-/// Literal `\n`, `\t`, `\"` and `\'` sequences a model writes into a command become the
-/// real characters (Mingbird's `run_bash` unescape). Applied in `prepare` before the safety
-/// gate, so the gate judges the string that is executed: a literal `\n` would otherwise
-/// hide a second command from the token-only danger rules.
+/// Literal `\n`, `\t`, `\"` and `\'` sequences read as the real characters: what a model
+/// that double-escaped would have meant (Mingbird's `run_bash` unescape). Since 2026-10-31
+/// (bead boubou-bk9.10) the shell never gets this form, which broke sed replacements,
+/// `python -c` programs and quoted heredocs that were right as written; `prepare` only runs
+/// the safety gate over it as well, so a literal `\n` cannot hide a second command.
 pub fn unescape_command(command: &str) -> String {
     static NL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+n").expect("regex"));
     static TAB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+t").expect("regex"));
@@ -1265,12 +1283,16 @@ pub fn unescape_command(command: &str) -> String {
     SQ.replace_all(&cmd, "'").into_owned()
 }
 
-/// `_bash_snapshot`: `sed -i`, redirections, `cp`/`mv` and friends rewrite files behind
-/// the `.bak` net; back up every existing workspace file the command names first, beside
-/// the file or under `backup_root` (see [`Executor::harness_dir`]).
+/// `_bash_snapshot`: `sed -i`, redirections, `cp`/`mv`, `rm` and friends rewrite or remove
+/// files behind the `.bak` net; back up every existing workspace file the command names
+/// first, globs expanded (`rm lib/*.dart`, bead boubou-bk9.12), beside the file or under
+/// `backup_root` (see [`Executor::harness_dir`]).
 pub fn bash_snapshot(cmd: &str, workdir: &Path, backup_root: Option<&Path>) -> Vec<String> {
     static TOK: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]{1,8}").expect("regex"));
+    static GLOB: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"[A-Za-z0-9_\-./\\*?]*[*?][A-Za-z0-9_\-./\\*?]*").expect("regex")
+    });
     let low = format!(" {cmd} ");
     let suspects = [
         "sed -i",
@@ -1284,33 +1306,56 @@ pub fn bash_snapshot(cmd: &str, workdir: &Path, backup_root: Option<&Path>) -> V
         "dd ",
         "perl -pi",
         "python -m fileinput",
+        "rm ",
     ];
     if !suspects.iter().any(|s| low.contains(s)) {
         return Vec::new();
     }
     let wd = resolve_path(workdir);
     let mut out: Vec<String> = Vec::new();
-    for tok in TOK.find_iter(cmd).map(|m| m.as_str()) {
-        let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
-        if base.ends_with(".bak") || base.starts_with('.') {
-            continue;
+    let snap = |p: &Path, out: &mut Vec<String>| {
+        let base = p
+            .file_name()
+            .and_then(|b| b.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if base.is_empty() || base.ends_with(".bak") || base.starts_with('.') {
+            return;
         }
-        let p = if Path::new(tok).is_absolute() {
+        let rp = resolve_path(p);
+        if !rp.starts_with(&wd) || rp == wd || !rp.is_file() {
+            return;
+        }
+        if std::fs::copy(&rp, backup_target(&rp, &wd, backup_root)).is_ok() && !out.contains(&base)
+        {
+            out.push(base);
+        }
+    };
+    let abs = |tok: &str| {
+        if Path::new(tok).is_absolute() {
             PathBuf::from(tok)
         } else {
             workdir.join(tok)
-        };
-        let rp = resolve_path(&p);
-        if !rp.starts_with(&wd) || rp == wd || !rp.is_file() {
-            continue;
         }
-        if std::fs::copy(&rp, backup_target(&rp, &wd, backup_root)).is_ok()
-            && !out.iter().any(|b| b == base)
-        {
-            out.push(base.to_string());
-        }
+    };
+    for tok in TOK.find_iter(cmd).map(|m| m.as_str()) {
+        snap(&abs(tok), &mut out);
         if out.len() >= 20 {
-            break;
+            return out;
+        }
+    }
+    for tok in GLOB.find_iter(cmd).map(|m| m.as_str()) {
+        let Some(pattern) = abs(tok).to_str().map(str::to_string) else {
+            continue;
+        };
+        let Ok(paths) = glob::glob(&pattern) else {
+            continue;
+        };
+        for p in paths.flatten() {
+            snap(&p, &mut out);
+            if out.len() >= 20 {
+                return out;
+            }
         }
     }
     out

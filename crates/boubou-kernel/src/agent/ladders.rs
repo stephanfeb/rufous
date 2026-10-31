@@ -350,7 +350,9 @@ impl CallLadders {
             self.last_tool = Some(name.to_string());
             self.tool_streak = 1;
         }
-        if self.tool_streak >= 5 && self.streak_warns < 3 {
+        // Five in a row is a batch until the last call repeats the one before it (bead
+        // boubou-bk9.9: 39 distinct bash commands in one live turn drew the note five times).
+        if self.tool_streak >= 5 && self.same_sig_streak >= 2 && self.streak_warns < 3 {
             self.streak_warns += 1;
             let count = self.tool_streak;
             self.tool_streak = 1;
@@ -779,18 +781,20 @@ mod tests {
                 streak: 2
             }
         );
-        // Streaks: the note at five in a row (three times), the loop at eight with the same
-        // exact call four times.
+        // Streaks: the note at five in a row once the last call repeats the one before it
+        // (three times); five distinct calls are a batch and stay quiet; the loop at eight
+        // with the same exact call four times.
         let mut l = CallLadders::default();
-        for i in 1..=4 {
+        for i in 1..=5 {
             assert_eq!(
                 l.on_streak("read_file", &format!("{i}"), true),
-                Streak::Quiet
+                Streak::Quiet,
+                "distinct call {i}"
             );
         }
         assert_eq!(
             l.on_streak("read_file", "5", true),
-            Streak::Note { count: 5 }
+            Streak::Note { count: 6 }
         );
         let mut l = CallLadders {
             streak_warns: 3,

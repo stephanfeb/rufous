@@ -92,8 +92,11 @@ client with reads but no writes gets the mix. The edit's backup copy is still ma
 text the model saw, and the overwrite guard still measures the file on disk. Everything the
 protocol has no method for stays on disk: `delete_file`, `list_dir`, `search_files`, images,
 commands and their backups, and whether a file exists. The log line `fs/read_text_file
-<path>` (at `boubou_coding=info`) shows each call that went through the editor. Without the
-capability every tool uses the disk, as for the CLI.
+<path>` (at `boubou_coding=info`) shows each call that went through the editor. When the
+editor cannot serve a read (Zed answers a path that is a directory with an internal error),
+the disk is read instead and both errors are reported only if that fails too; `read_file` on
+a directory says so before anyone is asked. Without the capability every tool uses the disk,
+as for the CLI.
 
 ## Resuming after a restart
 

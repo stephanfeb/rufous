@@ -99,8 +99,8 @@ impl Platform {
 
     fn command_map(self) -> &'static str {
         match self {
-            Platform::Windows => "list dir=dir / show file=type / search text=findstr / copy=copy",
-            _ => "list dir=ls / show file=cat / search text=grep / copy=cp",
+            Platform::Windows => "Command map: list dir=dir / show file=type / search text=findstr / copy=copy; to look around prefer list_dir, read_file and search_files",
+            _ => "To look around use list_dir, read_file and search_files rather than ls, cat and grep (their output is bounded and says when it is cut)",
         }
     }
 }
@@ -117,7 +117,7 @@ pub fn platform_block(full: bool, unattended: bool) -> String {
         "- Commands run outside a sandbox. Recursive deletes, uninstalls and system-environment changes prompt the user for confirmation. That is normal protection, not a fault; carry on with the work."
     };
     format!(
-        "Platform: {} · command shell={} (supports && chaining)\n- Command map: {}; path separator {}, quote paths containing spaces\n{}",
+        "Platform: {} · command shell={} (supports && chaining)\n- {}; path separator {}, quote paths containing spaces\n{}",
         p.label(),
         p.shell(),
         p.command_map(),

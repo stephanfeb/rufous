@@ -436,6 +436,7 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "futures-util",
+ "glob",
  "regex",
  "reqwest",
  "rmcp",

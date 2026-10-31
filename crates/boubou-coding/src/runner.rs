@@ -132,9 +132,25 @@ impl FileStore for AcpFileStore {
         if !self.caps.read {
             return DiskStore.read(path);
         }
-        self.relay(FsRequest::Read {
+        match self.relay(FsRequest::Read {
             path: path.to_path_buf(),
-        })
+        }) {
+            Ok(text) => Ok(text),
+            // The disk is the ground truth when the editor cannot answer (Zed replies with
+            // an internal error for a path that is a directory, bead boubou-m64.3); both
+            // errors are reported only when the disk fails too.
+            Err(editor) => {
+                tracing::warn!(
+                    target: "boubou_coding",
+                    path = %path.display(),
+                    error = %editor,
+                    "fs/read_text_file failed; reading the disk instead"
+                );
+                DiskStore
+                    .read(path)
+                    .map_err(|disk| std::io::Error::other(format!("{disk}; {editor}")))
+            }
+        }
     }
     fn write(&mut self, path: &Path, content: &str) -> std::io::Result<()> {
         if !self.caps.write {

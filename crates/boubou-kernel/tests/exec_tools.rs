@@ -614,16 +614,62 @@ fn create_file_through_a_symlink_and_dotdot_is_refused() {
 }
 
 #[test]
-fn the_gate_sees_the_unescaped_command() {
+fn a_command_runs_as_written_and_the_gate_still_judges_its_unescaped_form() {
     let (_d, mut e) = ex();
-    // A literal backslash-n becomes a newline before the shell runs the command, so the
-    // danger rules must see a second command, not one line that starts with `echo`.
+    // The danger rules see the second command a literal backslash-n would hide.
     let r = e.run_tool("run_bash", &json!({"command": "echo hi\\nshutdown -h now"}));
     assert!(r.contains("dangerous operation"), "{r}");
     if cfg!(unix) {
-        let r = e.run_tool("run_bash", &json!({"command": "echo one\\necho two"}));
-        assert!(r.contains("one") && r.contains("two"), "{r}");
+        // What the shell gets is the model's text (bead boubou-bk9.10): a sed replacement
+        // keeps its literal \n, a `python -c` program keeps its \" quotes. The old rewrite
+        // turned both into real characters and broke four correct commands in a row in a
+        // live editor session.
+        let r = e.run_tool(
+            "run_bash",
+            &json!({"command": "printf '%s' \"s/a/b\\nc/\""}),
+        );
+        assert!(r.contains("s/a/b\\nc/"), "{r}");
+        let r = e.run_tool(
+            "run_bash",
+            &json!({"command": "printf '%s' \"say \\\"hi\\\"\""}),
+        );
+        assert!(r.contains("say \"hi\""), "{r}");
     }
+}
+
+#[test]
+fn read_file_on_a_directory_says_so() {
+    let (d, mut e) = ex();
+    std::fs::create_dir_all(d.path().join("pubspec.yaml")).expect("mkdir");
+    let r = e.run_tool("read_file", &json!({"path": "pubspec.yaml"}));
+    assert_eq!(r, "[not a file: pubspec.yaml is a directory; use list_dir]");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bash_rm_snapshots_the_files_it_names_globs_included() {
+    let (d, mut e) = ex();
+    let h = tempfile::tempdir().expect("tmp");
+    e.harness_dir = h.path().to_path_buf();
+    create(&mut e, "lib/a.dart", "a\n");
+    create(&mut e, "lib/b.dart", "b\n");
+    create(&mut e, "lib/keep.txt", "k\n");
+    let r = e.run_tool("run_bash", &json!({"command": "rm lib/*.dart"}));
+    assert!(
+        r.contains("[backup of a.dart, b.dart kept by the harness; nothing to clean up]"),
+        "{r}"
+    );
+    assert!(!d.path().join("lib/a.dart").exists());
+    assert!(d.path().join("lib/keep.txt").exists());
+    for (f, body) in [("a", "a\n"), ("b", "b\n")] {
+        assert_eq!(
+            std::fs::read_to_string(h.path().join(format!("backups/lib/{f}.dart.bak")))
+                .expect("bak"),
+            body
+        );
+    }
+    let r = e.run_tool("run_bash", &json!({"command": "rm -f lib/nothing.dart"}));
+    assert!(!r.contains("backup"), "{r}");
 }
 
 // ---- harness files out of the project (boubou-7s3) ----
@@ -650,7 +696,11 @@ fn a_relocated_harness_dir_keeps_backups_trash_and_the_plan_out_of_the_workdir()
     );
 
     let r = e.run_tool("run_bash", &json!({"command": "echo z > lib/a.py"}));
-    assert!(r.contains("auto-backed up") && !r.contains(".bak"), "{r}");
+    assert!(
+        r.contains("[backup of a.py kept by the harness; nothing to clean up]")
+            && !r.contains(".bak"),
+        "{r}"
+    );
     assert!(!d.path().join("lib/a.py.bak").exists());
     assert_eq!(
         std::fs::read_to_string(h.path().join("backups/lib/a.py.bak")).expect("bak"),

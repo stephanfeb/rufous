@@ -918,3 +918,44 @@ async fn the_clients_mcp_servers_reach_the_turn_as_server_configs() {
     );
     assert!(seen[1].is_empty());
 }
+
+/// The editor's read fails (Zed answers a directory with an internal error): the disk is read
+/// instead, and both errors are reported only when the disk fails too (bead boubou-m64.3).
+#[tokio::test]
+async fn an_editor_read_error_falls_back_to_the_disk() {
+    use boubou_coding::runner::{AcpFileStore, BridgeMsg, ClientFs};
+    use boubou_kernel::exec::FileStore;
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("a.txt"), "on disk\n").expect("w");
+    std::fs::create_dir(d.path().join("dir.yaml")).expect("mkdir");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BridgeMsg>();
+    tokio::spawn(async move {
+        while let Some(m) = rx.recv().await {
+            if let BridgeMsg::Fs { reply, .. } = m {
+                let _ = reply.send(Err("Internal error: reading bytes of the file".into()));
+            }
+        }
+    });
+    let file = d.path().join("a.txt");
+    let dir = d.path().join("dir.yaml");
+    let (text, err) = tokio::task::spawn_blocking(move || {
+        let mut store = AcpFileStore {
+            tx,
+            caps: ClientFs {
+                read: true,
+                write: true,
+            },
+        };
+        let text = store.read(&file).expect("the disk answers");
+        let err = store.read(&dir).expect_err("a directory fails on disk too");
+        (text, err)
+    })
+    .await
+    .expect("join");
+    assert_eq!(text, "on disk\n");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("editor: Internal error") && msg.contains("os error"),
+        "{msg}"
+    );
+}

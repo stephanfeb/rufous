@@ -18,6 +18,7 @@ futures-util.workspace = true
 tracing.workspace = true
 dirs.workspace = true
 regex.workspace = true
+glob.workspace = true
 encoding_rs.workspace = true
 chrono.workspace = true
 sha1.workspace = true

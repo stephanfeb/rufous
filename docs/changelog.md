@@ -1957,3 +1957,60 @@ project server; over the in-process ACP client, a stdio and an HTTP server passe
 done: `${VAR}` expansion in env values, the SSE transport proper, per-server approval. With
 this the epic's three items are in; what remains is the Zed verification on boubou-m64, which
 now covers the fs path and the session servers too.
+
+## Live Zed session: six harness fixes (2026-10-31, beads boubou-bk9.8–12, boubou-m64.3)
+
+The Zed verification on boubou-m64 (Zed 1.26.2, qwen3.5:4b, ctx 64000, the release binary
+of 12:50, project overshare) was read from the turn "Okay let's build that item next" on,
+the first turn under the current build: 39 run_bash, 5 read_file, 2 edit_file, 2 todo, 1
+finish. The model's navigation trouble the user saw was downstream of one harness defect.
+`unescape_command`, Mingbird's run_bash unescape, turned every literal `\n`, `\t`, `\"`
+and `\'` in a command into the real character before the shell saw it; four correct
+commands in a row failed for that reason alone (two BSD sed substitutions with `\n` in the
+replacement, a quoted python heredoc with `\n` in a string literal, a `python3 -c` whose
+`\"` became bare quotes so the shell split the program and ran ImageMagick's `import`), after
+which the model gave up on edits, recreated whole files by `rm` and heredoc, wrote the wrong
+class into host_service.dart and later ran `rm lib/content/lib/*.dart lib/sharing/lib/*.dart`.
+Eight of the 39 bash calls were `rm -f X.bak` or `mv X.bak X` housekeeping drawn by the
+`[auto-backed up: X]` note. `read_file` on a path that was a directory (the model's own
+`mkdir -p lib/sharing/pubspec.yaml`) came back as Zed's internal error. The same-tool streak
+note fired five times, every time on distinct commands. Model-level and left alone: the
+identical edit_file re-send after a nearest-region miss, `ls | head -5` then "the directory
+is empty", `finish {}` after `flutter clean` with nothing verified.
+
+Fixes, each against the design paragraph on its bead. bk9.10: the shell gets the command as
+the model wrote it; the gate judges the original and the unescaped form, so a literal `\n`
+still cannot hide a second command (test: `printf '%s'` shows the sed `\n` and the `\"`
+quotes reaching the shell intact, the shutdown-after-newline command is still refused).
+bk9.11: the note reads `[backup of X kept by the harness; nothing to clean up]` (CLI: `kept
+beside each as .bak for rollback; leave them`). bk9.12: `rm` joins the snapshot suspects and
+glob tokens are expanded inside the workspace (`glob` crate), so `rm lib/*.dart` backs up
+both files first. m64.3: `read_file` on a directory answers `[not a file: … is a directory;
+use list_dir]` for every store, and the ACP store falls back to the disk when the editor's
+read fails, reporting both errors only if the disk fails too. bk9.9: the streak note needs
+the last call to repeat the one before it (five distinct calls stay quiet; the disable rule
+is unchanged) and its text says so. bk9.8: the enable_tools line had already been fixed;
+the platform block's "Command map: list dir=ls / show file=cat / search text=grep" became
+"To look around use list_dir, read_file and search_files rather than ls, cat and grep (their
+output is bounded and says when it is cut)", Windows keeps its command map with the same
+pointer. Task prompt 8,161 → 8,226 characters (+65, about 15 tokens). 549 tests.
+
+What the testing missed, and the answer. Every one of these was a harness behaviour that
+turned a correct model action into a failure or a wasted call, and the suite never saw it
+because (1) the unit tests exercised each mechanism with inputs shaped like the mechanism
+(`echo one\necho two`), not like what a model writes (a sed replacement, a `python -c`
+program), and the Mingbird-ported heuristics (`unescape_command`, the suspects list, the
+note wording) were ported without a switch or a measurement, unlike the matcher and the ≤4B
+rule; (2) the bench scores outcomes and counts edit misses, but has no counter for
+harness-caused bash failures, `.bak` housekeeping calls, streak notes per cell or editor
+errors relayed verbatim, so a cell could lose to these and the loss read as the model's;
+(3) the ACP tests scripted a cooperative editor and never Zed's actual error shapes. The
+cheap corrective is a replay corpus: the tool calls of real sessions (this one first) run
+through `prepare` and the stores as regression tests, plus three process-table counters in
+`lrab_h2h.py` (bash exits whose stderr says `unescaped newline`, `unterminated string` or
+`command not found`; calls naming `.bak`; harness notes per cell), read before and after any
+change to exec. Still open from the Zed run: a permission prompt for an out-of-workdir write,
+cancel mid-tool. The backup copies under the session's `.files/backups/` hold each file's
+content as of the last snapshot before a writing command, which for host_service.dart is
+already the wrong class; `std::fs::copy` on macOS keeps the source's modification time, so
+a copy's timestamp is not when it was taken.

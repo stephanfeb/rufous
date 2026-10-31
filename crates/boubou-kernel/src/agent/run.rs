@@ -2037,7 +2037,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 match calls.on_streak(&name, &sig_json, anti_loop) {
                     Streak::Note { count } => {
                         messages.push(Message::user(format!(
-                            "⚠️ You have called {name} {count} times in a row. If the results are similar or nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish). If you are doing a batch of steps with different arguments each time, that is fine; carry on."
+                            "⚠️ You have called {name} {count} times in a row and the last call repeated the one before it. If nothing new is coming out, stop repeating: combine what you have and move to the next step (write a file / use another tool / call finish)."
                         )));
                     }
                     Streak::Disable { count } => {
