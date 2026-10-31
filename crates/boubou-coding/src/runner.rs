@@ -2,10 +2,11 @@
 //!
 //! The loop blocks on one model call at a time, so a turn runs on its own OS thread; the
 //! thread talks to the connection task through one channel ([`BridgeMsg`]) that carries
-//! loop events, permission requests (answered through a reply channel the thread blocks
-//! on) and the final message list, in order. [`AgentFactory`] builds the agent for a turn;
-//! the production factory is [`StandardFactory`] (the configured engine, the real tool
-//! executor, the safety gate with an [`AcpConfirmer`]); tests script one.
+//! loop events, permission requests and file reads and writes for the editor (each
+//! answered through a reply channel the thread blocks on) and the final message list, in
+//! order. [`AgentFactory`] builds the agent for a turn; the production factory is
+//! [`StandardFactory`] (the configured engine, the real tool executor, the safety gate with
+//! an [`AcpConfirmer`], the executor's files through an [`AcpFileStore`]); tests script one.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use boubou_kernel::agent::session;
 use boubou_kernel::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner};
 use boubou_kernel::config::Config;
+use boubou_kernel::exec::{DiskStore, FileStore};
 use boubou_kernel::ollama::Message;
 use boubou_kernel::safety::{ConfirmRequest, Confirmer, Gate, SafetyPolicy, Verdict};
 use tokio::sync::mpsc::UnboundedSender;
@@ -27,6 +29,14 @@ pub struct PermissionAsk {
     pub workdir: PathBuf,
 }
 
+/// A file operation for the editor ([`AcpFileStore`]): `fs/read_text_file` or
+/// `fs/write_text_file`, with the absolute path the protocol wants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FsRequest {
+    Read { path: PathBuf },
+    Write { path: PathBuf, content: String },
+}
+
 /// What the turn thread sends to the connection task.
 #[derive(Debug)]
 pub enum BridgeMsg {
@@ -34,6 +44,12 @@ pub enum BridgeMsg {
     Permission {
         ask: PermissionAsk,
         reply: std::sync::mpsc::Sender<Verdict>,
+    },
+    /// A file read or write for the editor; the reply is the text read (empty for a
+    /// write) or the client's error message.
+    Fs {
+        req: FsRequest,
+        reply: std::sync::mpsc::Sender<Result<String, String>>,
     },
     /// The loop returned: the final history, or the loop's error after the session was saved.
     Done(boubou_kernel::Result<Vec<Message>>),
@@ -64,6 +80,70 @@ impl Confirmer for AcpConfirmer {
             return Verdict::Deny;
         }
         rrx.recv().unwrap_or(Verdict::Deny)
+    }
+}
+
+/// What the client said it can do for us at `initialize`
+/// (`clientCapabilities.fs`). Per method: an editor may offer reads without writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientFs {
+    pub read: bool,
+    pub write: bool,
+}
+
+/// The executor's [`FileStore`] for an editor session: a read asks the client for the
+/// file's text (`fs/read_text_file`: the buffer when the file is open, the disk otherwise)
+/// and a write hands the client the new text (`fs/write_text_file`: into the buffer, saved
+/// as the editor decides), each only when the client advertised that method; the rest goes
+/// to the disk as for the CLI. The tool thread blocks on the reply as the confirmer does,
+/// and a connection error becomes the tool's error text.
+#[derive(Debug, Clone)]
+pub struct AcpFileStore {
+    pub tx: UnboundedSender<BridgeMsg>,
+    pub caps: ClientFs,
+}
+
+impl AcpFileStore {
+    /// The store for a turn: the editor's methods when it offers any, else the disk alone.
+    pub fn for_turn(tx: UnboundedSender<BridgeMsg>, caps: ClientFs) -> Box<dyn FileStore> {
+        if caps.read || caps.write {
+            Box::new(Self { tx, caps })
+        } else {
+            Box::new(DiskStore)
+        }
+    }
+
+    fn relay(&self, req: FsRequest) -> std::io::Result<String> {
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        if self.tx.send(BridgeMsg::Fs { req, reply: rtx }).is_err() {
+            return Err(std::io::Error::other("the editor connection is gone"));
+        }
+        match rrx.recv() {
+            Ok(Ok(text)) => Ok(text),
+            Ok(Err(msg)) => Err(std::io::Error::other(format!("editor: {msg}"))),
+            Err(_) => Err(std::io::Error::other("the editor connection is gone")),
+        }
+    }
+}
+
+impl FileStore for AcpFileStore {
+    fn read(&mut self, path: &Path) -> std::io::Result<String> {
+        if !self.caps.read {
+            return DiskStore.read(path);
+        }
+        self.relay(FsRequest::Read {
+            path: path.to_path_buf(),
+        })
+    }
+    fn write(&mut self, path: &Path, content: &str) -> std::io::Result<()> {
+        if !self.caps.write {
+            return DiskStore.write(path, content);
+        }
+        self.relay(FsRequest::Write {
+            path: path.to_path_buf(),
+            content: content.to_string(),
+        })
+        .map(|_| ())
     }
 }
 
@@ -106,6 +186,9 @@ pub struct TurnSetup {
     pub stop: Arc<AtomicBool>,
     pub sink: Box<dyn FnMut(AgentEvent) + Send + 'static>,
     pub confirmer: Box<dyn Confirmer>,
+    /// Where the text-file tools read and write: the editor's buffers when the client
+    /// offered `fs`, else the disk ([`AcpFileStore::for_turn`]).
+    pub files: Box<dyn FileStore>,
 }
 
 impl std::fmt::Debug for TurnSetup {
@@ -171,6 +254,7 @@ impl AgentFactory for StandardFactory {
             .with_stop(setup.stop)
             .with_builtin_skills(crate::harness::skills());
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), setup.confirmer);
+        agent.tools.store = setup.files;
         agent.checkpoint = Some(session::state_path(&setup.sessions_dir, &setup.session));
         agent.sessions_dir = setup.sessions_dir;
         Ok(Box::new(agent))

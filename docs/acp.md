@@ -65,6 +65,7 @@ harness files in any mode.
 | `finish` summary | the closing message, when the model wrote no prose after its last tool call |
 | a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny |
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
+| `read_file`, `create_file`, `edit_file`, `append_file` | `fs/read_text_file` and `fs/write_text_file` when the client offered them at `initialize` (see below) |
 
 ## Turn semantics
 
@@ -78,6 +79,21 @@ phrased as a question can still write them), and nothing is dispatched to child 
 The safety gate, the duplicate-call and failure ladders, the idle-streak nudges and context
 compaction are unchanged. Two empty replies in a row end the turn.
 
+## Files through the editor
+
+A client that advertises `fs.readTextFile` and `fs.writeTextFile` in its `initialize`
+capabilities (Zed does) owns the project's text files for the session: `read_file` asks the
+editor for the file's text, which is the open buffer when there is one and the disk otherwise,
+so unsaved changes are what the model reads; `create_file`, `edit_file` and `append_file`
+hand the editor the new text, which lands in the buffer and is saved as the editor decides,
+rather than being written to disk beneath it. Each method is used only when offered, so a
+client with reads but no writes gets the mix. The edit's backup copy is still made, of the
+text the model saw, and the overwrite guard still measures the file on disk. Everything the
+protocol has no method for stays on disk: `delete_file`, `list_dir`, `search_files`, images,
+commands and their backups, and whether a file exists. The log line `fs/read_text_file
+<path>` (at `boubou_coding=info`) shows each call that went through the editor. Without the
+capability every tool uses the disk, as for the CLI.
+
 ## Resuming after a restart
 
 Boubou advertises `loadSession`. When the editor restarts the agent and reopens a thread, it
@@ -90,7 +106,7 @@ shown) and then continues the conversation from where it stopped. An unknown id 
 
 ## Not yet
 
-Session modes, the client's `fs` and `terminal` capabilities (edits go straight to disk, not
-through editor buffers), and MCP servers passed in `session/new` or `session/load` (Boubou
-keeps its own `mcp.json`). The SDK ships weekly with frequent major versions; the dependency
-is pinned exactly and bumped on purpose.
+Session modes, the client's `terminal` capability (`run_bash` runs in Boubou's own process,
+the editor shows its output as a tool result), and MCP servers passed in `session/new` or
+`session/load` (Boubou keeps its own `mcp.json`). The SDK ships weekly with frequent major
+versions; the dependency is pinned exactly and bumped on purpose.

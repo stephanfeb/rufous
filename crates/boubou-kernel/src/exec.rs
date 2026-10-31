@@ -32,6 +32,55 @@ use crate::Error;
 /// Recycle bin inside the workspace. Kept as Mingbird's name so old workspaces stay readable.
 pub const TRASH_DIR: &str = ".mingbird_trash";
 
+/// Where the text-file tools read and write the project: `read_file` (text), `create_file`,
+/// `edit_file` and `append_file` go through this seam, so a host that owns the files can
+/// stand in for the disk. The disk is the default ([`DiskStore`]); the ACP server supplies
+/// one that asks the editor (`fs/read_text_file`, `fs/write_text_file`), so an unsaved
+/// buffer is what the model reads and the edit lands in the buffer rather than beneath it.
+/// Existence checks, the overwrite guard's size, images, `delete_file`, `list_dir`,
+/// `search_files`, commands and their backups stay on disk: the protocol has no method for
+/// them, and a path is still a path on this machine.
+pub trait FileStore: Send {
+    /// The whole text of `path`, decoded leniently; `NotFound` when there is no such file.
+    fn read(&mut self, path: &Path) -> std::io::Result<String>;
+    /// Replace the file with `content`, creating it (and its directories) if needed.
+    fn write(&mut self, path: &Path, content: &str) -> std::io::Result<()>;
+    /// Add `content` at the end, creating the file if needed.
+    fn append(&mut self, path: &Path, content: &str) -> std::io::Result<()> {
+        let mut s = match self.read(path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e),
+        };
+        s.push_str(content);
+        self.write(path, &s)
+    }
+}
+
+/// The default [`FileStore`]: the file system, as the CLI and the bench have always used it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DiskStore;
+
+impl FileStore for DiskStore {
+    fn read(&mut self, path: &Path) -> std::io::Result<String> {
+        std::fs::read(path).map(|raw| text::decode_lenient(&raw))
+    }
+    fn write(&mut self, path: &Path, content: &str) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, content)
+    }
+    fn append(&mut self, path: &Path, content: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .and_then(|mut f| f.write_all(content.as_bytes()))
+    }
+}
+
 /// Opens the clause a file tool's result carries when the workdir-prefix rule rewrote its
 /// path; [`rebased_path`] reads it back for the harness log.
 pub const PATH_REBASED_MARK: &str = "(path rebased: ";
@@ -136,6 +185,9 @@ pub struct Executor {
     /// `edit_file`'s matcher ([`crate::edit_match`]); off (ablation `edit_match`), the
     /// inherited exact-after-unescape matcher with the file-head preview.
     pub edit_match: bool,
+    /// Where the text-file tools read and write ([`FileStore`]): the disk unless a host
+    /// owns the files (the ACP server's editor buffers).
+    pub store: Box<dyn FileStore>,
     /// Advanced tools the model has enabled, in enable order.
     pub enabled: Vec<String>,
     pub bash_timeout: Duration,
@@ -185,6 +237,7 @@ impl Executor {
             slim_output: false,
             rebase_workdir_prefix: false,
             edit_match: true,
+            store: Box::new(DiskStore),
             stop: None,
             enabled: Vec::new(),
             bash_timeout: Duration::from_secs(
@@ -502,15 +555,11 @@ impl Executor {
                 }
             }
         }
-        if let Some(dir) = p.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                return format!("[tool error: {e}]");
-            }
-        }
-        if let Err(e) = std::fs::write(&p, content) {
+        let (out, repaired) = repair_escapes(&p, content);
+        if let Err(e) = self.store.write(&p, &out) {
             return format!("[tool error: {e}]");
         }
-        let tag = if auto_repair(&p) {
+        let tag = if repaired {
             "escapes auto-repaired".to_string()
         } else {
             format!("{} bytes", clen(content))
@@ -537,9 +586,9 @@ impl Executor {
         let entry = self.crawl.entry(key).or_default();
         entry.reads += 1;
 
-        let full = match text::read_text(&p) {
+        let full = match self.store.read(&p) {
             Ok(t) => t,
-            Err(e) => return format!("[tool error: {e}]"),
+            Err(e) => return format!("[tool error: {}]", Error::io(&p, e)),
         };
         let sl = start_line.unwrap_or(0) as usize;
         let el = end_line.unwrap_or(0) as usize;
@@ -630,9 +679,9 @@ impl Executor {
 
     fn edit_file(&mut self, path: &str, old: &str, new: &str, all: bool) -> String {
         let p = self.workdir.join(path);
-        let s = match text::read_text(&p) {
+        let s = match self.store.read(&p) {
             Ok(s) => s,
-            Err(e) => return format!("[tool error: {e}]"),
+            Err(e) => return format!("[tool error: {}]", Error::io(&p, e)),
         };
         if !self.edit_match {
             return self.edit_file_legacy(&p, path, &s, old, new);
@@ -668,7 +717,7 @@ impl Executor {
                     new.to_string()
                 };
                 let out = edit_match::apply(&s, &ranges, &new_used, all);
-                let mut r = self.write_edited(&p, path, &out);
+                let mut r = self.write_edited(&p, path, &s, &out);
                 if r.starts_with("[edited") {
                     if all && n > 1 {
                         r.push_str(&format!(" ({n} occurrences replaced)"));
@@ -722,19 +771,21 @@ impl Executor {
                 "[edit failed: old text not found. Preview of the file start: {preview}...] Use read_file to see the whole file and build an exactly matching old text, or rewrite the file with create_file."
             );
         }
-        self.write_edited(p, path, &s.replacen(&old, &new, 1))
+        self.write_edited(p, path, s, &s.replacen(&old, &new, 1))
     }
 
-    /// Back the file up, write it, and report the way every edit has.
-    fn write_edited(&mut self, p: &Path, path: &str, out: &str) -> String {
-        let _ = std::fs::copy(
-            p,
+    /// Back the file up (the text as it was read, so the copy is of what the model saw
+    /// even when the store is not the disk), write it, and report the way every edit has.
+    fn write_edited(&mut self, p: &Path, path: &str, before: &str, out: &str) -> String {
+        let _ = std::fs::write(
             backup_target(p, &self.workdir, self.backup_root().as_deref()),
+            before,
         );
-        if let Err(e) = std::fs::write(p, out) {
+        let (out, repaired) = repair_escapes(p, out);
+        if let Err(e) = self.store.write(p, &out) {
             return format!("[tool error: {e}]");
         }
-        let tag = if auto_repair(p) {
+        let tag = if repaired {
             "backed up, escapes auto-repaired"
         } else {
             "backed up"
@@ -747,17 +798,11 @@ impl Executor {
     }
 
     fn append_file(&mut self, path: &str, content: &str) -> String {
-        use std::io::Write;
         let p = self.workdir.join(path);
-        let res = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&p)
-            .and_then(|mut f| f.write_all(content.as_bytes()));
-        if let Err(e) = res {
+        let (out, _) = repair_escapes(&p, content);
+        if let Err(e) = self.store.append(&p, &out) {
             return format!("[tool error: {e}]");
         }
-        auto_repair(&p);
         format!("[appended {path}]")
     }
 
@@ -1144,10 +1189,11 @@ fn hhmmss() -> String {
     )
 }
 
-/// `_auto_repair` for text files: three or more literal `\n`/`\t` sequences mean the model
-/// escaped its newlines; fold them. Python files are left alone (Mingbird byte-compiles
-/// them to decide; Boubou has no interpreter to ask).
-pub fn auto_repair(path: &Path) -> bool {
+/// Mingbird's `_auto_repair`: in a `.md`, `.txt` or `.csv` file, literal `\n` and `\t`
+/// sequences a model wrote (three or more) become the real characters. Pure: the text to
+/// write and whether it changed, so the repaired text goes through the [`FileStore`]
+/// rather than being read back from the disk.
+pub fn repair_escapes(path: &Path, content: &str) -> (String, bool) {
     static N: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+n").expect("regex"));
     static T: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\+t").expect("regex"));
     let ext = path
@@ -1155,17 +1201,17 @@ pub fn auto_repair(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .unwrap_or_default()
         .to_lowercase();
-    if !matches!(ext.as_str(), "md" | "txt" | "csv") {
-        return false;
+    if !matches!(ext.as_str(), "md" | "txt" | "csv")
+        || !content.contains('\\')
+        || N.find_iter(content).count() + T.find_iter(content).count() < 3
+    {
+        return (content.to_string(), false);
     }
-    let Ok(s) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    if !s.contains('\\') || N.find_iter(&s).count() + T.find_iter(&s).count() < 3 {
-        return false;
-    }
-    let fixed = T.replace_all(&N.replace_all(&s, "\n"), "\t").into_owned();
-    fixed != s && std::fs::write(path, fixed).is_ok()
+    let fixed = T
+        .replace_all(&N.replace_all(content, "\n"), "\t")
+        .into_owned();
+    let changed = fixed != content;
+    (fixed, changed)
 }
 
 /// Literal `\n`, `\t`, `\"` and `\'` sequences a model writes into a command become the

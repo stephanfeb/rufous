@@ -14,9 +14,13 @@
 //! session name, so the history is read back from the sessions directory and replayed to the
 //! editor as `session/update` notifications before the response ([`bridge::replay_updates`]).
 //!
-//! Protocol v1 (stable). Not yet: session modes, the client's `fs` and `terminal`
-//! capabilities, MCP servers passed in `session/new` and `session/load` (Boubou keeps its own
-//! `mcp.json`). stdout belongs to the protocol; diagnostics go to stderr via `tracing`.
+//! When the client advertises `fs.readTextFile` / `fs.writeTextFile` at `initialize`, the
+//! text-file tools read and write through the editor ([`runner::AcpFileStore`]), so an
+//! unsaved buffer is what the model sees and an edit lands in it.
+//!
+//! Protocol v1 (stable). Not yet: session modes, the client's `terminal` capability, MCP
+//! servers passed in `session/new` and `session/load` (Boubou keeps its own `mcp.json`).
+//! stdout belongs to the protocol; diagnostics go to stderr via `tracing`.
 
 pub mod bridge;
 pub mod harness;
@@ -30,9 +34,9 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, Implementation, InitializeRequest, InitializeResponse,
     LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
     RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification, ToolCallId,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, WriteTextFileRequest,
 };
 use agent_client_protocol::{
     Agent as AcpAgent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder, Stdio,
@@ -42,7 +46,10 @@ use boubou_kernel::safety::Verdict;
 use tokio::sync::mpsc;
 
 use bridge::{kind_for, prompt_text, replay_updates, TurnBridge};
-use runner::{AcpConfirmer, AgentFactory, BridgeMsg, PermissionAsk, StandardFactory, TurnSetup};
+use runner::{
+    AcpConfirmer, AcpFileStore, AgentFactory, BridgeMsg, ClientFs, FsRequest, PermissionAsk,
+    StandardFactory, TurnSetup,
+};
 
 /// One ACP session: Boubou's conversation state between prompts.
 #[derive(Debug)]
@@ -66,6 +73,8 @@ pub struct BoubouAcp {
     pub model: String,
     pub factory: Arc<dyn AgentFactory>,
     sessions: Sessions,
+    /// The client's `fs` capabilities from `initialize`; none until it has been received.
+    client_fs: Arc<Mutex<ClientFs>>,
 }
 
 impl std::fmt::Debug for BoubouAcp {
@@ -95,6 +104,7 @@ impl BoubouAcp {
             model,
             factory,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            client_fs: Arc::new(Mutex::new(ClientFs::default())),
         }
     }
 
@@ -111,16 +121,30 @@ impl ConnectTo<AcpClient> for BoubouAcp {
             model,
             factory,
             sessions,
+            client_fs,
         } = self;
         let sessions_dir = boubou_kernel::agent::session::sessions_dir(&home);
         AcpAgent
             .builder()
             .name("boubou")
             .on_receive_request(
-                async move |req: InitializeRequest,
-                            responder: Responder<InitializeResponse>,
-                            _cx: ConnectionTo<AcpClient>| {
-                    tracing::info!(target: "boubou_coding", version = ?req.protocol_version, "initialize");
+                {
+                    let client_fs = client_fs.clone();
+                    async move |req: InitializeRequest,
+                                responder: Responder<InitializeResponse>,
+                                _cx: ConnectionTo<AcpClient>| {
+                    let fs = ClientFs {
+                        read: req.client_capabilities.fs.read_text_file,
+                        write: req.client_capabilities.fs.write_text_file,
+                    };
+                    *lock(&client_fs) = fs;
+                    tracing::info!(
+                        target: "boubou_coding",
+                        version = ?req.protocol_version,
+                        fs_read = fs.read,
+                        fs_write = fs.write,
+                        "initialize"
+                    );
                     responder.respond(
                         InitializeResponse::new(req.protocol_version)
                             .agent_capabilities(AgentCapabilities::new().load_session(true))
@@ -128,6 +152,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 Implementation::new("boubou", boubou_kernel::VERSION).title("Boubou"),
                             ),
                     )
+                    }
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -261,6 +286,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                     let sessions_dir = sessions_dir.clone();
                     let factory = factory.clone();
                     let model = model.clone();
+                    let client_fs = client_fs.clone();
                     async move |req: PromptRequest,
                                 responder: Responder<PromptResponse>,
                                 cx: ConnectionTo<AcpClient>| {
@@ -309,6 +335,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                     })
                                 },
                                 confirmer: Box::new(AcpConfirmer { tx: tx.clone() }),
+                                files: AcpFileStore::for_turn(tx.clone(), *lock(&client_fs)),
                             },
                             prior.clone(),
                             text,
@@ -440,6 +467,9 @@ async fn drive_turn(
                 let verdict = ask_permission(cx, &session_id, &bridge, &ask, perm_n, &stop).await;
                 let _ = reply.send(verdict);
             }
+            BridgeMsg::Fs { req, reply } => {
+                let _ = reply.send(editor_fs(cx, &session_id, req).await);
+            }
             BridgeMsg::Done(result) => return (result, bridge),
         }
     }
@@ -508,6 +538,39 @@ async fn ask_permission(
         Err(e) => {
             tracing::warn!(target: "boubou_coding", "request_permission: {e}");
             Verdict::Deny
+        }
+    }
+}
+
+/// One file operation through the editor: `fs/read_text_file` returns the text (the open
+/// buffer, else the disk); `fs/write_text_file` returns nothing. The client's error, or the
+/// connection's, is passed back as text for the tool result.
+async fn editor_fs(
+    cx: &ConnectionTo<AcpClient>,
+    session_id: &SessionId,
+    req: FsRequest,
+) -> Result<String, String> {
+    match req {
+        FsRequest::Read { path } => {
+            tracing::info!(target: "boubou_coding", path = %path.display(), "fs/read_text_file");
+            cx.send_request(ReadTextFileRequest::new(session_id.clone(), path))
+                .block_task()
+                .await
+                .map(|r| r.content)
+                .map_err(|e| e.to_string())
+        }
+        FsRequest::Write { path, content } => {
+            tracing::info!(
+                target: "boubou_coding",
+                path = %path.display(),
+                bytes = content.len(),
+                "fs/write_text_file"
+            );
+            cx.send_request(WriteTextFileRequest::new(session_id.clone(), path, content))
+                .block_task()
+                .await
+                .map(|_| String::new())
+                .map_err(|e| e.to_string())
         }
     }
 }

@@ -5,7 +5,9 @@
 //! prompt turn with streamed tool calls and statuses, a permission round trip through the
 //! safety gate's confirmer, the finish summary as the closing message, a second prompt on
 //! the same session (history kept), session/cancel ending a turn, and session/load in a
-//! second server over the same home replaying the history and continuing it.
+//! second server over the same home replaying the history and continuing it. Then the
+//! client's `fs` capability (bead boubou-m64.2): with it the real executor's text-file
+//! tools read and write through the client; without it they use the disk.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,10 +15,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
-    PermissionOptionId, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    CancelNotification, ClientCapabilities, ContentBlock, FileSystemCapabilities,
+    InitializeRequest, LoadSessionRequest, NewSessionRequest, PermissionOptionId, PromptRequest,
+    ReadTextFileRequest, ReadTextFileResponse, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
-    SessionUpdate, StopReason, ToolCallStatus, ToolKind,
+    SessionUpdate, StopReason, ToolCallStatus, ToolKind, WriteTextFileRequest,
+    WriteTextFileResponse,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Channel, Client, ConnectTo, Responder};
@@ -582,4 +586,230 @@ fn an_editor_turn_is_interactive_keeps_its_files_beside_the_session_and_takes_th
     if std::env::var("AGENT_CTX").is_err() {
         assert_eq!(p.num_ctx, boubou_kernel::agent::DEFAULT_NUM_CTX);
     }
+}
+
+/// The real executor under a scripted model: the tools read and write files for real,
+/// through whatever store the server hands the turn.
+struct RealToolsFactory {
+    script: Script,
+}
+
+impl AgentFactory for RealToolsFactory {
+    fn new_turn(&self, setup: TurnSetup) -> boubou_kernel::Result<Box<dyn TurnRunner>> {
+        let mut params = RunParams::plain(setup.model, &setup.cwd);
+        params.policy = boubou_coding::harness::policy();
+        let backend = Scripted {
+            calls: self.script.clone(),
+            i: 0,
+            delay: Duration::ZERO,
+            forever: false,
+        };
+        let mut tools = boubou_kernel::exec::Executor::new(&setup.cwd);
+        tools.store = setup.files;
+        let a = Agent::new(params, backend, tools)
+            .with_sink(setup.sink)
+            .with_stop(setup.stop);
+        Ok(Box::new(a))
+    }
+}
+
+/// What an editor holding `notes.txt` in a buffer sees of a turn: reads and writes.
+#[derive(Default)]
+struct EditorFiles {
+    reads: Vec<PathBuf>,
+    writes: Vec<(PathBuf, String)>,
+}
+
+/// One turn: read notes.txt, change a word in it, create new.txt, finish.
+fn fs_script() -> Script {
+    vec![
+        ("read_file", json!({"path": "notes.txt"})),
+        (
+            "edit_file",
+            json!({"path": "notes.txt", "old": "in the buffer", "new": "in the editor"}),
+        ),
+        ("create_file", json!({"path": "new.txt", "content": "made"})),
+    ]
+}
+
+/// Runs the turn against a client that does or does not offer `fs`; returns the tool
+/// results the editor was shown, in call order, and what the editor's file handlers saw.
+async fn run_fs_turn(cwd: PathBuf, offer_fs: bool) -> (Vec<String>, EditorFiles) {
+    let factory = RealToolsFactory {
+        script: fs_script(),
+    };
+    let agent = BoubouAcp::with_factory(cwd.join("home"), "scripted:1b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let files = Arc::new(Mutex::new(EditorFiles::default()));
+
+    let client_seen = seen.clone();
+    let read_files = files.clone();
+    let write_files = files.clone();
+    let client = Client
+        .builder()
+        .name("test-editor")
+        .on_receive_notification(
+            async move |n: SessionNotification, _cx| {
+                client_seen.lock().expect("lock").updates.push(n.update);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |req: ReadTextFileRequest,
+                        responder: Responder<ReadTextFileResponse>,
+                        _cx| {
+                let mut f = read_files.lock().expect("lock");
+                f.reads.push(req.path.clone());
+                // The editor's buffer differs from the disk: the user has not saved.
+                let text = match f.writes.iter().rev().find(|(p, _)| *p == req.path) {
+                    Some((_, written)) => written.clone(),
+                    None if req.path.ends_with("notes.txt") => "in the buffer\n".to_string(),
+                    None => String::new(),
+                };
+                responder.respond(ReadTextFileResponse::new(text))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: WriteTextFileRequest,
+                        responder: Responder<WriteTextFileResponse>,
+                        _cx| {
+                write_files
+                    .lock()
+                    .expect("lock")
+                    .writes
+                    .push((req.path, req.content));
+                responder.respond(WriteTextFileResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(client_ch, async move |cx| {
+            let mut init = InitializeRequest::new(ProtocolVersion::V1);
+            if offer_fs {
+                init = init.client_capabilities(
+                    ClientCapabilities::new().fs(FileSystemCapabilities::new()
+                        .read_text_file(true)
+                        .write_text_file(true)),
+                );
+            }
+            cx.send_request(init).block_task().await?;
+            let ns = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            let p = cx
+                .send_request(PromptRequest::new(
+                    ns.session_id.clone(),
+                    vec!["Tidy the notes".into()],
+                ))
+                .block_task()
+                .await?;
+            Ok(p)
+        });
+
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    let p = client_res.expect("client side");
+    assert_eq!(p.stop_reason, StopReason::EndTurn);
+
+    let seen = seen.lock().expect("lock");
+    let results: Vec<String> = seen
+        .updates
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::ToolCallUpdate(t) => Some(t),
+            _ => None,
+        })
+        .filter_map(|t| {
+            t.fields.content.as_ref().and_then(|c| {
+                c.iter().find_map(|b| match b {
+                    agent_client_protocol::schema::v1::ToolCallContent::Content(c) => {
+                        match &c.content {
+                            ContentBlock::Text(t) => Some(t.text.clone()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+            })
+        })
+        .collect();
+    let files = std::mem::take(&mut *files.lock().expect("lock"));
+    (results, files)
+}
+
+#[tokio::test]
+async fn with_the_client_fs_capability_the_tools_read_and_write_through_the_editor() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    std::fs::write(cwd.join("notes.txt"), "on disk\n").expect("fixture");
+
+    let (results, files) = run_fs_turn(cwd.clone(), true).await;
+
+    // The model read the buffer, not the disk.
+    assert!(
+        results.iter().any(|r| r == "in the buffer\n"),
+        "read_file result: {results:?}"
+    );
+    // edit_file matched the buffer's text and handed the editor the new text; the disk
+    // beneath the buffer was left alone.
+    assert!(
+        results
+            .iter()
+            .any(|r| r.starts_with("[edited notes.txt (backed up)")),
+        "{results:?}"
+    );
+    assert_eq!(
+        files.reads,
+        vec![cwd.join("notes.txt"), cwd.join("notes.txt")],
+        "one read for read_file, one for edit_file"
+    );
+    assert_eq!(
+        files.writes,
+        vec![
+            (cwd.join("notes.txt"), "in the editor\n".to_string()),
+            (cwd.join("new.txt"), "made".to_string()),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("notes.txt")).expect("read"),
+        "on disk\n"
+    );
+    assert!(
+        !cwd.join("new.txt").exists(),
+        "created in the editor, not on disk"
+    );
+    // The safety net still runs: the backup is the text the model saw.
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("notes.txt.bak")).expect("bak"),
+        "in the buffer\n"
+    );
+}
+
+#[tokio::test]
+async fn without_the_capability_the_tools_use_the_disk_and_ask_the_editor_nothing() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    std::fs::write(cwd.join("notes.txt"), "in the buffer\n").expect("fixture");
+
+    let (results, files) = run_fs_turn(cwd.clone(), false).await;
+
+    assert!(files.reads.is_empty(), "{:?}", files.reads);
+    assert!(files.writes.is_empty(), "{:?}", files.writes);
+    assert!(
+        results
+            .iter()
+            .any(|r| r.starts_with("[edited notes.txt (backed up)")),
+        "{results:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("notes.txt")).expect("read"),
+        "in the editor\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("new.txt")).expect("read"),
+        "made"
+    );
 }

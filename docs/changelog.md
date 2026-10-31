@@ -1835,3 +1835,28 @@ state; what decides the cell is whether its first quote is unique, and when it i
 whole-file rewrite is what rescues it. The refusal stays as it is (true, and the places are
 the right thing to show), and the wording is not iterated again. bk9.3's remaining
 measurement is the full tier once per model.
+
+## ACP: files through the editor (2026-10-31, bead boubou-m64.2)
+
+Another agent's reading that "Boubou does not allow file access or edits over ACP" was
+half right: edits were allowed and shown as diffs with the permission dialog, but they went
+straight to disk through the executor, and the client's `fs` capability advertised at
+`initialize` was ignored, so an editor's unsaved buffer was invisible to `read_file` and an
+`edit_file` landed beneath it. The seam is the one the safety gate already had with
+`Confirmer`: `exec::FileStore` (`read`, `write`, `append`) with `DiskStore` as the default,
+used by the four text-file tools only; `runner::AcpFileStore` relays through the turn's
+`BridgeMsg` channel with a blocking reply to `fs/read_text_file` and `fs/write_text_file`,
+each only when the client offered that method (`ClientFs`, captured at `initialize`), else
+the disk. The CLI and the bench are unchanged (the disk store is the old code path; the 524
+existing tests passed untouched), no protocol type enters the kernel, and the backup copy
+is now written from the text the model read rather than copied from disk, so it is of the
+buffer when the buffer is the source. `_auto_repair` became the pure `repair_escapes`: the
+repaired text goes through the store instead of being read back from disk, and
+`append_file` repairs the fragment it adds rather than the whole file. Proved by the
+in-process client (`crates/boubou-coding/tests/acp_turn.rs`): with the capability the read
+served the buffer's text while the disk said otherwise, the edit and the create reached the
+client's write handler and the disk was not written; without it the disk was used and the
+client's file handlers were never called. Out of scope and documented: `delete_file`,
+`list_dir`, `search_files`, images, commands and their backups, existence checks (the
+protocol has no method for them), and the `terminal` capability. Not yet verified in Zed
+itself; that remains the first item of boubou-m64.

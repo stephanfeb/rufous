@@ -817,3 +817,133 @@ fn a_real_subdirectory_named_like_the_workdir_is_used_as_written() {
     let out = e.run_tool("read_file", &json!({"path": "workdir/inner.txt"}));
     assert_eq!(out, "inner");
 }
+
+// ---- the FileStore seam (bead boubou-m64.2) ----
+
+/// A host that owns the files: what it holds is what the tools see, whatever the disk says.
+#[derive(Default)]
+struct Held {
+    files: std::collections::HashMap<std::path::PathBuf, String>,
+    log: Vec<String>,
+}
+
+#[derive(Clone)]
+struct Host(std::sync::Arc<std::sync::Mutex<Held>>);
+
+impl boubou_kernel::exec::FileStore for Host {
+    fn read(&mut self, path: &std::path::Path) -> std::io::Result<String> {
+        let mut h = self.0.lock().expect("lock");
+        h.log.push(format!("read {}", path.display()));
+        h.files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+    }
+    fn write(&mut self, path: &std::path::Path, content: &str) -> std::io::Result<()> {
+        let mut h = self.0.lock().expect("lock");
+        h.log.push(format!("write {}", path.display()));
+        h.files.insert(path.to_path_buf(), content.to_string());
+        Ok(())
+    }
+}
+
+#[test]
+fn the_text_file_tools_go_through_the_store_and_the_rest_stays_on_disk() {
+    let (d, mut e) = ex();
+    let host = Host(std::sync::Arc::new(std::sync::Mutex::new(Held::default())));
+    let held = host.0.clone();
+    e.store = Box::new(host);
+    let notes = d.path().join("notes.txt");
+    // The disk and the host disagree, as an unsaved editor buffer does.
+    std::fs::write(&notes, "on disk\n").expect("fixture");
+    held.lock()
+        .expect("lock")
+        .files
+        .insert(notes.clone(), "in the buffer\n".to_string());
+
+    // read_file serves the host's text.
+    assert_eq!(read(&mut e, "notes.txt"), "in the buffer\n");
+    // edit_file matches against it, writes through the host and backs up what it read.
+    let r = edit(&mut e, "notes.txt", "in the buffer", "in the editor");
+    assert!(r.starts_with("[edited notes.txt (backed up)"), "{r}");
+    assert_eq!(
+        held.lock().expect("lock").files[&notes],
+        "in the editor\n",
+        "the host holds the edit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&notes).expect("read"),
+        "on disk\n",
+        "the disk was not written behind the host"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("notes.txt.bak")).expect("bak"),
+        "in the buffer\n",
+        "the safety net copies the text the model saw"
+    );
+    // create_file and append_file (the trait's default append: read, then write).
+    assert!(create(&mut e, "new.md", "first\n").starts_with("[created new.md"));
+    let r = e.run_tool(
+        "append_file",
+        &json!({"path": "new.md", "content": "second\n"}),
+    );
+    assert_eq!(r, "[appended new.md]");
+    assert_eq!(
+        held.lock().expect("lock").files[&d.path().join("new.md")],
+        "first\nsecond\n"
+    );
+    assert!(
+        !d.path().join("new.md").exists(),
+        "created through the host only"
+    );
+    // Escape repair happens on the text handed to the host, not by re-reading the disk.
+    let r = create(&mut e, "esc.txt", r"a\nb\nc\nd");
+    assert!(r.contains("escapes auto-repaired"), "{r}");
+    assert_eq!(
+        held.lock().expect("lock").files[&d.path().join("esc.txt")],
+        "a\nb\nc\nd"
+    );
+    // A file the host does not hold is still "not found": existence is the disk's.
+    assert_eq!(read(&mut e, "ghost.txt"), "[not found: ghost.txt]");
+    // delete_file and list_dir are the disk's: the protocol has no method for them.
+    assert!(e
+        .run_tool("delete_file", &json!({"path": "notes.txt"}))
+        .starts_with("[deleted notes.txt"));
+    assert!(!notes.exists());
+    let log = held.lock().expect("lock").log.clone();
+    assert!(
+        log.iter()
+            .all(|l| l.starts_with("read ") || l.starts_with("write ")),
+        "{log:?}"
+    );
+    assert!(
+        !log.iter().any(|l| l.contains("ghost")),
+        "no read for a file that does not exist: {log:?}"
+    );
+}
+
+#[test]
+fn the_disk_store_is_the_default_and_appends_in_place() {
+    let (d, mut e) = ex();
+    assert!(create(&mut e, "log.txt", "one\n").starts_with("[created log.txt"));
+    assert_eq!(
+        e.run_tool(
+            "append_file",
+            &json!({"path": "log.txt", "content": "two\n"})
+        ),
+        "[appended log.txt]"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("log.txt")).expect("read"),
+        "one\ntwo\n"
+    );
+    // Appending to a file that is not there creates it, as before.
+    assert_eq!(
+        e.run_tool("append_file", &json!({"path": "fresh.txt", "content": "x"})),
+        "[appended fresh.txt]"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("fresh.txt")).expect("read"),
+        "x"
+    );
+}
