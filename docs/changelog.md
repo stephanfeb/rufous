@@ -2109,3 +2109,34 @@ multi-line banner, the mirror, no writes after close), the ACP turn test now ass
 file with two `[turn]` lines and a `⚙` per call, and a bench test parses a stamped sample to
 the same counts as the plain one. Not rebuilt into the release binary yet: Zed's Boubou
 process was running.
+
+## Scope gate: ask before the first call that leaves the instruction (2026-10-31, bead boubou-6x3)
+
+The Zed beads turn (acp_1031_160446, qwen3.5:9b) drifted from "break the specs into beads"
+into `bd update --claim` and `create_file lib/src/key_pair_manager.dart` after `bd ready`
+showed one item; the earlier he2 case was a one-line follow-up that became implementation.
+Nothing in the harness represented what the turn was for. Now `scope.rs` derives a class for
+each task turn from the latest user input, heuristically: word lists for tracker (beads,
+issues, epics, close…), docs (spec, design, README, plan…) and code (implement, fix, bug,
+test, function…) plus a source-path regex; code signals make the class `code` alone or
+`mixed` beside tracker or docs words, so "create an issue for the login bug" never arms the
+gate, and tracker wins over docs ("break the specs into beads"). When the class is tracker or
+docs, a `create_file`/`edit_file`/`append_file` on a source extension or a `run_bash` that
+runs a build, test or package tool (cargo, flutter, npm, pytest, make…) or redirects into a
+source file goes through the gate's ask ring as "outside the instruction": the CLI asks, Zed
+shows its permission dialog, unattended refuses. Allow clears the rest of the turn; Deny
+returns `[scope gate: the instruction was: "…"; this call writes code, which it did not ask
+for. Report what is done and stop; the user will say what comes next.]`, which also counts as
+the follow-up route's producing call so a text reply then ends the turn. Tracker commands
+never fire (claiming a bead is not the drift). `config.json` `scope_gate`: `on` (default),
+`shadow` (logs `⚠️ scope gate would ask: …` after the call), `off`; ablation switch
+`scope_gate`, in `kernel`; `TurnPolicy::scope_gate` (unattended and conversation on, child
+off). No prompt change, so no size reading. Replay corpus `tests/replay/scope_2026-10-31.jsonl`:
+the Zed turn's tracker commands pass as written and row 226 is blocked; the he2 follow-up's
+`mkdir` passes, a hand-written code write and `flutter pub get` block; a code instruction and
+a docs instruction writing its document pass; a mixed one passes. `tests/scope_gate.rs`
+covers the ask round trip, Allow clearing the turn and a new scope asking again, unattended
+refusing without an ask, shadow noting only. A unit test reads every bench task prompt and
+asserts none that reads as tracker or docs names a source deliverable, so no cell can lose to
+the gate. 561 tests. The heuristic is the uncertain part: the first live sessions should be
+read for `[scope]` lines and any `[scope gate:` refusal that was wrong.

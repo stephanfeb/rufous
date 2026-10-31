@@ -21,6 +21,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::scope::{self, Scope, ScopeGateMode};
 use crate::text::head;
 use crate::tools::ToolInvocation;
 
@@ -819,6 +820,14 @@ pub struct Gate {
     pub policy: SafetyPolicy,
     pub confirmer: Box<dyn Confirmer>,
     allow_all: HashSet<&'static str>,
+    /// The scope gate ([`crate::scope`], bead boubou-6x3): the turn's instruction class,
+    /// set by the loop per turn; `None` is unarmed.
+    scope: Option<Scope>,
+    scope_mode: ScopeGateMode,
+    /// The user allowed the drift this turn: no further asks.
+    scope_cleared: bool,
+    /// Shadow mode's would-have-asked notes, drained by the loop for its log.
+    pub scope_notes: Vec<String>,
 }
 
 impl std::fmt::Debug for Gate {
@@ -847,6 +856,10 @@ impl Gate {
             policy,
             confirmer,
             allow_all: HashSet::new(),
+            scope: None,
+            scope_mode: ScopeGateMode::Off,
+            scope_cleared: false,
+            scope_notes: Vec::new(),
         }
     }
 
@@ -854,8 +867,63 @@ impl Gate {
         Self::new(policy, Box::new(DenyAll))
     }
 
-    /// `_gate_check`: the refusal text, or `None` to let the call through.
+    /// Arm the scope gate for a turn (`None` disarms); a new scope forgets an earlier
+    /// turn's allowance.
+    pub fn set_scope(&mut self, scope: Option<Scope>, mode: ScopeGateMode) {
+        self.scope = scope.filter(|_| mode != ScopeGateMode::Off);
+        self.scope_mode = mode;
+        self.scope_cleared = false;
+    }
+
+    /// `_gate_check`: the refusal text, or `None` to let the call through. The five rings
+    /// first; a call they pass is then held against the turn's scope.
     pub fn check(&mut self, inv: &ToolInvocation, workdir: &Path) -> Option<String> {
+        if let Some(refusal) = self.rings(inv, workdir) {
+            return Some(refusal);
+        }
+        self.scope_check(inv, workdir)
+    }
+
+    /// The scope gate: a producing call that leaves a tracker or docs instruction goes to
+    /// the confirmer as "outside the instruction" (Allow clears the turn, Deny returns
+    /// [`scope::deny_text`]); unattended refuses without asking; shadow mode only notes.
+    fn scope_check(&mut self, inv: &ToolInvocation, workdir: &Path) -> Option<String> {
+        if self.scope_cleared {
+            return None;
+        }
+        let sc = self.scope.as_ref()?;
+        let why = scope::out_of_scope(sc, inv)?;
+        let target = match inv {
+            ToolInvocation::RunBash { command } => format!("bash: {}", head(command, 60)),
+            other => other.file_path().unwrap_or("").to_string(),
+        };
+        if self.scope_mode == ScopeGateMode::Shadow {
+            self.scope_notes.push(format!(
+                "would ask: {} {target} {why} under a {} instruction",
+                inv.name(),
+                sc.class.name()
+            ));
+            return None;
+        }
+        if self.policy.unattended {
+            return Some(scope::deny_text(sc, why));
+        }
+        let req = ConfirmRequest {
+            tool: inv.name(),
+            target,
+            action: "outside the instruction",
+            workdir,
+        };
+        match self.confirmer.confirm(&req) {
+            Verdict::Allow | Verdict::AllowAll => {
+                self.scope_cleared = true;
+                None
+            }
+            Verdict::Deny => Some(scope::deny_text(sc, why)),
+        }
+    }
+
+    fn rings(&mut self, inv: &ToolInvocation, workdir: &Path) -> Option<String> {
         let name = inv.name();
         if let ToolInvocation::RunBash { command } = inv {
             let low = command.to_lowercase();

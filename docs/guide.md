@@ -107,6 +107,10 @@ running another harness should check theirs does the equivalent.
   Zed 2026-10-31). The replay corpus `tests/replay/zed_2026-10-31.jsonl` holds the commands.
 - **Harness files out of the project.** Backups, trash, fetched pages and the todo file live
   beside the session, not in the user's tree, so the model never finds and "cleans" them.
+- **A scope for the turn.** The harness classifies the instruction (tracker, docs, code,
+  mixed) and asks the user before a tracker or docs turn first writes a source file or runs
+  a build. *Observed* trigger (the beads turn of 2026-10-31 drifted into writing Dart after
+  `bd ready`); the arrest itself is unmeasured until a live session trips it.
 
 ## 5. Per-model notes
 

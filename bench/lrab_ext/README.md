@@ -31,7 +31,11 @@ AGENT_ABLATION=kernel python3 bench/lrab_h2h.py --arms boubou --task-root bench/
 ```
 
 The transcript's `[ablation] off: …` line says what was off; a misspelt switch is named
-there and turns nothing off. Rebuild `target/release/boubou` first.
+there and turns nothing off. Rebuild `target/release/boubou` first. `scope_gate` (2026-10-31)
+is in the list: on, an unattended cell whose prompt reads as tracker or docs work refuses the
+first source-file write with `[scope gate: …]`; a unit test keeps every bench prompt's class
+and deliverables clear of that, so a cell loss with that line in its log is a bug, not a
+measurement.
 
 No mean claim from one run per cell: on 2026-10-31 five coding cells re-run under one
 configuration moved from 0.70 to 0.47. `--runs 3` scores every cell three times (`_r0`…`_r2`),

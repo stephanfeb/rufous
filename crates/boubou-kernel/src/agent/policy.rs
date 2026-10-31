@@ -260,6 +260,9 @@ pub struct TurnPolicy {
     /// A plan with enough simple items may be dispatched to sandboxed child processes when
     /// `parallel` is configured. Off, nothing is dispatched into the user's project.
     pub parallel_dispatch: bool,
+    /// The scope gate ([`crate::scope`]) is armed: a tracker or docs instruction asks (or,
+    /// unattended, refuses) before the first call that writes code. A child never asks.
+    pub scope_gate: bool,
 }
 
 impl TurnPolicy {
@@ -274,6 +277,7 @@ impl TurnPolicy {
             consult_decider: true,
             intent_routing: true,
             parallel_dispatch: true,
+            scope_gate: true,
         }
     }
 
@@ -295,6 +299,7 @@ impl TurnPolicy {
             prompt: Prompt::Child,
             consult_decider: false,
             intent_routing: false,
+            scope_gate: false,
             parallel_dispatch: false,
         }
     }
@@ -314,6 +319,7 @@ impl TurnPolicy {
             consult_decider: true,
             intent_routing: false,
             parallel_dispatch: false,
+            scope_gate: true,
         }
     }
 
@@ -368,12 +374,13 @@ impl TurnPolicy {
             self.gates.names().join("+")
         };
         format!(
-            "{}: text ends turn {}, finish gates {}, intent routing {}, dispatch {}",
+            "{}: text ends turn {}, finish gates {}, intent routing {}, dispatch {}, scope gate {}",
             self.name,
             on_off(self.text_ends_turn),
             gates,
             on_off(self.intent_routing),
-            on_off(self.parallel_dispatch)
+            on_off(self.parallel_dispatch),
+            on_off(self.scope_gate)
         )
     }
 }
@@ -465,7 +472,7 @@ mod tests {
         assert!(!t.gates.has(Gate::Tests) && !t.gates.has(Gate::Delivery));
         assert_eq!(
             p.describe(),
-            "editor: text ends turn on, finish gates named files, intent routing off, dispatch off"
+            "editor: text ends turn on, finish gates named files, intent routing off, dispatch off, scope gate on"
         );
         // Set algebra and the child's exemption.
         assert_eq!(Gates::ALL.names().len(), Gate::ALL.len());
@@ -531,11 +538,11 @@ mod tests {
         assert!(!TurnPolicy::child().is_unattended());
         assert_eq!(
             TurnPolicy::conversation().describe(),
-            "conversation: text ends turn on, finish gates none, intent routing off, dispatch off"
+            "conversation: text ends turn on, finish gates none, intent routing off, dispatch off, scope gate on"
         );
         assert_eq!(
             TurnPolicy::unattended().describe(),
-            "unattended: text ends turn off, finish gates all, intent routing on, dispatch on"
+            "unattended: text ends turn off, finish gates all, intent routing on, dispatch on, scope gate on"
         );
     }
 }

@@ -5,7 +5,9 @@
 //! unblocked), `"blocked"` (the gate refuses), or an object checked against `run_tool`'s
 //! output: `starts_with`, `contains`, `not_contains`, `snapshots` (relative paths whose
 //! backup copy must exist under the harness directory). `bench/replay_extract.py` writes the
-//! extracted entries; the hand-written ones carry a fixture.
+//! extracted entries; the hand-written ones carry a fixture. A `"scope"` string arms the
+//! scope gate with that instruction before the call (bead boubou-6x3); the gate's confirmer
+//! here denies, so an out-of-scope call is `"blocked"`.
 
 use std::path::Path;
 
@@ -50,6 +52,12 @@ fn check(entry: &Value) -> Result<(), String> {
         for rel in strs(fx, "dirs") {
             std::fs::create_dir_all(d.path().join(rel)).expect("mkdir");
         }
+    }
+    if let Some(instruction) = entry.get("scope").and_then(Value::as_str) {
+        ex.gate.set_scope(
+            Some(boubou_kernel::scope::Scope::of(instruction)),
+            boubou_kernel::scope::ScopeGateMode::On,
+        );
     }
     let wd = d.path().to_str().expect("utf-8 tempdir");
     let tool = entry["tool"].as_str().ok_or("no tool")?;

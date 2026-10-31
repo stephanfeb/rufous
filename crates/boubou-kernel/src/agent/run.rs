@@ -180,6 +180,17 @@ pub trait ToolRunner {
     fn set_builtin_skills(&mut self, _skills: Vec<Skill>) {}
     /// The run's command hooks ([`crate::hooks`]); the executor fires the tool events.
     fn set_hooks(&mut self, _hooks: crate::hooks::Hooks) {}
+    /// The turn's scope for the scope gate ([`crate::scope`]); `None` disarms it.
+    fn set_scope(
+        &mut self,
+        _scope: Option<crate::scope::Scope>,
+        _mode: crate::scope::ScopeGateMode,
+    ) {
+    }
+    /// Shadow-mode notes of the scope gate since the last call, for the log.
+    fn take_scope_notes(&mut self) -> Vec<String> {
+        Vec::new()
+    }
     /// `mcp_tool_defs`: flattened `server.tool` definitions for the routed categories.
     fn mcp_tool_defs(
         &self,
@@ -201,6 +212,12 @@ impl ToolRunner for Executor {
     }
     fn set_hooks(&mut self, hooks: crate::hooks::Hooks) {
         self.hooks = hooks;
+    }
+    fn set_scope(&mut self, scope: Option<crate::scope::Scope>, mode: crate::scope::ScopeGateMode) {
+        self.gate.set_scope(scope, mode);
+    }
+    fn take_scope_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.gate.scope_notes)
     }
     fn set_slim_output(&mut self, on: bool) {
         self.slim_output = on;
@@ -457,6 +474,8 @@ impl Agent<DynBackend, Executor> {
         }
         let pcfg = ParallelConfig::from_config(cfg).with_env(&env_snapshot());
         let child_mode = params.child_mode;
+        let mut params = params;
+        params.scope_gate = cfg.scope_gate;
         let mut agent = Agent::new(params, backend, tools);
         agent.engine = engine;
         agent.face.offline = offline;
@@ -893,6 +912,20 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             params.profile.rebase_workdir_prefix && !params.ablated(ablation::PATH_REBASE),
         );
         tools.set_edit_match(!params.ablated(ablation::EDIT_MATCH));
+        // The scope gate (bead boubou-6x3): the turn's instruction class, so a tracker or
+        // docs turn that starts writing code is asked about. Harness state, not prompt.
+        let scope_mode =
+            if !policy.scope_gate || !turn.working || params.ablated(ablation::SCOPE_GATE) {
+                crate::scope::ScopeGateMode::Off
+            } else {
+                params.scope_gate
+            };
+        let scope = (scope_mode != crate::scope::ScopeGateMode::Off)
+            .then(|| crate::scope::Scope::of(&qa::task_routing_text(&messages)));
+        if let Some(s) = &scope {
+            log!("[scope] {} ({:?})", s.describe(), scope_mode);
+        }
+        tools.set_scope(scope, scope_mode);
         let mut edit_guard = EditConvergenceGuard::default();
 
         // Time budget: explicit parameter beats the env fallback; resume continues the clock.
@@ -1514,6 +1547,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     todo_stale += 1;
                 } else if n == "todo" {
                     todo_stale = 0;
+                }
+                for note in tools.take_scope_notes() {
+                    log!("[{i}] ⚠️ scope gate {note}");
                 }
                 if n == "run_bash" {
                     let command = args.get("command").and_then(Value::as_str).unwrap_or("");

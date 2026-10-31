@@ -64,6 +64,7 @@ harness files in any mode.
 | compaction, errors, turn limit | `notice` |
 | `finish` summary | the closing message, when the model wrote no prose after its last tool call |
 | a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny |
+| the scope gate (bead boubou-6x3) | the same dialog, titled `outside the instruction: <path or command>`, when a tracker or docs instruction (beads, issues, specs, docs) is followed by a call that writes a source file or runs a build/test tool; Allow clears the turn, Deny hands the model the instruction back and asks for a report. A code instruction never asks. `"scope_gate": "shadow"` in `config.json` only logs |
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
 | `read_file`, `create_file`, `edit_file`, `append_file` | `fs/read_text_file` and `fs/write_text_file` when the client offered them at `initialize` (see below) |
 | `mcpServers` in `session/new` / `session/load` | added to Boubou's `mcp.json` and the project's `.mcp.json` for that session (stdio, HTTP; SSE tried as HTTP), routed by category like any other server |

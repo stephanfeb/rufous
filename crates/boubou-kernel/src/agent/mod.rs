@@ -110,6 +110,9 @@ pub struct RunParams {
     /// [`session::harness_dir`] so the project never shows the safety net: the model was
     /// seen deleting one `.bak` nine times in a 47-call editor turn (boubou-7s3).
     pub harness_dir: Option<PathBuf>,
+    /// The scope gate's mode ([`crate::scope::ScopeGateMode`]; `config.json` `scope_gate`,
+    /// on by default). The policy says whether the gate is armed at all ([`TurnPolicy::scope_gate`]).
+    pub scope_gate: crate::scope::ScopeGateMode,
     /// The model's profile (`profile.rs`): built-ins at construction, config overrides and
     /// the think/temperature defaults applied by [`Agent::standard`].
     pub profile: crate::profile::ModelProfile,
@@ -152,6 +155,7 @@ impl RunParams {
             sleep_scale: env_parse::<f32>("AGENT_SLEEP_SCALE")?.unwrap_or(1.0),
             prune_keep: env_parse("AGENT_PRUNE_KEEP")?.unwrap_or(0),
             policy: TurnPolicy::unattended(),
+            scope_gate: Default::default(),
             harness_dir: None,
             profile,
         })
@@ -191,6 +195,7 @@ impl RunParams {
             sleep_scale: 1.0,
             prune_keep: 0,
             policy: TurnPolicy::unattended(),
+            scope_gate: Default::default(),
             harness_dir: None,
             profile,
         }

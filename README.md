@@ -108,7 +108,9 @@ Environment variables are inherited from Mingbird: `OLLAMA_HOST`, `OLLAMA_BIN`, 
 `AGENT_TEMP`, `AGENT_NUMPREDICT`, `AGENT_THINK`, `AGENT_SYSTEM_FILE`, `AGENT_SLIM_OUTPUT`,
 `AGENT_OFFLINE`. Under an editor, which passes no environment, `boubou acp --ctx <tokens>` sets
 the context window instead (see `docs/acp.md`). Every named session also keeps the loop's protocol
-lines in `~/.ollama_agent/sessions/<name>.log` (`AGENT_SESSION_LOG=0` turns that off; `bench/session_metrics.py <log>` reads one). The switches take `1/0`, `on/off`, `yes/no` or `true/false`; a value that is
+lines in `~/.ollama_agent/sessions/<name>.log` (`AGENT_SESSION_LOG=0` turns that off; `bench/session_metrics.py <log>` reads one).
+The scope gate asks before the model, told to work on beads, issues or documents, first writes a
+source file or runs a build (`"scope_gate": "on" | "shadow" | "off"` in `config.json`; see `docs/acp.md`). The switches take `1/0`, `on/off`, `yes/no` or `true/false`; a value that is
 not a number or a switch word is logged and ignored rather than stopping the agent, as in
 Mingbird. Command-output trimming follows `AGENT_SLIM_OUTPUT`, then `config.json`
 `slim_output` (`auto`/`on`/`off`), then the context size (on at 32K and below).

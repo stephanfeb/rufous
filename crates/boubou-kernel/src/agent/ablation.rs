@@ -47,6 +47,9 @@ pub const EDIT_MATCH: &str = "edit_match";
 /// The environment line of the task prompt (date, git state, local tools on PATH; bead
 /// boubou-bk9.5): off, the model is told the working directory and the platform only.
 pub const ENV_BLOCK: &str = "env_block";
+/// The scope gate ([`crate::scope`], bead boubou-6x3): off, a tracker or docs instruction
+/// is never asked about when the model starts writing code.
+pub const SCOPE_GATE: &str = "scope_gate";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -62,6 +65,7 @@ pub const KERNEL: &[&str] = &[
     PATH_REBASE,
     EDIT_MATCH,
     ENV_BLOCK,
+    SCOPE_GATE,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

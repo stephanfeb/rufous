@@ -22,6 +22,7 @@ pub mod ollama_proc;
 pub mod parallel;
 pub mod profile;
 pub mod safety;
+pub mod scope;
 pub mod skills;
 pub mod text;
 pub mod todo;

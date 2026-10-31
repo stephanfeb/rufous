@@ -45,6 +45,10 @@ pub struct Config {
     /// System One decider (`decider.rs`): `{"mode": "off" | "shadow" | "on", "model": "d1:latest",
     /// "timeout_ms": 1500, "threshold": 0.9}`. Off by default.
     pub decider: crate::decider::DeciderConfig,
+    /// The scope gate (`scope.rs`, bead boubou-6x3): `"on"` asks before the first call that
+    /// writes code under a tracker or docs instruction, `"shadow"` logs what it would have
+    /// asked, `"off"` does nothing. On by default.
+    pub scope_gate: crate::scope::ScopeGateMode,
 }
 
 impl Default for Config {
@@ -61,6 +65,7 @@ impl Default for Config {
             parallel: Default::default(),
             profiles: BTreeMap::new(),
             decider: Default::default(),
+            scope_gate: Default::default(),
         }
     }
 }
