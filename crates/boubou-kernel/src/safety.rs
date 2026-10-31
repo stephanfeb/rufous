@@ -739,6 +739,19 @@ pub fn write_targets(cmd: &str) -> Vec<(usize, String)> {
 /// evaluate (`> $OUT`, a `cd $X` before it): a variable in a redirect is ordinary in a
 /// script and the write, unlike a recursive delete, is bounded to one file.
 pub fn bash_boundary_target(cmd: &str, workdir: &Path, allow_dirs: &[PathBuf]) -> Option<PathBuf> {
+    resolved_write_targets(cmd, workdir, allow_dirs)
+        .into_iter()
+        .find_map(|(real, inside)| (!inside).then_some(real))
+}
+
+/// Every definite write target of a shell command as `(resolved path, inside)`; device
+/// files and targets the gate cannot evaluate are left out.
+fn resolved_write_targets(
+    cmd: &str,
+    workdir: &Path,
+    allow_dirs: &[PathBuf],
+) -> Vec<(PathBuf, bool)> {
+    let mut out = Vec::new();
     for (off, t) in write_targets(cmd) {
         let ShellPath::Known(p) = expand_shell_path(&t) else {
             continue;
@@ -749,12 +762,9 @@ pub fn bash_boundary_target(cmd: &str, workdir: &Path, allow_dirs: &[PathBuf]) -
         let Some(base) = cwd_before(cmd, off, workdir) else {
             continue;
         };
-        let (real, inside) = safe_path_from(&base, workdir, &p, allow_dirs);
-        if !inside {
-            return Some(real);
-        }
+        out.push(safe_path_from(&base, workdir, &p, allow_dirs));
     }
-    None
+    out
 }
 
 /// One question to the confirmer. `Ok(allow_all)` lets the call through; `Err(text)` is
@@ -764,6 +774,19 @@ pub fn bash_boundary_target(cmd: &str, workdir: &Path, allow_dirs: &[PathBuf]) -
 /// the project instead while qwen3.5:4b wrote it through a shell redirect, both reporting
 /// success. Three texts now, by what happened: unattended (nobody in the loop), the user
 /// declined (say so, forbid the workaround, ask for a report), or a headless boundary.
+/// What the model reads instead of a tool's output, and whether a person said no.
+struct Refusal {
+    text: String,
+    by_user: bool,
+}
+
+fn refused(text: String) -> Refusal {
+    Refusal {
+        text,
+        by_user: false,
+    }
+}
+
 fn ask(
     policy: &SafetyPolicy,
     confirmer: &mut dyn Confirmer,
@@ -772,11 +795,11 @@ fn ask(
     workdir: &Path,
     action: &str,
     reason: &str,
-) -> Result<bool, String> {
+) -> Result<bool, Refusal> {
     if policy.unattended {
-        return Err(format!(
+        return Err(refused(format!(
             "[safety gate: unattended mode (AGENT_UNATTENDED=1) has nobody in the loop; {action} is always refused. Target: {target}]"
-        ));
+        )));
     }
     let req = ConfirmRequest {
         tool,
@@ -787,10 +810,17 @@ fn ask(
     match confirmer.confirm(&req) {
         Verdict::Allow => Ok(false),
         Verdict::AllowAll => Ok(true),
-        Verdict::Deny if confirmer.attended() => Err(format!(
-            "[safety gate: the user declined this: {tool} on {target}, {reason}. Do not do it another way or write it somewhere else; say what you could not do and stop.]"
-        )),
-        Verdict::Deny => Err(format!("[safety gate: {tool} on {target} is {reason}; refused.]")),
+        // The clause after "stop" is bead boubou-77n: without it both 4B models read the
+        // sentence as a session rule and refused the user's own "try again" (2026-10-31).
+        Verdict::Deny if confirmer.attended() => Err(Refusal {
+            text: format!(
+                "[safety gate: the user declined this: {tool} on {target}, {reason}. Do not do it another way or write it somewhere else; say what you could not do and stop. If the user asks for it again, make the same call again: the question is asked each time and they may allow it then.]"
+            ),
+            by_user: true,
+        }),
+        Verdict::Deny => Err(refused(format!(
+            "[safety gate: {tool} on {target} is {reason}; refused.]"
+        ))),
     }
 }
 
@@ -824,7 +854,8 @@ pub fn risk_classify(
             "uninstall a package",
             "a package uninstall",
         )
-        .err();
+        .err()
+        .map(|r| r.text);
     }
     if ENV_MUTATE_RE.is_match(cmd) {
         if policy.allow_env_mutation {
@@ -842,7 +873,8 @@ pub fn risk_classify(
             "change the system environment",
             "a system-environment change",
         )
-        .err();
+        .err()
+        .map(|r| r.text);
     }
     if let Some(m) = RECURSE_DELETE_RE.find(cmd) {
         let targets = delete_targets(cmd);
@@ -911,6 +943,11 @@ pub struct Gate {
     scope_cleared: bool,
     /// Shadow mode's would-have-asked notes, drained by the loop for its log.
     pub scope_notes: Vec<String>,
+    /// Writes the user declined this turn, `(file name, declined path)` (bead boubou-sxx):
+    /// gemma4:e4b answered a declined `/tmp/x.txt` by writing `x.txt` into the project 3/3
+    /// and reporting success, whatever the refusal said. The same name at another path in
+    /// the same turn is the substitution and is refused without asking.
+    declined_writes: Vec<(String, PathBuf)>,
 }
 
 impl std::fmt::Debug for Gate {
@@ -952,6 +989,7 @@ impl Gate {
             scope_mode: ScopeGateMode::Off,
             scope_cleared: false,
             scope_notes: Vec::new(),
+            declined_writes: Vec::new(),
         }
     }
 
@@ -965,6 +1003,28 @@ impl Gate {
         self.scope = scope.filter(|_| mode != ScopeGateMode::Off);
         self.scope_mode = mode;
         self.scope_cleared = false;
+        self.declined_writes.clear();
+    }
+
+    /// Remember a write the user declined, so its name cannot reappear elsewhere this turn.
+    fn note_declined(&mut self, real: &Path) {
+        if let Some(name) = real.file_name().map(|n| n.to_string_lossy().into_owned()) {
+            self.declined_writes.push((name, real.to_path_buf()));
+        }
+    }
+
+    /// The refusal for a write that repeats a declined file name at another path.
+    fn substitute_of(&self, real: &Path) -> Option<String> {
+        let name = real.file_name()?.to_string_lossy();
+        let (_, declined) = self
+            .declined_writes
+            .iter()
+            .find(|(n, p)| *n == name && p.as_path() != real)?;
+        Some(format!(
+            "[safety gate: the user declined writing {name} at {}; writing it at {} instead is the same thing somewhere else. Say what you could not do and stop.]",
+            declined.display(),
+            real.display()
+        ))
     }
 
     /// `_gate_check`: the refusal text, or `None` to let the call through. The five rings
@@ -1038,10 +1098,17 @@ impl Gate {
                     return Some(r);
                 }
             }
+            let targets = resolved_write_targets(command, workdir, &self.policy.allow_dirs);
+            if let Some(text) = targets
+                .iter()
+                .find_map(|(real, _)| self.substitute_of(real))
+            {
+                return Some(text);
+            }
             if self.allow_all.contains("run_bash") {
                 return None;
             }
-            if let Some(real) = bash_boundary_target(command, workdir, &self.policy.allow_dirs) {
+            if let Some((real, _)) = targets.into_iter().find(|(_, inside)| !inside) {
                 return match ask(
                     &self.policy,
                     self.confirmer.as_mut(),
@@ -1057,7 +1124,12 @@ impl Gate {
                         }
                         None
                     }
-                    Err(msg) => Some(msg),
+                    Err(r) => {
+                        if r.by_user {
+                            self.note_declined(&real);
+                        }
+                        Some(r.text)
+                    }
                 };
             }
             if matches_escape_pattern(&low) {
@@ -1076,12 +1148,20 @@ impl Gate {
                         }
                         None
                     }
-                    Err(msg) => Some(msg),
+                    Err(r) => Some(r.text),
                 };
             }
             return None;
         }
         if FILE_TOOLS.contains(&name) {
+            if let Some(path) = inv.file_path().filter(|p| !p.is_empty()) {
+                let (real, _) = safe_path(workdir, path, &self.policy.allow_dirs);
+                if WRITE_TOOLS.contains(&name) {
+                    if let Some(text) = self.substitute_of(&real) {
+                        return Some(text);
+                    }
+                }
+            }
             if self.allow_all.contains(name) {
                 return None;
             }
@@ -1103,7 +1183,12 @@ impl Gate {
                             }
                             None
                         }
-                        Err(msg) => Some(msg),
+                        Err(r) => {
+                            if r.by_user && WRITE_TOOLS.contains(&name) {
+                                self.note_declined(&real);
+                            }
+                            Some(r.text)
+                        }
                     };
                 }
                 if is_sensitive_path(&real) {
@@ -1128,7 +1213,7 @@ impl Gate {
                             }
                             None
                         }
-                        Err(msg) => Some(msg),
+                        Err(r) => Some(r.text),
                     };
                 }
             }

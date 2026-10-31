@@ -116,8 +116,11 @@ running another harness should check theirs does the equivalent.
   the project and report success, and qwen3.5:4b to write it through a shell redirect the gate
   did not judge (*observed*, conversation rig 2026-10-31, 6/6 cells). The refusal now says who
   declined and forbids the workaround, and the shell's redirect, `tee` and `cp`/`mv`
-  destinations are judged like file-tool paths. Whether the words hold the models is the next
-  rig run's reading.
+  destinations are judged like file-tool paths. The words held qwen3.5:4b (3/3) and not
+  gemma4:e4b (0/3, the substitute write again), and both models then read "stop" as a session
+  rule and refused the user's own retry (*measured*, 2026-10-31, n=3). So: a refusal needs a
+  mechanism behind it where the behaviour matters (the declined file name is now refused at any
+  other path for the turn) and a clause that scopes it to the call.
 
 ## 5. Per-model notes
 

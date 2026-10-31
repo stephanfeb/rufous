@@ -536,6 +536,10 @@ fn the_deny_text_says_who_declined_and_forbids_the_workaround() {
         "{msg}"
     );
     assert!(msg.contains("say what you could not do and stop"), "{msg}");
+    assert!(
+        msg.contains("If the user asks for it again, make the same call again"),
+        "{msg}"
+    );
     // The same words after a declined shell write.
     let msg = attended
         .check(&bash("echo hello > /tmp/boubou_convo_perm.txt"), d.path())
@@ -565,4 +569,66 @@ fn the_deny_text_says_who_declined_and_forbids_the_workaround() {
     );
     let mut allowed = Gate::new(SafetyPolicy::default(), Box::new(Says(Verdict::Allow)));
     assert!(allowed.check(&write, d.path()).is_none());
+}
+
+// The substitute write (bead boubou-sxx): the declined file name at another path, same turn.
+
+#[test]
+fn a_declined_write_cannot_reappear_under_the_same_name_elsewhere_this_turn() {
+    use boubou_kernel::safety::Verdict;
+    let d = tempfile::tempdir().expect("tmp");
+    let mut gate = Gate::new(SafetyPolicy::default(), Box::new(Says(Verdict::Deny)));
+    let create = |path: &str| ToolInvocation::CreateFile {
+        path: path.into(),
+        content: "hello".into(),
+        replace: false,
+    };
+    let declined = gate
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .expect("declined");
+    assert!(declined.contains("the user declined this"), "{declined}");
+    // gemma's next call, 2–4 s later: the same name inside the project.
+    let sub = gate
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .expect("refused");
+    assert!(
+        sub.starts_with("[safety gate: the user declined writing boubou_convo_perm.txt at ")
+            && sub.contains("instead is the same thing somewhere else"),
+        "{sub}"
+    );
+    // The same name through the shell, an edit and an append: all the substitution.
+    for inv in [
+        bash("echo hello > boubou_convo_perm.txt"),
+        bash("mkdir -p out && cp notes.txt out/boubou_convo_perm.txt"),
+        ToolInvocation::AppendFile {
+            path: "sub/boubou_convo_perm.txt".into(),
+            content: "hello".into(),
+        },
+    ] {
+        let msg = gate.check(&inv, d.path()).expect("refused");
+        assert!(msg.contains("same thing somewhere else"), "{inv:?}: {msg}");
+    }
+    // A different name is ordinary work; a read of the same name is not a write.
+    assert!(gate.check(&create("notes.txt"), d.path()).is_none());
+    assert!(gate
+        .check(&bash("cat boubou_convo_perm.txt"), d.path())
+        .is_none());
+    // The same call again is asked again (the retry), not treated as a substitute.
+    let again = gate
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .expect("asked and declined");
+    assert!(again.contains("the user declined this"), "{again}");
+    // A new turn forgets.
+    gate.set_scope(None, boubou_kernel::scope::ScopeGateMode::Off);
+    assert!(gate
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .is_none());
+    // A headless refusal is nobody's decision and records nothing.
+    let mut headless = Gate::headless(SafetyPolicy::default());
+    assert!(headless
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .is_some());
+    assert!(headless
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .is_none());
 }
