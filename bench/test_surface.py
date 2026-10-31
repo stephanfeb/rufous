@@ -189,6 +189,29 @@ def test_ed05_is_explained_not_changed(tmp_path):
     assert any(s.lower() in honest.lower() for s in any_of)
 
 
+def test_ed06_has_the_escapes_and_catches_the_near_duplicate(tmp_path):
+    _t, wd = workdir_for(tmp_path, "tier6_editor", "ED-06")
+    src = open(os.path.join(wd, "export.py"), encoding="utf-8").read()
+    # The fixture is what it is for: escape sequences in the source, the target line twice.
+    assert "'\\\\\"'" in src and '"\\\\n"' in src, src
+    assert src.count('",".join(cells) + "\\n"') == 2
+    rc, out = run(["test_export.py"], wd)
+    assert rc == 1 and "4 passed, 2 failed" in out, out
+    assert "COLLATERAL PENDING: export.py: tsv_line unchanged" in run(["check_collateral.py"], wd)[1]
+    # Replacing every occurrence (the single-`old` rename shape) fixes tsv_line and breaks csv_line.
+    p = os.path.join(wd, "export.py")
+    open(p, "w", encoding="utf-8").write(src.replace('",".join(cells)', '"\\t".join(cells)'))
+    rc, out = run(["test_export.py"], wd)
+    assert rc == 1 and "5 passed, 1 failed" in out and "test_csv_line" in out, out
+    assert "COLLATERAL CHANGED: export.py:csv_line" in run(["check_collateral.py"], wd)[1]
+    # The one right edit: the second occurrence only.
+    i = src.rindex('",".join(cells)')
+    fixed = src[:i] + '"\\t".join(cells)' + src[i + len('",".join(cells)'):]
+    open(p, "w", encoding="utf-8").write(fixed)
+    rc, out = run(["test_export.py"], wd)
+    assert rc == 0 and "6 passed, 0 failed" in out, out
+    assert "COLLATERAL OK" in run(["check_collateral.py"], wd)[1]
+
 def test_ch01_ch02_expected_values_are_in_the_notes():
     notes = "".join(gen_surface.NOTES.values())
     assert "owner Priya Natarajan; cut-over Saturday 14 November 2026" in notes

@@ -1608,3 +1608,46 @@ Reading: the rule's cost (whole-file rewrites losing the rename
 every time) is replaced by a smaller, better-shaped cost (exact-match misses after the
 model's own edit, and single-occurrence replacement), and that cost is exactly what `bk9.3`
 (matching tiers, argument repair, occurrence reporting) is for. The rule stays out.
+
+## ED-06: escapes and a near-duplicate block (2026-10-31, bead boubou-l2j, for bk9.3)
+
+`edit_file` unescapes `\n`, `\t` and `\"` in `old` and `new` before matching, Mingbird's
+inheritance, so a correctly quoted edit of a line that contains an escape sequence misses,
+and a correctly quoted `new` writes a real newline into a string literal: the one failure
+worse than a miss. No tier6 fixture contained an escape sequence and none of the 23 misses
+in `gemma_e2b_no_small_rule` involved one, so every run so far scored this at zero cost.
+Another agent's suggestion: ship the `bk9.3` rework with the escape fix, plus a sixth
+editor task with escapes and a near-duplicate block. Taken, with the sequencing changed:
+the task first and a before number on the current binary, then the rework, so the fix is
+not measured by the thing it ships with (the ≤4B rule's lesson).
+
+ED-06 (`gen_surface.py`, `fixtures/ed06_export`): `export.py` has `quote` (escapes `"` and
+newlines, so `'\\"'` and `"\\n"` sit in the source), `csv_line` and `tsv_line`, and
+`tsv_line` joins with commas like `csv_line`; the line to change, `",".join(cells) + "\n"`,
+appears twice, so a bare `old` of that line hits `csv_line` first and the collateral checker
+names it. The brief asks for a tab in `tsv_line` and nothing else. Untouched: 4 of 6 tests
+pass, `COLLATERAL PENDING`. `test_surface.py` proves the escapes are in the file, the
+all-occurrences edit breaks `csv_line` and is caught, the second-occurrence edit scores. It
+is a regression fixture for the matcher's escape handling and occurrence counting, labelled
+so in the README, not a measure of how often small models meet these cases. The escape fix
+goes into the `bk9.3` design as a tier, not a preprocessor: exact on the text as given first,
+the unescaped form only when exact finds nothing, and `new` unescaped only when that tier is
+the one that matched. Before number: six cells (coding and unattended, three runs) on
+gemma4:e2b at 5318bc8, appended to `gemma_e2b_no_small_rule` so that folder is the complete
+baseline for the rework; see the next entry.
+
+## ED-06 before number (2026-10-31, `gemma_e2b_no_small_rule`, binary 5318bc8)
+
+Six cells, coding and unattended, three runs each: 0.81 [0.43–1.00] under both policies.
+Eighteen `edit_file` calls, eighteen "old text not found", no edit landed in any cell. The
+model's quoting was right: the logged `new` arguments carry `\t` and `\n` as two-character
+escape sequences, which is what the Python source contains, and the quoted line occurs in the
+file; the tool's unconditional unescape turns the `\n` into a real newline before matching,
+and that string is not in the file. Every cell then ran the same ladder: duplicate block,
+corrector give-up ("only proposed read_file"), and a whole-file `create_file`. Four rewrites
+reproduced the file correctly (1.00); two also rewrote `quote` and were caught by the
+collateral checker (0.43, coding r1 and unattended r1). Had the match succeeded, the
+single-occurrence `replacen` would have changed `csv_line`, so both of the fixture's hazards
+are live on this binary. This is the number `bk9.3` is measured against for this task; the
+folder now holds all twelve task-and-policy cells at three runs (36 cells, 0.822, run means
+0.85/0.71/0.90, sd 0.10).

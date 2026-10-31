@@ -12,6 +12,8 @@ plan" preamble: the message is the whole prompt, as in an editor or a chat.
     ED-03  add a function with tests title_case into textfmt.py, tests into test_textfmt.py
     ED-04  rename across files       fetchAll → fetch_all in three files, tests stay green
     ED-05  explain, do not change    why parse_duration('1h30') is None; files must stay as they are
+    ED-06  escapes, near-duplicate   tsv_line joins with commas like csv_line; the line to change appears
+                                     twice, beside escape sequences (edit_file regression fixture, bk9.3)
 
   tier7_chat  (`general` preset: `boubou run --policy general`)
     CH-01  answer from files         owner and deadline of the Postgres migration, from notes/
@@ -505,6 +507,85 @@ if __name__ == "__main__":
     )
 
 
+# ------------------------------------------------------------------ ED-06 escapes and a near-duplicate block
+def gen_ed06():
+    """A regression fixture for edit_file (bead boubou-bk9.3), not a measure of how often small
+    models meet these cases: the one line to change appears twice in the file (csv_line has the
+    same line and must keep it), and the region around it carries the escape sequences \\" and
+    \\n in string literals, which an unescaping matcher turns into a miss or a wrong edit."""
+    d = os.path.join(FIX, "ed06_export")
+    write(os.path.join(d, "export.py"), r'''"""Row formatters for the nightly export: one line per record, CSV or TSV."""
+
+
+def quote(cell):
+    """The cell in double quotes; an embedded quote becomes \\" and a newline becomes \\n."""
+    text = str(cell).replace('"', '\\"').replace("\n", "\\n")
+    return '"' + text + '"'
+
+
+def csv_line(fields):
+    """The fields quoted, joined by commas, newline-terminated."""
+    cells = [quote(f) for f in fields]
+    return ",".join(cells) + "\n"
+
+
+def tsv_line(fields):
+    """The fields quoted, joined by tabs, newline-terminated."""
+    cells = [quote(f) for f in fields]
+    return ",".join(cells) + "\n"
+
+
+def render(rows, kind="csv"):
+    """Every row as one line; `kind` is "csv" or "tsv"."""
+    line = csv_line if kind == "csv" else tsv_line
+    return "".join(line(r) for r in rows)
+''')
+    write(os.path.join(d, "test_export.py"), r'''"""Tests for export.py: python test_export.py"""
+import sys
+
+from export import csv_line, quote, render, tsv_line
+
+
+def test_quote_plain():
+    assert quote("a") == '"a"'
+
+
+def test_quote_escapes_quotes():
+    assert quote('say "hi"') == '"say \\"hi\\""'
+
+
+def test_quote_escapes_newlines():
+    assert quote("a\nb") == '"a\\nb"'
+
+
+def test_csv_line():
+    assert csv_line(["a", "b"]) == '"a","b"\n'
+
+
+def test_tsv_line_uses_tabs():
+    assert tsv_line(["a", "b"]) == '"a"\t"b"\n'
+
+
+def test_render_tsv():
+    assert render([["a", "b"], ["c", "d"]], "tsv") == '"a"\t"b"\n"c"\t"d"\n'
+''' + RUNNER + '''
+
+if __name__ == "__main__":
+    _run([(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")])
+''')
+    write_checker(d, "check_collateral.py", ["export.py"], allowed=["tsv_line"],
+                  require={"changed": {"export.py": ["tsv_line"]}})
+    prompt = textwrap.dedent("""\
+        tsv_line in export.py joins the cells with commas, the same as csv_line does, so
+        `python test_export.py` has two failures. Make tsv_line join with a tab, and leave
+        csv_line and everything else in the file exactly as it is.""")
+    return task_json(
+        id="ED-06", domain="editor-escapes-near-duplicate", tier=6,
+        fixtures=files_of("ed06_export"), prompt=prompt,
+        milestones=[script("python check_collateral.py", "COLLATERAL OK", "export.py")],
+        final_artifacts=[script("python test_export.py", "6 passed, 0 failed", "export.py")],
+    )
+
 # ------------------------------------------------------------------ CH-01 / CH-02 meeting notes
 NOTES = {
     "2026-10-06_platform_sync.md": """\
@@ -789,7 +870,7 @@ def generate(root=HERE):
     FIX = os.path.join(root, "fixtures")
     TASKS = os.path.join(root, "tasks")
     rng = random.Random(SEED)
-    editor = [gen_ed01(), gen_ed02(), gen_ed03(), gen_ed04(), gen_ed05()]
+    editor = [gen_ed01(), gen_ed02(), gen_ed03(), gen_ed04(), gen_ed05(), gen_ed06()]
     chat = [gen_ch01(), gen_ch02(), gen_ch03(), gen_ch04(rng), gen_ch05()]
     for tier, tasks in (("tier6_editor", editor), ("tier7_chat", chat)):
         os.makedirs(os.path.join(TASKS, tier), exist_ok=True)

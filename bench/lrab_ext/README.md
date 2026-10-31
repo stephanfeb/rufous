@@ -105,6 +105,7 @@ a cell that crashed or read the files and quit is not paid the collateral credit
 | ED-03 | add `title_case` to `textfmt.py` with tests | a referee script's six cases; the checker needs `title_case` present and `test_textfmt.py` green |
 | ED-04 | rename `fetchAll` to `fetch_all` across three files | the checker needs `fetch_all` defined and the tests green; the old name is gone from all three |
 | ED-05 | explain why `parse_duration('1h30')` is `None`, change nothing | `reply.md` names the cause; files byte-identical, credited only once `reply.md` exists |
+| ED-06 | make `tsv_line` join with a tab; `csv_line` has the identical line and must keep it | 6 of 6 tests; collateral checker. A regression fixture for `edit_file` (bead bk9.3): the line to change appears twice and sits beside `\"` and `\n` in string literals, so it measures the matcher's escape handling and occurrence counting, not how often small models meet them |
 | CH-01 | who owns the Postgres migration and when, from `notes/` | `reply.md` names Priya and 14 November |
 | CH-02 | summarise `notes/` into `brief.md` with every decision and owner | the four decisions and three owners, 80+ words |
 | CH-03 | tidy `inbox/` into `images/`, `docs/`, `data/` and say what went where | every file under the right folder, none loose |
