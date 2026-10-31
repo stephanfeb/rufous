@@ -44,6 +44,9 @@ pub const PATH_REBASE: &str = "path_rebase";
 /// already-applied rule and the nearest-region miss; off, Mingbird's exact-after-unescape
 /// matcher with the file-head preview (bead boubou-bk9.3).
 pub const EDIT_MATCH: &str = "edit_match";
+/// The environment line of the task prompt (date, git state, local tools on PATH; bead
+/// boubou-bk9.5): off, the model is told the working directory and the platform only.
+pub const ENV_BLOCK: &str = "env_block";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -58,6 +61,7 @@ pub const KERNEL: &[&str] = &[
     SALVAGE,
     PATH_REBASE,
     EDIT_MATCH,
+    ENV_BLOCK,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

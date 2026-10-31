@@ -154,9 +154,112 @@ pub fn child_system(workdir: Option<&Path>) -> String {
 
 /// Per-workdir instructions: `<workdir>/SYSTEM.md` is appended under the base prompt for
 /// task and chat turns alike; when its first line is [`REPLACE_MARK`] it replaces the base
-/// instead. A folder can therefore carry its own persona and rules.
+/// instead. A folder can therefore carry its own persona and rules. `<workdir>/AGENTS.md`,
+/// the file the other harnesses read, is appended after it (bead boubou-bk9.5), capped at
+/// [`PROJECT_FILE_CHARS`].
 pub const PROJECT_SYSTEM_FILE: &str = "SYSTEM.md";
+pub const PROJECT_AGENTS_FILE: &str = "AGENTS.md";
 pub const REPLACE_MARK: &str = "<!-- boubou: replace -->";
+/// Upper bound on the `AGENTS.md` text placed in a prompt.
+pub const PROJECT_FILE_CHARS: usize = 6000;
+
+/// `<workdir>/AGENTS.md`, trimmed and capped; `None` when absent or blank.
+pub fn project_agents(workdir: Option<&Path>) -> Option<String> {
+    let text = read_text(&workdir?.join(PROJECT_AGENTS_FILE)).ok()?;
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if crate::text::clen(t) > PROJECT_FILE_CHARS {
+        return Some(format!(
+            "{}\n[AGENTS.md truncated at {PROJECT_FILE_CHARS} characters]",
+            crate::text::head(t, PROJECT_FILE_CHARS)
+        ));
+    }
+    Some(t.to_string())
+}
+
+/// What the model is told about where it runs, beyond the working directory and the
+/// platform: the date, the git state and the local tools found on PATH. Probed once per
+/// run ([`Environment::probe`]); one line of the task prompt ([`Environment::line`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Environment {
+    /// `YYYY-MM-DD`, local time.
+    pub date: String,
+    /// `None`: not a git repository. `Some(branch)`; an empty branch is a detached head
+    /// or a worktree whose `.git` is a file.
+    pub git: Option<String>,
+    /// The entries of [`PROBED_TOOLS`] found on PATH, in that order.
+    pub tools: Vec<String>,
+}
+
+/// The local tools the environment line looks for, in the order it names them.
+pub const PROBED_TOOLS: &[&str] = &[
+    "git", "rg", "fd", "jq", "python3", "uv", "node", "npm", "cargo", "go", "dart", "flutter",
+    "docker", "make", "gh", "bd",
+];
+
+impl Environment {
+    pub fn probe(workdir: &Path) -> Self {
+        Self {
+            date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            git: git_state(workdir),
+            tools: PROBED_TOOLS
+                .iter()
+                .filter(|t| on_path(t))
+                .map(|t| t.to_string())
+                .collect(),
+        }
+    }
+
+    /// The prompt line, after the workdir line.
+    pub fn line(&self) -> String {
+        let git = match &self.git {
+            Some(b) if !b.is_empty() => format!("a git repository on branch {b}"),
+            Some(_) => "a git repository".to_string(),
+            None => "not a git repository".to_string(),
+        };
+        let tools = if self.tools.is_empty() {
+            "none of the common ones found".to_string()
+        } else {
+            self.tools.join(", ")
+        };
+        format!(
+            "\nDate: {}. The working directory is {git}. Local tools on PATH: {tools}.",
+            self.date
+        )
+    }
+}
+
+/// The branch from `.git/HEAD`, read without a subprocess.
+fn git_state(workdir: &Path) -> Option<String> {
+    let g = workdir.join(".git");
+    if g.is_file() {
+        return Some(String::new());
+    }
+    if !g.is_dir() {
+        return None;
+    }
+    let head = std::fs::read_to_string(g.join("HEAD")).unwrap_or_default();
+    Some(
+        head.trim()
+            .strip_prefix("ref: refs/heads/")
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+/// Whether `name` is an executable file on PATH.
+pub fn on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
+    std::env::split_paths(&path).any(|dir| {
+        exts.iter()
+            .any(|ext| dir.join(format!("{name}{ext}")).is_file())
+    })
+}
 
 /// `(text, replace)` from `<workdir>/SYSTEM.md`; `None` when absent or blank.
 pub fn project_system(workdir: Option<&Path>) -> Option<(String, bool)> {
@@ -180,6 +283,15 @@ fn push_project(base: &mut String, project: Option<&(String, bool)>) {
     }
 }
 
+fn push_agents(base: &mut String, agents: Option<&str>) {
+    if let Some(t) = agents {
+        base.push_str(
+            "\n\nPROJECT INSTRUCTIONS (AGENTS.md in the working directory; follow them):\n",
+        );
+        base.push_str(t);
+    }
+}
+
 /// Options for [`system_prompt`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptOptions<'a> {
@@ -196,6 +308,12 @@ pub struct PromptOptions<'a> {
     /// The model profile's prompt note (bead 65d.15), after the skills and before the
     /// workdir line. Only the task prompt carries it; the Q&A prompt does not.
     pub profile_note: Option<&'a str>,
+    /// What the project's `SessionStart` hooks printed ([`crate::hooks`]), after the
+    /// project instructions and before the skills. Task prompt only.
+    pub hook_context: Option<String>,
+    /// The environment line after the workdir line (bead boubou-bk9.5); `None` under the
+    /// `env_block` ablation. Task prompt only.
+    pub environment: Option<&'a Environment>,
 }
 
 /// `system_prompt()`: static prefill + project instructions + skills in effect + dynamic
@@ -216,6 +334,16 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
     if !project_used {
         push_project(&mut base, project.as_ref());
     }
+    push_agents(&mut base, project_agents(opts.workdir).as_deref());
+    if let Some(ctx) = opts
+        .hook_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        base.push_str("\n\nSESSION CONTEXT (from the project's hooks; follow it):\n");
+        base.push_str(ctx);
+    }
     for (name, body) in &opts.skills {
         base.push_str(&format!(
             "\n\nSKILL IN EFFECT FOR THIS TASK (follow it):\n### SKILL: {name}\n{}",
@@ -229,6 +357,9 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
     }
     if let Some(wd) = opts.workdir {
         base.push_str(&workdir_line(wd));
+    }
+    if let Some(env) = opts.environment {
+        base.push_str(&env.line());
     }
     base.push('\n');
     base.push_str(&platform_block(true, opts.unattended));
@@ -247,6 +378,7 @@ pub fn chat_system(workdir: Option<&Path>) -> String {
     if !replaced {
         push_project(&mut s, project.as_ref());
     }
+    push_agents(&mut s, project_agents(workdir).as_deref());
     if let Some(wd) = workdir {
         s.push_str(&format!("\nCurrent working directory: {}", wd.display()));
     }

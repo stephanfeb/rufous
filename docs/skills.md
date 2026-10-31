@@ -58,12 +58,24 @@ are prefilled per task, in name order, and the log shows `[skills in effect: …
 in `<workdir>/skills/` so they apply to that folder only. A resumed session keeps the prompt it
 started with.
 
-## Per-folder instructions: SYSTEM.md
+## Per-folder instructions: SYSTEM.md and AGENTS.md
 A `SYSTEM.md` in the working directory is appended to the system prompt for task and chat turns
 alike, under "PROJECT INSTRUCTIONS". If its first line is `<!-- boubou: replace -->` it replaces the
 built-in prompt instead (the Settings → System prompt override, when enabled, still wins the base and
 the file is appended under it). Use append for a persona, house rules and output formats; use replace
 only when you also take over the intent judgement and workspace rules the built-in prompt carries.
+
+An `AGENTS.md` in the working directory, the file the other harnesses read, is appended after
+`SYSTEM.md` under the same heading, in both prompts, capped at 6,000 characters (a longer one is
+cut with a marker). A project written for another agent therefore brings its instructions along;
+`SYSTEM.md` remains the place for what is Boubou's alone (its persona, a replaced base).
+
+## The environment line
+The task prompt ends with one line the model would otherwise have to guess at: the date, whether the
+working directory is a git repository (and its branch, read from `.git/HEAD`), and which of the common
+local tools are on PATH (`git`, `rg`, `fd`, `jq`, `python3`, `uv`, `node`, `npm`, `cargo`, `go`, `dart`,
+`flutter`, `docker`, `make`, `gh`, `bd`), probed once per run. It is a measured addition like every
+other: `AGENT_ABLATION=env_block` turns it off for a comparison run. The Q&A prompt does not carry it.
 
 ## MCP servers
 Skills cover "how to do it"; MCP covers "which extra tools exist". MCP servers are configured in `~/.ollama_agent/mcp.json`;

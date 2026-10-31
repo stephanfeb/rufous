@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::config::agent_home;
 use crate::edit_match;
 use crate::guards::format_bash_out;
+use crate::hooks::Hooks;
 use crate::mcp::{self, McpRegistry};
 use crate::memory;
 use crate::parallel::{ChildSandbox, ParallelConfig};
@@ -188,6 +189,9 @@ pub struct Executor {
     /// Where the text-file tools read and write ([`FileStore`]): the disk unless a host
     /// owns the files (the ACP server's editor buffers).
     pub store: Box<dyn FileStore>,
+    /// The run's command hooks ([`crate::hooks`]): `PreToolUse` and `PostToolUse` fire
+    /// here, around every call; none until the loop hands them over.
+    pub hooks: Hooks,
     /// Advanced tools the model has enabled, in enable order.
     pub enabled: Vec<String>,
     pub bash_timeout: Duration,
@@ -238,6 +242,7 @@ impl Executor {
             rebase_workdir_prefix: false,
             edit_match: true,
             store: Box::new(DiskStore),
+            hooks: Hooks::none(),
             stop: None,
             enabled: Vec::new(),
             bash_timeout: Duration::from_secs(
@@ -342,12 +347,36 @@ impl Executor {
         self.crawl.get(&self.crawl_key(rel))
     }
 
-    /// Run one tool call as the model issued it and return the receipt text.
+    /// Run one tool call as the model issued it and return the receipt text. The
+    /// `PreToolUse` hooks run after the safety gate has passed the call (a hook can only
+    /// narrow; its block reads as a tool error so the failure ladder sees it), the
+    /// `PostToolUse` hooks after dispatch, their context appended to the result.
     pub fn run_tool(&mut self, name: &str, args: &Value) -> String {
-        match self.prepare(name, args) {
-            Ok(inv) => self.dispatch(inv),
-            Err(text) => text,
+        let inv = match self.prepare(name, args) {
+            Ok(inv) => inv,
+            Err(text) => return text,
+        };
+        let name = resolve_alias(name);
+        if !self.hooks.is_empty() {
+            let pre = self.hooks.pre_tool(name, args);
+            for n in &pre.notes {
+                tracing::warn!(target: "boubou_kernel::hooks", "{n}");
+            }
+            if let Some(reason) = pre.blocked {
+                return format!("[tool error: blocked by a project hook: {reason}]");
+            }
         }
+        let mut res = self.dispatch(inv);
+        if !self.hooks.is_empty() {
+            let post = self.hooks.post_tool(name, args, &res);
+            for n in &post.notes {
+                tracing::warn!(target: "boubou_kernel::hooks", "{n}");
+            }
+            for c in post.context {
+                res.push_str(&format!("\n[hook: {c}]"));
+            }
+        }
+        res
     }
 
     fn dispatch(&mut self, inv: ToolInvocation) -> String {
@@ -1396,7 +1425,7 @@ fn exit_code(st: std::process::ExitStatus) -> i32 {
     1
 }
 
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     use std::process::Command;
     if cfg!(windows) {
         let _ = Command::new("taskkill")

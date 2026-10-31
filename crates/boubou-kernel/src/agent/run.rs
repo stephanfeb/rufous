@@ -43,6 +43,7 @@ use crate::guards::idle;
 use crate::guards::qa::Intent;
 use crate::guards::qa::DISPATCH_NOTE_MARK;
 use crate::guards::{self, artifacts, integrity, leak, qa};
+use crate::hooks::Hooks;
 use crate::ollama::{Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
@@ -177,6 +178,8 @@ pub trait ToolRunner {
     fn set_stop(&mut self, _flag: Arc<AtomicBool>) {}
     /// The skills compiled into the product, for the `skills` tool's listing and loading.
     fn set_builtin_skills(&mut self, _skills: Vec<Skill>) {}
+    /// The run's command hooks ([`crate::hooks`]); the executor fires the tool events.
+    fn set_hooks(&mut self, _hooks: crate::hooks::Hooks) {}
     /// `mcp_tool_defs`: flattened `server.tool` definitions for the routed categories.
     fn mcp_tool_defs(
         &self,
@@ -195,6 +198,9 @@ pub trait ToolRunner {
 impl ToolRunner for Executor {
     fn run_tool(&mut self, name: &str, args: &Value) -> String {
         Executor::run_tool(self, name, args)
+    }
+    fn set_hooks(&mut self, hooks: crate::hooks::Hooks) {
+        self.hooks = hooks;
     }
     fn set_slim_output(&mut self, on: bool) {
         self.slim_output = on;
@@ -286,14 +292,49 @@ type Sink = Box<dyn FnMut(AgentEvent) + Send>;
 /// by [`Agent::task_messages`] (a fresh run) and the per-turn rebuild in [`Agent::run`]
 /// (a continued session), so the prompt is a function of this turn's route, never of what
 /// the previous turn happened to leave in the history.
+/// What a prompt build reads from the agent, beyond the turn's text.
+#[derive(Clone, Copy)]
+struct PromptInputs<'a> {
+    params: &'a RunParams,
+    skill_dirs: &'a [PathBuf],
+    builtin: &'a [Skill],
+    /// `Some` only for the one build that fires the `SessionStart` hooks.
+    hooks: Option<&'a Hooks>,
+    environment: &'a prompt::Environment,
+}
+
 fn task_system(
     base: &'static str,
-    params: &RunParams,
-    skill_dirs: &[PathBuf],
-    builtin: &[Skill],
+    inputs: &PromptInputs<'_>,
     sink: &mut Sink,
     task: &str,
 ) -> String {
+    let PromptInputs {
+        params,
+        skill_dirs,
+        builtin,
+        hooks,
+        environment,
+    } = *inputs;
+    // SessionStart hooks (a fresh session's first prompt build only): their context enters
+    // the task prompt, capped, its size logged so the small-profile reading can see what a
+    // project's hooks cost.
+    let hook_context = if let Some(hooks) = hooks.filter(|h| !h.is_empty()) {
+        let out = hooks.session_start("startup");
+        for n in &out.notes {
+            sink(AgentEvent::Log(format!("[hooks] {n}")));
+        }
+        let ctx = crate::hooks::prompt_context(&out.context);
+        if let Some(c) = &ctx {
+            sink(AgentEvent::Log(format!(
+                "[hooks] SessionStart: {} chars of context into the task prompt",
+                text::clen(c)
+            )));
+        }
+        ctx
+    } else {
+        None
+    };
     let set = SkillSet::discover(skill_dirs).with_builtin(builtin.iter().cloned());
     let mut skills = Vec::new();
     for s in set.for_task_capped(task, params.profile.max_prefill_skills) {
@@ -319,24 +360,19 @@ fn task_system(
         unattended: params.unattended,
         skills,
         profile_note: params.profile.prompt_note.as_deref(),
+        hook_context,
+        environment: (!params.ablated(ablation::ENV_BLOCK)).then_some(environment),
     };
     prompt::system_prompt(&opts)
 }
 
 /// The system prompt the turn's [`Prompt`] names. `task` is the text skills are matched on
 /// (the task prompt only).
-fn system_for(
-    which: Prompt,
-    params: &RunParams,
-    skill_dirs: &[PathBuf],
-    builtin: &[Skill],
-    sink: &mut Sink,
-    task: &str,
-) -> String {
+fn system_for(which: Prompt, inputs: &PromptInputs<'_>, sink: &mut Sink, task: &str) -> String {
     match which {
-        Prompt::Task(base) => task_system(base, params, skill_dirs, builtin, sink, task),
-        Prompt::Chat => prompt::chat_system(Some(&params.workdir)),
-        Prompt::Child => prompt::child_system(Some(&params.workdir)),
+        Prompt::Task(base) => task_system(base, inputs, sink, task),
+        Prompt::Chat => prompt::chat_system(Some(&inputs.params.workdir)),
+        Prompt::Child => prompt::child_system(Some(&inputs.params.workdir)),
     }
 }
 
@@ -371,6 +407,14 @@ pub struct Agent<B, T> {
     pub builtin_skills: Vec<Skill>,
     /// System One decider (`decider.rs`): heuristics only unless `config.json` says otherwise.
     pub decider: LayeredDecider,
+    /// The run's command hooks ([`crate::hooks`]), loaded from the workdir and Boubou's
+    /// home; the loop fires `SessionStart` and `Stop`, the executor the tool events.
+    pub hooks: Hooks,
+    /// `SessionStart` has fired for this agent: once per fresh session, whichever prompt
+    /// build comes first.
+    hooks_started: bool,
+    /// The environment line's facts ([`prompt::Environment`]), probed once here.
+    pub environment: prompt::Environment,
 }
 
 impl<B, T> std::fmt::Debug for Agent<B, T> {
@@ -441,6 +485,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         tools.set_stop(stop.clone());
         let skill_dirs =
             crate::skills::standard_dirs(&params.workdir, &home, &crate::skills::install_dir());
+        let hooks = Hooks::load(&params.workdir, &home);
+        tools.set_hooks(hooks.clone());
+        let environment = prompt::Environment::probe(&params.workdir);
         let mut face = ToolFace::new();
         for t in &params.profile.hide_tools {
             face.disable(t);
@@ -460,7 +507,17 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             skill_dirs,
             builtin_skills: Vec::new(),
             decider: LayeredDecider::off(),
+            hooks,
+            hooks_started: false,
+            environment,
         }
+    }
+
+    /// Replace the run's hooks (tests; an embedder with its own files).
+    pub fn with_hooks(mut self, hooks: Hooks) -> Self {
+        self.tools.set_hooks(hooks.clone());
+        self.hooks = hooks;
+        self
     }
 
     /// The skills built into the product (each product crate's `harness::skills()`): listed
@@ -524,14 +581,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // The opening turn of a fresh run is a task; the policy says which prompt frames it
         // (a dispatched child gets its sandbox prompt).
         let which = self.params.turn_policy().turn(Intent::Task, false).prompt;
-        let sys = system_for(
-            which,
-            &self.params,
-            &self.skill_dirs,
-            &self.builtin_skills,
-            &mut self.sink,
-            task,
-        );
+        let session_hooks = (!self.hooks_started).then_some(&self.hooks);
+        self.hooks_started = true;
+        let inputs = PromptInputs {
+            params: &self.params,
+            skill_dirs: &self.skill_dirs,
+            builtin: &self.builtin_skills,
+            hooks: session_hooks,
+            environment: &self.environment,
+        };
+        let sys = system_for(which, &inputs, &mut self.sink, task);
         vec![Message::system(sys), Message::user(task)]
     }
 
@@ -559,7 +618,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             skill_dirs,
             builtin_skills,
             decider,
+            hooks,
+            hooks_started,
+            environment,
         } = self;
+        if let Some(s) = session {
+            hooks.session_id = s.to_string();
+            tools.set_hooks(hooks.clone());
+        }
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
         // The harness's own files (plan, backups, trash, image queue): the workdir unless
@@ -584,6 +650,31 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
         macro_rules! log {
             ($($arg:tt)*) => { sink(AgentEvent::Log(format!($($arg)*))) };
+        }
+        if !hooks.is_empty() {
+            log!("[hooks] {}", hooks.describe());
+        }
+        // A Stop hook may hold the turn open once; after that its block is logged and the
+        // turn ends, so a hook that always blocks cannot keep the loop running.
+        let mut stop_hook_blocks = 0u32;
+        macro_rules! stop_hook {
+            () => {{
+                let out = hooks.stop(stop_hook_blocks > 0);
+                for n in &out.notes {
+                    log!("[hooks] {n}");
+                }
+                match out.blocked {
+                    Some(reason) if stop_hook_blocks == 0 => {
+                        stop_hook_blocks += 1;
+                        Some(reason)
+                    }
+                    Some(_) => {
+                        log!("[hooks] Stop blocked again; ignored after one block per turn");
+                        None
+                    }
+                    None => None,
+                }
+            }};
         }
         {
             let prof = &params.profile;
@@ -732,14 +823,18 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 first_user_text(&messages),
                 qa::task_routing_text(&messages)
             );
-            let sys = system_for(
-                turn.prompt,
+            // A fresh session whose opening prompt was not built here (a caller that
+            // assembled the messages itself) gets its SessionStart hooks now, once.
+            let session_hooks = (!continued && !*hooks_started).then_some(&*hooks);
+            *hooks_started = true;
+            let inputs = PromptInputs {
                 params,
                 skill_dirs,
-                builtin_skills,
-                sink,
-                &skill_text,
-            );
+                builtin: builtin_skills,
+                hooks: session_hooks,
+                environment,
+            };
+            let sys = system_for(turn.prompt, &inputs, sink, &skill_text);
             let mut m = vec![Message::system(sys)];
             m.extend(messages.into_iter().filter(|m| m.role != Role::System));
             messages = m;
@@ -1166,6 +1261,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
                 let verdict = text_ladder.on_text(&content);
                 if policy.text_ends_turn {
+                    if let Some(reason) = stop_hook!() {
+                        log!("[{i}] a Stop hook holds the turn open: {reason}");
+                        messages.push(Message::user(format!("[stop hook] {reason}")));
+                        continue;
+                    }
                     // The reply is the turn's answer: no note, no forced finish, nothing
                     // added to the history the next turn will see.
                     log!("[{i}] text reply ends the turn ({})", policy.name);
@@ -1680,6 +1780,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             ));
                             continue;
                         }
+                    }
+                    // A Stop hook may ask for more before the end, once per turn.
+                    if let Some(reason) = stop_hook!() {
+                        log!("[{i}] a Stop hook holds the turn open: {reason}");
+                        messages.push(Message::user(format!("[stop hook] {reason}")));
+                        messages.push(Message::tool_output(
+                            "[finish deferred: a project hook asked for more before the end; see the message above, then finish again.]",
+                        ));
+                        continue;
                     }
                     // Closing visibility: a bare finish (no body, no summary) gets one
                     // tool-less call so the user sees a wrap-up.

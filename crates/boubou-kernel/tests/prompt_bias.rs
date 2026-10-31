@@ -74,6 +74,8 @@ fn project_system_md_appends_or_replaces() {
         unattended: false,
         skills,
         profile_note: None,
+        hook_context: None,
+        environment: None,
     };
     let base = prompt::system_prompt(&opts(vec![]));
     assert!(base.starts_with("You are an autonomous AI agent"));
@@ -117,6 +119,8 @@ fn project_system_md_appends_or_replaces() {
         unattended: false,
         skills: vec![],
         profile_note: None,
+        hook_context: None,
+        environment: None,
     });
     assert!(p.starts_with("OVERRIDE PROMPT") && p.contains("You are Tally"));
 

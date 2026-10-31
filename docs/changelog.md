@@ -1882,3 +1882,55 @@ the user adds those keys; the token reading on a small profile that the epic ask
 therefore owed only when a folder skill is prefilled, which the existing cap of three per task
 still bounds. Not done: `allowed-tools` (the safety rings gate tools, not a skill), acting on
 `metadata`, `.cursor/rules`.
+
+## Hooks (2026-10-31, bead boubou-w3i.2)
+
+Second item of the extensibility epic. Boubou had no way for a project or a user to run their
+own code at the loop's events, and the three vendor directories in this repository showed what
+that is used for (`bd prime` at session start, `bd` bookkeeping around tool use and
+compaction) in one JSON shape. The design, on the bead: command hooks in that shape and
+protocol rather than a Rust trait only an embedder could use or a Boubou-only format, read
+from Boubou's own files and from the project's `.claude/settings.json` so an existing one runs
+unchanged. Four events at seams the loop already had: `SessionStart` in the opening prompt
+build (context into the task prompt under its own heading, capped at 6,000 characters, size in
+the log, once per fresh session whichever prompt build comes first), `PreToolUse` and
+`PostToolUse` in the executor's `run_tool` around prepare and dispatch (so `batch_tools` and the
+corrector's retry see them too; a block is a tool error for the failure ladder), `Stop` at the
+two points a turn ends (a block is a user message, a finish is deferred, at most once per turn
+so a hook that always blocks cannot hold the loop; the second call sees `stop_hook_active`).
+Hooks only narrow: an `allow` is an ordinary proceed and the safety rings keep the last word.
+`AGENT_HOOKS=0` turns them off. Tests (`crates/boubou-kernel/tests/hooks.rs`, Unix): the shape
+from four sources merged with a flat entry, a skipped bad matcher, an ignored event type and a
+per-entry timeout; the executor blocking a delete on exit 2 while the file stays, appending a
+`PostToolUse` context, and handing the protocol's input to a hook; the session context in the
+task prompt once across the opening build and the loop's rebuild with a failing hook logged;
+a stop hook holding a text turn open once and deferring a finish once. Prompt cost: none
+unless a `SessionStart` hook prints; `bd prime` prints about 3,500 characters, roughly a
+thousand tokens on a 1,250-token prefill, which is why the size is logged per run and
+`docs/hooks.md` says to measure before keeping such a hook on a small profile. Not done, in
+the docs: `UserPromptSubmit`, `PreCompact`, `continue: false`, async and prompt-type hooks,
+`~/.claude/settings.json`, Cursor's camel-case file.
+
+## Prompt assembly: the environment line and AGENTS.md (2026-10-31, bead boubou-bk9.5)
+
+The bead named three ports from pi and opencode. Taken: an environment line and `AGENTS.md`.
+Not taken, with the reason on the bead: per-tool prose rules in the prompt, because the rule
+already lives in the tool's schema description (where bk9.3 put `edit_file`'s), is counted
+once in the prefill, and a second statement of it costs tokens on every turn for a model that
+will not follow two copies better than one; the bead's item 1 closes as "rules live in the
+schema descriptions". The environment line sits after the workdir line of the task prompt
+and says the date, whether the directory is a git repository and on which branch (read from
+`.git/HEAD`, no subprocess) and which of sixteen common local tools are on PATH, probed once
+per run (po1's item 1, the tool inventory, done here). Measured on this machine: the task
+prompt grew from 8,161 to 8,267 characters, 106 more, about 25 to 30 tokens; the Ollama
+token reading (`prompt_eval_count` on the first call) is the next bench run's to record, and
+`AGENT_ABLATION=env_block` is the comparison arm, since the line is a compensation like any
+other and must earn its place the same way. The Q&A prompt does not carry it. `AGENTS.md` is
+read after `SYSTEM.md`, appended under the same heading in both prompts and capped at 6,000
+characters with a marker, so a project written for another harness brings its instructions
+along while `SYSTEM.md` stays the place for Boubou's own; its cost is the project's choice
+and is not counted here. Tests in `crates/boubou-kernel/tests/environment.rs`: the probe on
+a fresh directory, a branch, a detached head and a worktree; the ordering SYSTEM.md, AGENTS.md,
+workdir line, environment line, platform block; the cap; the line through the agent, absent
+on a question's prompt and under the ablation. The two prompt-build functions in the loop now
+take one `PromptInputs` struct instead of eight arguments.

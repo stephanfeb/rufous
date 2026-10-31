@@ -14,6 +14,7 @@ pub mod edit_match;
 pub mod error;
 pub mod exec;
 pub mod guards;
+pub mod hooks;
 pub mod mcp;
 pub mod memory;
 pub mod ollama;
