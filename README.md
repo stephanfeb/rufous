@@ -131,6 +131,7 @@ docs/skills.md       the skills directories, precedence, and how to write one
 docs/PORTING.md      Python → Rust module map and port status
 docs/changelog.md    dated engineering log (what shipped, what was measured)
 docs/refactor.md     kernel-and-policies refactor: intent and progress
+docs/guide.md        Effective Agentic Coding with Smaller Models: prep, harness, measurement (in progress)
 ```
 
 ## License

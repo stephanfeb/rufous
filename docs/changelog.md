@@ -2070,3 +2070,19 @@ read fallbacks. Model-level and left alone: the fabricated skill texts, the sear
 `~/.claude/skills/cryptopeer`, the false finish summary. Filed for later: a `SKILL.md`
 without frontmatter (w3i.4) and the 800-char preview against a 64k window (bk9.15, measure
 first). Release binary rebuilt.
+
+## Guide started: Effective Agentic Coding with Smaller Models (2026-10-31, beads boubou-rld, boubou-1uu)
+
+`docs/guide.md` opens the guide: principles, the context-budget tension, a prep checklist,
+what the harness compensates for, per-model notes, open questions and how to measure. Every
+claim is tagged measured (a cell with n ≥ 3 and its changelog entry), observed (a live
+session or one run) or hypothesis, and the hypotheses each name the bench cell that would
+move them. The central claim, that preparing the project (AGENTS.md, skills, a spec, the task
+pre-split) lifts a small model more cheaply than harness rules, rests today on one observed
+session (qwen3.5:9b writing a spec after a skills, openspec and beads setup) and is the
+subject of bead boubou-rld: a `--prep <level>` overlay copied into the workdir after the
+fixtures, cumulative levels `agents`, `skills`, `spec`, `split`, each also alone against
+bare, n = 3, scored on the tier plus `prompt_eval_count` and the process columns. Bead
+boubou-1uu notes the Elephant-Goldfish Model (egm.dev) as a spec-first method to compare,
+and the Goldfish reviewer as a small-model-shaped role; read the repository before adopting
+any of its prompts. No code changed.
