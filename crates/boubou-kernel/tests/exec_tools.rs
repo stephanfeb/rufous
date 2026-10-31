@@ -997,3 +997,46 @@ fn the_disk_store_is_the_default_and_appends_in_place() {
         "x"
     );
 }
+
+// Bead boubou-l3e: qwen3.5:4b's `# Heron report` + `## Attendance` (3/3 longform cells of
+// 2026-11-01) glued into one line because the append was raw. The tool now starts the
+// appended text on a new line when the file does not end on one; nothing else changes.
+
+#[test]
+fn append_file_starts_on_a_new_line_when_the_file_does_not_end_on_one() {
+    let (d, mut e) = ex();
+    let text = |name: &str| std::fs::read_to_string(d.path().join(name)).expect("read");
+    let append = |e: &mut boubou_kernel::exec::Executor, name: &str, content: &str| {
+        e.run_tool("append_file", &json!({"path": name, "content": content}))
+    };
+    // The live case.
+    assert!(create(&mut e, "report.md", "# Heron report").starts_with("[created"));
+    assert_eq!(
+        append(&mut e, "report.md", "## Attendance\n\nFour attended.\n"),
+        "[appended report.md]"
+    );
+    assert_eq!(
+        text("report.md"),
+        "# Heron report\n## Attendance\n\nFour attended.\n"
+    );
+    // A file that ends on a newline gets nothing extra, and a content that brings its own
+    // blank line keeps exactly that.
+    append(&mut e, "report.md", "## Risks\n");
+    append(&mut e, "report.md", "\n## Owners\n");
+    assert_eq!(
+        text("report.md"),
+        "# Heron report\n## Attendance\n\nFour attended.\n## Risks\n\n## Owners\n"
+    );
+    // A content starting on its own newline after a partial line is not doubled.
+    create(&mut e, "a.txt", "x");
+    append(&mut e, "a.txt", "\ny");
+    assert_eq!(text("a.txt"), "x\ny");
+    // An empty file, a missing file and empty content are left as they are.
+    create(&mut e, "empty.txt", "");
+    append(&mut e, "empty.txt", "z");
+    assert_eq!(text("empty.txt"), "z");
+    append(&mut e, "fresh.txt", "q");
+    assert_eq!(text("fresh.txt"), "q");
+    append(&mut e, "a.txt", "");
+    assert_eq!(text("a.txt"), "x\ny");
+}

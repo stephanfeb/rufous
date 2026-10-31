@@ -989,9 +989,25 @@ impl Executor {
         }
     }
 
+    /// `append_file` starts on a new line (bead boubou-l3e): when the file is there, is not
+    /// empty and does not end with a newline, and the content does not start with one, a
+    /// newline goes first. qwen3.5:4b created `# Heron report` without one and appended
+    /// `## Attendance…` 3/3, leaving a title with no heading after it. A byte-faithful
+    /// append to a partial line is the shell's; nothing is ever removed.
     fn append_file(&mut self, path: &str, content: &str) -> String {
         let p = self.workdir.join(path);
         let (out, _) = repair_escapes(&p, content);
+        let out = match self.store.read(&p) {
+            Ok(s)
+                if !s.is_empty()
+                    && !s.ends_with('\n')
+                    && !out.is_empty()
+                    && !out.starts_with('\n') =>
+            {
+                format!("\n{out}")
+            }
+            _ => out,
+        };
         if let Err(e) = self.store.append(&p, &out) {
             return format!("[tool error: {e}]");
         }

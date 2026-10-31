@@ -2437,3 +2437,13 @@ drifted into source: gsw 0 everywhere. The script's name says drift; what it mea
 the plan tool standing in for a named file. The scope classifier put t4 ("feature 5 (the
 --year flag)") in `code` 6/6 while the other turns were `mixed`, bead boubou-gqw's "feature"
 word; no consequence here, no source write to hold.
+
+## `append_file` starts on a new line (bead boubou-l3e, 2026-11-01)
+
+`Executor::append_file` reads the file through the store first; when it is non-empty and does
+not end on a newline, and the content is non-empty and does not start with one, a newline goes
+before the content. Nothing is removed, a file that ends on a newline is untouched, a missing or
+empty file is appended to as before. One more read per append, through the same store (the
+editor's buffer under ACP). No prompt text. Test: `tests/exec_tools.rs`, the qwen `# Heron
+report` + `## Attendance` case and the four edges. To see it: the longform script's qwen cells
+should no longer have a one-line report.md (the rig does not score it; check the file).
