@@ -343,7 +343,11 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                     })
                                 },
                                 confirmer: Box::new(AcpConfirmer { tx: tx.clone() }),
-                                files: AcpFileStore::for_turn(tx.clone(), *lock(&client_fs)),
+                                files: AcpFileStore::for_turn(
+                                    tx.clone(),
+                                    *lock(&client_fs),
+                                    cwd.clone(),
+                                ),
                                 mcp_servers,
                             },
                             prior.clone(),

@@ -2040,3 +2040,33 @@ mentioning `.bak`) and `harness_notes` (streak notes + idle nudges + budget nudg
 new summary columns `shell`, `bak`, `notes`. Tests: `test_harness_damage_counters` (the dart
 analyzer's own error is not a shell error), the replay test. The kernel states facts and the
 bench owns the classification, so both arms are read the same way. Release binary rebuilt.
+
+## Skills-install session under Zed: two P1 fixes (2026-10-31, beads boubou-m64.4, boubou-m64.5)
+
+Read from the session where the user asked for the cryptopeer skills to be installed
+(qwen3.5:4b, ctx 64000). The task completed at the model's step 28 (`curl … | sh` put 27
+`<name>/SKILL.md` folders under the project's `.claude/skills`, which Boubou reads since
+w3i.1) and two harness faults hid that and corrupted what followed. First, `web_fetch`
+showed 800 characters of a 10,000-character page and pointed at `sources/fetch_<key>.txt`;
+the model, which writes absolute paths under an editor, read `/sources/fetch_<key>.txt`, got
+not-found and never saw the install table the user then pasted by hand; the files themselves
+were written into the user's project (15 fetch dumps untracked in git), though every other
+harness file is relocated for editor sessions. Now fetched texts are a harness file:
+`Executor::sources_dir` is `<harness_dir>/sources` when relocated and `<workdir>/sources`
+otherwise, `web::SaveTo` carries the directory and whether the pointer is absolute, and the
+note names the absolute path under an editor (the CLI keeps `sources/<file>`). Second, six
+`create_file` calls to `~/.agents/skills/cryptopeer/*.md`, outside the project, went to Zed's
+`fs/write_text_file`: three came back "invalid path" and three were accepted, reported as
+created with a byte count, and left 0-byte files, because Zed opened a buffer for a path it
+has no worktree for and never wrote it. The ACP store now asks the editor only about paths
+inside the session cwd (lexically normalised); anything else goes to the disk through the
+same gate as before, and a write the editor refuses falls back to the disk, symmetric with
+the read fallback of m64.3, which worked live in this session. Tests: a relocated executor's
+fetch lands under the harness dir with an absolute pointer that `read_file` resolves (the
+test found the gate refusing it as out of bounds: the relocated harness directory is now an
+allowed root) and nothing in the project; the ACP store unit test covers the inside write the editor keeps, the
+refused write the disk takes, the outside write the editor is never asked about, and the
+read fallbacks. Model-level and left alone: the fabricated skill texts, the search of
+`~/.claude/skills/cryptopeer`, the false finish summary. Filed for later: a `SKILL.md`
+without frontmatter (w3i.4) and the 800-char preview against a 64k window (bk9.15, measure
+first). Release binary rebuilt.

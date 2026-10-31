@@ -95,8 +95,13 @@ commands and their backups, and whether a file exists. The log line `fs/read_tex
 <path>` (at `boubou_coding=info`) shows each call that went through the editor. When the
 editor cannot serve a read (Zed answers a path that is a directory with an internal error),
 the disk is read instead and both errors are reported only if that fails too; `read_file` on
-a directory says so before anyone is asked. Without the capability every tool uses the disk,
-as for the CLI.
+a directory says so before anyone is asked. A write the editor refuses falls back to the
+disk the same way. The editor is asked only about paths inside the session's working
+directory: a file elsewhere (a skill under the home directory, say) goes to the disk, since
+the editor has no worktree for it (Zed answered such writes with "invalid path", or opened a
+buffer it never saved and left a 0-byte file). Fetched page texts go to the session's
+`.files/sources/` directory, not the project, and the `web_fetch` pointer is that absolute
+path. Without the capability every tool uses the disk, as for the CLI.
 
 ## Resuming after a restart
 

@@ -919,36 +919,79 @@ async fn the_clients_mcp_servers_reach_the_turn_as_server_configs() {
     assert!(seen[1].is_empty());
 }
 
-/// The editor's read fails (Zed answers a directory with an internal error): the disk is read
-/// instead, and both errors are reported only when the disk fails too (bead boubou-m64.3).
+/// The editor owns the project's files and nothing else (beads boubou-m64.3 and m64.5):
+/// a read the editor cannot serve falls back to the disk; a write the editor refuses falls
+/// back to the disk; a path outside the session cwd never reaches the editor at all (Zed
+/// answered such writes with "invalid path" or left 0-byte files).
 #[tokio::test]
-async fn an_editor_read_error_falls_back_to_the_disk() {
-    use boubou_coding::runner::{AcpFileStore, BridgeMsg, ClientFs};
+async fn the_editor_is_asked_only_inside_the_cwd_and_the_disk_backs_it_up() {
+    use boubou_coding::runner::{AcpFileStore, BridgeMsg, ClientFs, FsRequest};
     use boubou_kernel::exec::FileStore;
     let d = tempfile::tempdir().expect("tmp");
+    let outside = tempfile::tempdir().expect("tmp");
     std::fs::write(d.path().join("a.txt"), "on disk\n").expect("w");
     std::fs::create_dir(d.path().join("dir.yaml")).expect("mkdir");
+    let asked = Arc::new(Mutex::new(Vec::<(String, PathBuf)>::new()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BridgeMsg>();
+    let seen = asked.clone();
     tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
-            if let BridgeMsg::Fs { reply, .. } = m {
-                let _ = reply.send(Err("Internal error: reading bytes of the file".into()));
+            if let BridgeMsg::Fs { req, reply } = m {
+                let answer = match &req {
+                    FsRequest::Read { path } => {
+                        seen.lock()
+                            .expect("lock")
+                            .push(("read".into(), path.clone()));
+                        Err("Internal error: reading bytes of the file".to_string())
+                    }
+                    FsRequest::Write { path, .. } => {
+                        seen.lock()
+                            .expect("lock")
+                            .push(("write".into(), path.clone()));
+                        if path.ends_with("refused.txt") {
+                            Err("Internal error: \"invalid path\"".to_string())
+                        } else {
+                            Ok(String::new())
+                        }
+                    }
+                };
+                let _ = reply.send(answer);
             }
         }
     });
-    let file = d.path().join("a.txt");
-    let dir = d.path().join("dir.yaml");
-    let (text, err) = tokio::task::spawn_blocking(move || {
-        let mut store = AcpFileStore {
-            tx,
-            caps: ClientFs {
-                read: true,
-                write: true,
-            },
-        };
-        let text = store.read(&file).expect("the disk answers");
-        let err = store.read(&dir).expect_err("a directory fails on disk too");
-        (text, err)
+    let cwd = d.path().to_path_buf();
+    let (file, dir, kept, refused, away) = (
+        cwd.join("a.txt"),
+        cwd.join("dir.yaml"),
+        cwd.join("kept.txt"),
+        cwd.join("refused.txt"),
+        outside.path().join("skill.md"),
+    );
+    let (text, err) = tokio::task::spawn_blocking({
+        let cwd = cwd.clone();
+        let (file, dir, kept, refused, away) = (
+            file.clone(),
+            dir.clone(),
+            kept.clone(),
+            refused.clone(),
+            away.clone(),
+        );
+        move || {
+            let mut store = AcpFileStore {
+                tx,
+                caps: ClientFs {
+                    read: true,
+                    write: true,
+                },
+                cwd,
+            };
+            let text = store.read(&file).expect("the disk answers");
+            let err = store.read(&dir).expect_err("a directory fails on disk too");
+            store.write(&kept, "editor's").expect("the editor took it");
+            store.write(&refused, "fallback").expect("the disk took it");
+            store.write(&away, "outside").expect("the disk took it");
+            (text, err)
+        }
     })
     .await
     .expect("join");
@@ -958,4 +1001,17 @@ async fn an_editor_read_error_falls_back_to_the_disk() {
         msg.contains("editor: Internal error") && msg.contains("os error"),
         "{msg}"
     );
+    // The editor accepted kept.txt: nothing on disk (an unsaved buffer is the editor's).
+    assert!(!kept.exists());
+    // The editor refused refused.txt: the disk has it.
+    assert_eq!(std::fs::read_to_string(&refused).expect("disk"), "fallback");
+    // Outside the cwd the editor was never asked and the disk has it.
+    assert_eq!(std::fs::read_to_string(&away).expect("disk"), "outside");
+    let asked = asked.lock().expect("lock");
+    let writes: Vec<&PathBuf> = asked
+        .iter()
+        .filter(|(k, _)| k == "write")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(writes, vec![&kept, &refused], "{asked:?}");
 }

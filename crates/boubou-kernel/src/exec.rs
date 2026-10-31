@@ -123,6 +123,10 @@ pub fn rebased_path(res: &str) -> Option<(&str, &str)> {
 /// Under a relocated harness directory: previous versions of edited files, mirrored by
 /// their path in the workdir (`backups/lib/a.py.bak`).
 pub const BACKUP_DIR: &str = "backups";
+/// Where `web_fetch` keeps full page texts: under the workdir, or under the harness
+/// directory when relocated (bead boubou-m64.4: fetch dumps were landing in the user's
+/// project under an editor).
+pub const SOURCES_DIR: &str = "sources";
 /// Under a relocated harness directory: deleted files.
 pub const RELOCATED_TRASH_DIR: &str = "trash";
 pub const IMG_EXTS: [&str; 6] = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
@@ -338,6 +342,24 @@ impl Executor {
         self.relocated().then(|| self.harness_dir.join(BACKUP_DIR))
     }
 
+    /// The `sources` directory for fetched page texts ([`SOURCES_DIR`]).
+    pub fn sources_dir(&self) -> PathBuf {
+        if self.relocated() {
+            self.harness_dir.join(SOURCES_DIR)
+        } else {
+            self.workdir.join(SOURCES_DIR)
+        }
+    }
+
+    /// How `web_fetch` saves and names a page's text for this executor: an absolute pointer
+    /// when the directory lies outside the workdir.
+    fn save_to<'a>(&self, sources: &'a Path) -> crate::web::SaveTo<'a> {
+        crate::web::SaveTo {
+            dir: sources,
+            absolute: self.relocated(),
+        }
+    }
+
     /// Same-file key for the crawl guard (normalised, case-folded on Windows).
     pub fn crawl_key(&self, rel: &str) -> String {
         let p = resolve_path(&self.workdir.join(rel))
@@ -505,7 +527,14 @@ impl Executor {
     }
 
     fn dispatch_network(&self, inv: &ToolInvocation) -> String {
-        net_dispatch(&self.web, &self.mcp, &self.workdir, inv)
+        let sources = self.sources_dir();
+        net_dispatch(
+            &self.web,
+            &self.mcp,
+            &self.workdir,
+            self.save_to(&sources),
+            inv,
+        )
     }
 
     /// Alias → coerce → parse → gate, without executing. `Err` is the text to return.
@@ -567,6 +596,12 @@ impl Executor {
             }
             Err(e) => return Err(format!("[tool error: {e}]")),
         };
+        // The relocated harness directory is an allowed root: the model reads the page texts
+        // web_fetch saved there (bead boubou-m64.4; the gate refused the absolute pointer
+        // until this) and the backups it is told about.
+        if self.relocated() && !self.gate.policy.allow_dirs.contains(&self.harness_dir) {
+            self.gate.policy.allow_dirs.push(self.harness_dir.clone());
+        }
         if let Some(blocked) = self.gate.check(&inv, &self.workdir) {
             return Err(blocked);
         }
@@ -1123,10 +1158,14 @@ impl Executor {
         }
         if !net.is_empty() {
             let (web, reg, workdir) = (&self.web, &self.mcp, self.workdir.as_path());
+            let sources = self.sources_dir();
+            let save = self.save_to(&sources);
             let outs: Vec<(usize, String)> = std::thread::scope(|s| {
                 let handles: Vec<_> = net
                     .iter()
-                    .map(|(i, inv)| s.spawn(move || (*i, net_dispatch(web, reg, workdir, inv))))
+                    .map(|(i, inv)| {
+                        s.spawn(move || (*i, net_dispatch(web, reg, workdir, save, inv)))
+                    })
                     .collect();
                 handles.into_iter().filter_map(|h| h.join().ok()).collect()
             });
@@ -1158,10 +1197,16 @@ impl Executor {
 
 /// The network tools need only the web client and the workdir, so `batch_tools` and
 /// `web_search_multi` can fan them out on threads without touching the executor.
-fn net_dispatch(web: &Web, mcp: &McpRegistry, workdir: &Path, inv: &ToolInvocation) -> String {
+fn net_dispatch(
+    web: &Web,
+    mcp: &McpRegistry,
+    workdir: &Path,
+    save: crate::web::SaveTo<'_>,
+    inv: &ToolInvocation,
+) -> String {
     match inv {
         ToolInvocation::WebSearch { query } => web.search(query, 5),
-        ToolInvocation::WebFetch { url } => web.fetch(url, Some(workdir)),
+        ToolInvocation::WebFetch { url } => web.fetch(url, Some(save)),
         ToolInvocation::WebSearchMulti {
             queries,
             max_results,

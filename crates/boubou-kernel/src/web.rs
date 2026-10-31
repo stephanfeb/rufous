@@ -38,6 +38,17 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(25);
 /// Chars of page text returned inline by `web_fetch`.
 pub const FETCH_SUMMARY_CHARS: usize = 800;
+
+/// Where `web_fetch` keeps a page's full text and how the pointer to it is phrased
+/// (bead boubou-m64.4: under an editor the directory lies outside the workdir, and the
+/// model writes absolute paths; the relative pointer sent it to `/sources/…`).
+#[derive(Debug, Clone, Copy)]
+pub struct SaveTo<'a> {
+    /// The `sources` directory itself, created on demand.
+    pub dir: &'a Path,
+    /// Name the saved file by its absolute path instead of `sources/<name>`.
+    pub absolute: bool,
+}
 /// Chars of a directly fetched site shown as the lead result of `web_search`.
 const DIRECT_FETCH_CHARS: usize = 400;
 /// Leading words of a directly fetched page (its title) that widen the relevance floor.
@@ -548,8 +559,9 @@ impl Web {
             .join("\n\n")
     }
 
-    /// `web_fetch(url, workdir)`: full text to `sources/fetch_<key>.txt`, summary inline.
-    pub fn fetch(&self, url: &str, workdir: Option<&Path>) -> String {
+    /// `web_fetch(url)`: full text to `<save.dir>/fetch_<key>.txt`, summary inline with a
+    /// pointer the model can use as written ([`SaveTo`]).
+    pub fn fetch(&self, url: &str, save: Option<SaveTo<'_>>) -> String {
         let key = cache_key(&["fetch", url]);
         if let Some(Value::String(s)) = cache_get(&self.cache_dir, &key, CACHE_TTL) {
             return s;
@@ -563,20 +575,25 @@ impl Web {
             return "[web_fetch error: the page has no text content]".to_string();
         }
         let fname = format!("fetch_{key}.txt");
-        if let Some(wd) = workdir {
-            let dir = wd.join("sources");
-            if std::fs::create_dir_all(&dir).is_ok() {
-                let _ = std::fs::write(dir.join(&fname), format!("URL: {url}\n\n{full}"));
+        if let Some(s) = save {
+            if std::fs::create_dir_all(s.dir).is_ok() {
+                let _ = std::fs::write(s.dir.join(&fname), format!("URL: {url}\n\n{full}"));
             }
         }
         let summary = head(&full, FETCH_SUMMARY_CHARS);
-        let out = if workdir.is_some() {
-            format!(
-                "{summary}\n[full text saved: sources/{fname} ({} chars). Use read_file on the relevant part when you need details.]",
-                clen(&full)
-            )
-        } else {
-            head(summary, 6000).to_string()
+        let out = match save {
+            Some(s) => {
+                let shown = if s.absolute {
+                    s.dir.join(&fname).display().to_string()
+                } else {
+                    format!("sources/{fname}")
+                };
+                format!(
+                    "{summary}\n[full text saved: {shown} ({} chars). Use read_file on the relevant part when you need details.]",
+                    clen(&full)
+                )
+            }
+            None => head(summary, 6000).to_string(),
         };
         cache_set(&self.cache_dir, &key, &Value::String(out.clone()));
         out

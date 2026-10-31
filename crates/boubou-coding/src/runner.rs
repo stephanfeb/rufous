@@ -97,21 +97,51 @@ pub struct ClientFs {
 /// and a write hands the client the new text (`fs/write_text_file`: into the buffer, saved
 /// as the editor decides), each only when the client advertised that method; the rest goes
 /// to the disk as for the CLI. The tool thread blocks on the reply as the confirmer does,
-/// and a connection error becomes the tool's error text.
+/// and a connection error becomes the tool's error text. The editor owns the project's
+/// text files and nothing else: a path outside the session's cwd goes to the disk (bead
+/// boubou-m64.5: Zed answered such writes with "invalid path", or opened a buffer it never
+/// saved and left 0-byte files), and an editor error on a read or a write falls back to
+/// the disk, both errors reported only if the disk fails too.
 #[derive(Debug, Clone)]
 pub struct AcpFileStore {
     pub tx: UnboundedSender<BridgeMsg>,
     pub caps: ClientFs,
+    /// The session's working directory: what the editor has a worktree for.
+    pub cwd: PathBuf,
+}
+
+/// Lexical normalisation (`.` and `..` folded), enough to tell inside from outside.
+fn normalise(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 impl AcpFileStore {
     /// The store for a turn: the editor's methods when it offers any, else the disk alone.
-    pub fn for_turn(tx: UnboundedSender<BridgeMsg>, caps: ClientFs) -> Box<dyn FileStore> {
+    pub fn for_turn(
+        tx: UnboundedSender<BridgeMsg>,
+        caps: ClientFs,
+        cwd: PathBuf,
+    ) -> Box<dyn FileStore> {
         if caps.read || caps.write {
-            Box::new(Self { tx, caps })
+            Box::new(Self { tx, caps, cwd })
         } else {
             Box::new(DiskStore)
         }
+    }
+
+    /// Whether the editor is asked about `path`: inside the session's cwd.
+    fn owned(&self, path: &Path) -> bool {
+        normalise(&self.cwd.join(path)).starts_with(normalise(&self.cwd))
     }
 
     fn relay(&self, req: FsRequest) -> std::io::Result<String> {
@@ -129,7 +159,7 @@ impl AcpFileStore {
 
 impl FileStore for AcpFileStore {
     fn read(&mut self, path: &Path) -> std::io::Result<String> {
-        if !self.caps.read {
+        if !self.caps.read || !self.owned(path) {
             return DiskStore.read(path);
         }
         match self.relay(FsRequest::Read {
@@ -153,14 +183,26 @@ impl FileStore for AcpFileStore {
         }
     }
     fn write(&mut self, path: &Path, content: &str) -> std::io::Result<()> {
-        if !self.caps.write {
+        if !self.caps.write || !self.owned(path) {
             return DiskStore.write(path, content);
         }
-        self.relay(FsRequest::Write {
+        match self.relay(FsRequest::Write {
             path: path.to_path_buf(),
             content: content.to_string(),
-        })
-        .map(|_| ())
+        }) {
+            Ok(_) => Ok(()),
+            Err(editor) => {
+                tracing::warn!(
+                    target: "boubou_coding",
+                    path = %path.display(),
+                    error = %editor,
+                    "fs/write_text_file failed; writing the disk instead"
+                );
+                DiskStore
+                    .write(path, content)
+                    .map_err(|disk| std::io::Error::other(format!("{disk}; {editor}")))
+            }
+        }
     }
 }
 

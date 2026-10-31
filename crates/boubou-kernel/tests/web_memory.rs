@@ -10,6 +10,7 @@ use std::time::Duration;
 use boubou_kernel::exec::Executor;
 use boubou_kernel::memory::{load_memory, memory_recall, memory_store};
 use boubou_kernel::safety::SafetyPolicy;
+use boubou_kernel::web::SaveTo;
 use boubou_kernel::web::{
     cache_get, cache_key, cache_set, direct_url, extract_text, is_relevant, parse_search_results,
     query_tokens, Engine, Web, CACHE_TTL, DEFAULT_BACKENDS,
@@ -380,7 +381,12 @@ fn web_fetch_stores_full_text_and_returns_summary() {
     let url =
         serve_once("<html><body><script>x()</script><h1>Title</h1><p>Body text</p></body></html>");
     let web = Web::with_backends(&d.path().join("home"), vec![]);
-    let out = web.fetch(&url, Some(d.path()));
+    let sources = d.path().join("sources");
+    let save = SaveTo {
+        dir: &sources,
+        absolute: false,
+    };
+    let out = web.fetch(&url, Some(save));
     assert!(out.starts_with("Title Body text"));
     assert!(out.contains("[full text saved: sources/fetch_"));
     let key = cache_key(&["fetch", &url]);
@@ -388,14 +394,52 @@ fn web_fetch_stores_full_text_and_returns_summary() {
         .expect("source file");
     assert_eq!(saved, format!("URL: {url}\n\nTitle Body text"));
     // Second call is served from the cache (the server accepted only one connection).
-    assert_eq!(web.fetch(&url, Some(d.path())), out);
+    assert_eq!(web.fetch(&url, Some(save)), out);
+}
+
+/// Under an editor the harness directory is relocated: the page text goes there, not into
+/// the user's project, and the pointer is the absolute path the model will use as written
+/// (bead boubou-m64.4: `sources/fetch_x.txt` was read as `/sources/fetch_x.txt`).
+#[test]
+fn a_relocated_executor_keeps_fetched_text_out_of_the_project_and_points_at_it_absolutely() {
+    let d = home();
+    let h = tempfile::tempdir().expect("tmp");
+    let url = serve_once("<html><body><p>Relocated body</p></body></html>");
+    let mut e = ex(d.path());
+    e.web = Web::with_backends(&e.agent_home, vec![]);
+    e.harness_dir = h.path().to_path_buf();
+    let out = e.run_tool("web_fetch", &json!({"url": url}));
+    let key = cache_key(&["fetch", &url]);
+    let saved = h.path().join("sources").join(format!("fetch_{key}.txt"));
+    assert!(
+        out.contains(&format!("[full text saved: {} (", saved.display())),
+        "{out}"
+    );
+    assert!(saved.is_file());
+    assert!(
+        !d.path().join("sources").exists(),
+        "nothing written into the project"
+    );
+    // The pointer works as written through the executor's own read_file.
+    let r = e.run_tool(
+        "read_file",
+        &json!({"path": saved.to_str().expect("utf-8")}),
+    );
+    assert!(r.contains("Relocated body"), "{r}");
 }
 
 #[test]
 fn web_fetch_error_is_a_marked_tool_error() {
     let d = home();
     let web = Web::with_backends(d.path(), vec![]);
-    let out = web.fetch("http://127.0.0.1:9/x", Some(d.path()));
+    let sources = d.path().join("sources");
+    let out = web.fetch(
+        "http://127.0.0.1:9/x",
+        Some(SaveTo {
+            dir: &sources,
+            absolute: false,
+        }),
+    );
     assert!(out.starts_with("[web_fetch error:"));
 }
 
