@@ -1035,7 +1035,10 @@ fn a_stale_second_edit_is_no_change_and_the_first_edit_stands() {
         .expect("loop")
     }
     for (ablation, second) in [
-        (&[][..], "[no change: repo.py"),
+        (
+            &[][..],
+            "[no change: this edit is already done. repo.py lines 1–1",
+        ),
         (
             &["edit_match"][..],
             "[edit failed: old text not found. Preview",

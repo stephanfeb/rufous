@@ -52,8 +52,14 @@ pub enum Found {
         tier: Tier,
         ranges: Vec<(usize, usize)>,
     },
-    /// `old` is gone and `new` is already there: the edit has already happened.
-    AlreadyApplied,
+    /// `old` is gone and `new` is already there: the edit has already happened. The lines
+    /// of the file that hold the new text, 1-based inclusive, so the answer can show them
+    /// (a small model re-issues the edit when told only to go and read).
+    AlreadyApplied {
+        first_line: usize,
+        last_line: usize,
+        region: String,
+    },
     /// Nothing: the region most like `old`, 1-based inclusive line numbers and its text.
     Miss {
         first_line: usize,
@@ -238,8 +244,19 @@ pub fn find(file: &str, old: &str, new: &str) -> Found {
             return Found::Hits { tier, ranges: hits };
         }
     }
-    if !new.trim().is_empty() && (file.contains(new) || file.contains(&unescape(new))) {
-        return Found::AlreadyApplied;
+    if !new.trim().is_empty() {
+        let at = file.find(new).map(|i| (i, i + new.len())).or_else(|| {
+            let u = unescape(new);
+            file.find(&u).map(|i| (i, i + u.len()))
+        });
+        if let Some((s, e)) = at {
+            let (first_line, last_line, region) = lines_around(file, s, e);
+            return Found::AlreadyApplied {
+                first_line,
+                last_line,
+                region,
+            };
+        }
     }
     let (first_line, last_line, region) = nearest(file, old);
     Found::Miss {
@@ -247,6 +264,20 @@ pub fn find(file: &str, old: &str, new: &str) -> Found {
         last_line,
         region,
     }
+}
+
+/// The whole lines of `file` covering the byte range `s..e`, 1-based inclusive numbers.
+fn lines_around(file: &str, s: usize, e: usize) -> (usize, usize, String) {
+    let spans = line_spans(file);
+    let first = spans.iter().position(|&(_, _, nl)| s < nl).unwrap_or(0);
+    let last = spans
+        .iter()
+        .rposition(|&(a, _, _)| a < e.max(s + 1))
+        .unwrap_or(first)
+        .max(first);
+    let (a, _, _) = spans[first];
+    let (_, b, _) = spans[last];
+    (first + 1, last + 1, file[a..b].to_string())
 }
 
 /// `file` with `new` in place of the first range, or of every range when `all`.
@@ -318,9 +349,29 @@ mod tests {
     #[test]
     fn the_already_applied_edit_and_the_nearest_region() {
         assert_eq!(
-            find("def fetch_all(c):\n", "fetchAll", "fetch_all"),
-            Found::AlreadyApplied
+            find(
+                "import x\n\ndef fetch_all(c):\n    pass\n",
+                "fetchAll",
+                "fetch_all"
+            ),
+            Found::AlreadyApplied {
+                first_line: 3,
+                last_line: 3,
+                region: "def fetch_all(c):".into()
+            }
         );
+        // A multi-line new text: every line it touches, whole.
+        match find("a\nb = 1\nc = 2\nd\n", "zzz", "= 1\nc =") {
+            Found::AlreadyApplied {
+                first_line,
+                last_line,
+                region,
+            } => assert_eq!(
+                (first_line, last_line, region.as_str()),
+                (2, 3, "b = 1\nc = 2")
+            ),
+            other => panic!("{other:?}"),
+        }
         let file = "import os\n\ndef f(x):\n    retrun x + 1\n\ndef g():\n    pass\n";
         match find(file, "    return x + 1", "    return x + 2") {
             Found::Miss {

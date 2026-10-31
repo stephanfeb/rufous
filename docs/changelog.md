@@ -1747,3 +1747,25 @@ argument the model cannot be trusted with and a success message the model cannot
 about what it gained. Both are small-model quirks meeting a surface that frontier harnesses
 can expose safely. Neither is a reason to switch the matcher off: the ablation `edit_match`
 restores the 41 misses as well. The design response is a bead, not a patch.
+
+## bk9.3 follow-up: no invitation, and the state instead of an instruction (2026-10-31, bead boubou-orr)
+
+Two tool-side changes, both under `edit_match`, no loop change. `all` leaves the advertised
+`edit_file` schema and its description: a small model fills every boolean with `true` (150 of
+175 calls in `gemma_e2b_edit_match`) and took the count refusal's "or pass all=true" as the
+fix, which produced the collateral ED-06 was built to catch. The argument is still honoured
+when sent (`arg_types` keeps its boolean coercion for the CLI user or a model that earns it),
+it is just never offered; the count refusal now reads `[edit failed: old text found N times
+in <path>; nothing was written. Include more of the surrounding lines in old so it matches
+exactly once, and edit each place separately.]`. The no-change answer carries the state
+instead of "read the file": `[no change: this edit is already done. <path> lines a–b now
+read:` followed by the whole lines that hold the new text, then `The old text is not in the
+file and nothing was written. Do not repeat this edit; go on to the next step.]`. Whether that
+stops the repetition (87 no-change answers, 28 in one cell) is the measurement; if it does
+not, the next design is the ladder treating a second no-change on one file as a repeat,
+which is a loop change and gets its own paragraph first. Tests: the schema has no `all`
+property and its description does not mention it; the refusal names no escape hatch; the
+no-change answer quotes the line with its number, in the tool test and through the loop; the
+module test covers a multi-line new text spanning two lines. 524 tests. After-measurement:
+tier6 gemma4:e2b `--runs 3` against `gemma_e2b_edit_match`; the read is `all=true` sent
+(should be none), the no-change count, and ED-06 and ED-04 under coding.

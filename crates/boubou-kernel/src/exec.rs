@@ -642,7 +642,7 @@ impl Executor {
                 let n = ranges.len();
                 if n > 1 && !all {
                     return format!(
-                        "[edit failed: old text found {n} times in {path}. Include more of the surrounding lines so it matches once, or pass all=true to replace every occurrence.]"
+                        "[edit failed: old text found {n} times in {path}; nothing was written. Include more of the surrounding lines in old so it matches exactly once, and edit each place separately.]"
                     );
                 }
                 let new_used = if tier == edit_match::Tier::Unescaped {
@@ -662,16 +662,32 @@ impl Executor {
                 }
                 r
             }
-            edit_match::Found::AlreadyApplied => format!(
-                "[no change: {path} already contains the new text and the old text is not there any more; nothing was written. Read the file if you expected something else.]"
-            ),
+            edit_match::Found::AlreadyApplied {
+                first_line,
+                last_line,
+                region,
+            } => {
+                let shown = head(&region, 800);
+                let cut = if shown.len() < region.len() {
+                    "…"
+                } else {
+                    ""
+                };
+                format!(
+                    "[no change: this edit is already done. {path} lines {first_line}–{last_line} now read:\n{shown}{cut}\nThe old text is not in the file and nothing was written. Do not repeat this edit; go on to the next step.]"
+                )
+            }
             edit_match::Found::Miss {
                 first_line,
                 last_line,
                 region,
             } => {
                 let shown = head(&region, 800);
-                let cut = if shown.len() < region.len() { "…" } else { "" };
+                let cut = if shown.len() < region.len() {
+                    "…"
+                } else {
+                    ""
+                };
                 format!(
                     "[edit failed: old text not found. Closest match in {path}, lines {first_line}–{last_line}:\n{shown}{cut}\nQuote the lines exactly as they are in the file, whitespace included, or rewrite the file with create_file.]"
                 )

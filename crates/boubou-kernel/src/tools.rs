@@ -140,8 +140,8 @@ pub fn core_tools() -> Vec<Value> {
             json!({"path": s(), "content": s(), "replace": b()}), &["path", "content"]),
         spec("read_file", "Read a file's content (optional start_line/end_line to read a range)",
             json!({"path": s(), "start_line": n(), "end_line": n()}), &["path"]),
-        spec("edit_file", "Replace text in a file. old must match exactly once: quote the lines as they are in the file, whitespace included; pass all=true to replace every occurrence",
-            json!({"path": s(), "old": s(), "new": s(), "all": b()}), &["path", "old", "new"]),
+        spec("edit_file", "Replace text in a file. old must match exactly once: quote the lines as they are in the file, whitespace included",
+            json!({"path": s(), "old": s(), "new": s()}), &["path", "old", "new"]),
         spec("list_dir", "List files in a directory", json!({"path": s()}), &["path"]),
         spec("run_bash", "Run a command (cwd=workspace, no cd /workspace)", json!({"command": s()}), &["command"]),
         spec("todo", "Manage the task plan. action: create(plan), update(item done; index is 1-based), list",
@@ -185,9 +185,12 @@ pub fn tool_schemas(enabled: &[String]) -> Vec<Value> {
     out
 }
 
-/// `tool -> {arg -> schema type}` for every built-in, used by [`coerce_args`].
+/// `tool -> {arg -> schema type}` for every built-in, used by [`coerce_args`], plus the
+/// arguments a tool accepts without advertising: `edit_file`'s `all` (replace every
+/// occurrence) left the schema on 2026-10-31 because a small model fills every boolean with
+/// `true` and took the count refusal's mention of it as the fix (bead boubou-orr).
 fn arg_types() -> BTreeMap<String, BTreeMap<String, String>> {
-    core_tools()
+    let mut types: BTreeMap<String, BTreeMap<String, String>> = core_tools()
         .into_iter()
         .chain(advanced_tools())
         .filter_map(|t| {
@@ -200,7 +203,12 @@ fn arg_types() -> BTreeMap<String, BTreeMap<String, String>> {
                 .collect();
             Some((name, types))
         })
-        .collect()
+        .collect();
+    types
+        .entry("edit_file".into())
+        .or_default()
+        .insert("all".into(), "boolean".into());
+    types
 }
 
 /// Mingbird v3.0.0 argument type correction: `"3"` → `3`, `"true"` → `true` for

@@ -225,8 +225,9 @@ fn a_second_occurrence_is_refused_with_the_count_until_all_is_passed() {
     );
     let r = edit(&mut e, "store.py", "fetchAll", "fetch_all");
     assert!(
-        r.starts_with("[edit failed: old text found 2 times in store.py.")
-            && r.contains("all=true"),
+        r.starts_with("[edit failed: old text found 2 times in store.py;")
+            && !r.contains("all=true")
+            && r.contains("edit each place separately"),
         "{r}"
     );
     assert!(std::fs::read_to_string(d.path().join("store.py"))
@@ -246,6 +247,23 @@ fn a_second_occurrence_is_refused_with_the_count_until_all_is_passed() {
 }
 
 #[test]
+fn all_is_accepted_but_not_advertised() {
+    // A small model fills every boolean with true and took "or pass all=true" as the fix
+    // (ED-06 coding r2, 2026-10-31): the argument is honoured when sent, never offered.
+    let edit = boubou_kernel::tools::core_tools()
+        .into_iter()
+        .find(|t| t["function"]["name"] == "edit_file")
+        .expect("edit_file spec");
+    assert!(edit["function"]["parameters"]["properties"]
+        .get("all")
+        .is_none());
+    assert!(!edit["function"]["description"]
+        .as_str()
+        .unwrap_or("")
+        .contains("all"));
+}
+
+#[test]
 fn an_edit_already_in_the_file_is_no_change_and_writes_nothing() {
     let (d, mut e) = ex();
     create(&mut e, "repo.py", "def fetch_all(conn):\n    pass\n");
@@ -256,7 +274,7 @@ fn an_edit_already_in_the_file_is_no_change_and_writes_nothing() {
         "def fetch_all(conn):",
     );
     assert!(
-        r.starts_with("[no change: repo.py already contains the new text"),
+        r.starts_with("[no change: this edit is already done. repo.py lines 1–1 now read:\ndef fetch_all(conn):\n"),
         "{r}"
     );
     assert!(!d.path().join("repo.py.bak").exists());
