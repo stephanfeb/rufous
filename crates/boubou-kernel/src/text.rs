@@ -48,6 +48,15 @@ pub fn head(s: &str, n: usize) -> &str {
     }
 }
 
+/// One log line out of any text: line breaks become ` ⏎ `, tabs a space (bead boubou-h5d:
+/// a multi-line tool result split the ⚙ line and its status tag landed on the next one,
+/// which the bench reads as no tag).
+pub fn one_line(s: &str) -> String {
+    s.replace("\r\n", " ⏎ ")
+        .replace(['\n', '\r'], " ⏎ ")
+        .replace('\t', " ")
+}
+
 /// Last `n` chars (Python `s[-n:]`).
 pub fn tail(s: &str, n: usize) -> &str {
     let len = s.chars().count();

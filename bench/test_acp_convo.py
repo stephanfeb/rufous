@@ -183,3 +183,27 @@ def test_a_status_tag_decides_what_landed_and_old_logs_fall_back_to_the_opening(
     old = {"tool": "create_file", "args": '{"path":"lib/a.py"}', "result": "[scope gate: …]", "status": ""}
     landed = {"tool": "create_file", "args": '{"path":"lib/a.py"}', "result": "[created lib/a.py]", "status": ""}
     assert rig.source_writes([tagged, old, landed]) == ["lib/a.py"]
+
+
+def test_change_nothing_else_turns_carry_earlier_file_checks(tmp_path):
+    # Bead boubou-dby: qwen's turn-8 edit swallowed the Deadlines section of turn 7 and passed.
+    turns = [
+        {"say": "Create report.md", "expect": {"file_regex": {"report.md": "^# Heron report"}}},
+        {"say": "Append '## Deadlines'. Change nothing else in the file.",
+         "expect": {"file_regex": {"report.md": "## Deadlines", "report.md#title": "^# Heron report"}}},
+        {"say": "Append '## Open questions'. Change nothing else in the file.",
+         "expect": {"file_regex": {"report.md": "## Open questions"}}},
+        {"say": "How many headings? Number only.", "expect": {"reply_regex": "7"}},
+    ]
+    assert rig.carried_checks(turns, 0) == {}
+    # Turn 2 re-checks the title itself, so nothing is carried; turn 3 carries the title (once,
+    # though two turns set it) and turn 2's section, each under the file plus the setting turn.
+    assert rig.carried_checks(turns, 1) == {}
+    assert rig.carried_checks(turns, 2) == {"report.md#t1": "^# Heron report", "report.md#t2": "## Deadlines"}
+    assert rig.carried_checks(turns, 3) == {}
+    # A keep check reads the file and names the lost section.
+    (tmp_path / "report.md").write_text("# Heron report\n## Owners\n## Open questions\n", encoding="utf-8")
+    turn = {"reply": "", "asks": [], "stop": None, "error": None}
+    assert rig.check_turn({"keep_file_regex": {"report.md#t7": "## Deadlines"}}, turn, None, str(tmp_path)) == \
+        ["earlier section lost: report.md#t7 /## Deadlines/"]
+    assert rig.check_turn({"keep_file_regex": {"report.md#t1": "^# Heron report"}}, turn, None, str(tmp_path)) == []

@@ -1597,7 +1597,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     "[{i}|+{}s] ⚙ {name} {} -> {}{}",
                     t0.elapsed().as_secs(),
                     text::head(&sig_json, 160),
-                    text::head(&res, 90),
+                    text::one_line(text::head(&res, 90)),
                     status.tag().map(|t| format!(" ⟂{t}")).unwrap_or_default()
                 );
                 // A failed command's first stderr line as a protocol fact (bead boubou-bk9.14):
@@ -2022,7 +2022,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     "[{i}|+{}s] ⚙ {cname} {} -> {}{}",
                                     t0.elapsed().as_secs(),
                                     text::head(&cargs.to_string(), 60),
-                                    text::head(&cres, 90),
+                                    text::one_line(text::head(&cres, 90)),
                                     cstatus.tag().map(|t| format!(" ⟂{t}")).unwrap_or_default()
                                 );
                                 messages.push(cmsg);

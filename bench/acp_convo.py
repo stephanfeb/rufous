@@ -263,6 +263,35 @@ def source_writes(calls):
 
 # ---------------------------------------------------------------- checks
 
+# A turn whose instruction says this must leave every earlier section standing (bead
+# boubou-dby): the words are the script's own, under bench/convo, so matching them scores the
+# fixture, never the model.
+KEEP_WORDS = "Change nothing else"
+
+
+def carried_checks(turns, i):
+    """The `file_regex` pairs of turns before `i` that turn `i` must keep satisfied, or `{}`.
+
+    Only for a turn whose `say` has KEEP_WORDS. Keyed `<file>#t<n>` (n = the turn that set the
+    check; `body_of` reads the file before `#`), since every section check of one file shares
+    the plain key. A (file, regex) pair the turn checks itself is left to it; a pair several
+    turns set (the title) is carried once."""
+    say = turns[i].get("say", "")
+    if KEEP_WORDS.lower() not in say.lower():
+        return {}
+    own = {(k.split("#", 1)[0], rx)
+           for k, rx in ((turns[i].get("expect") or {}).get("file_regex") or {}).items()}
+    keep, seen = {}, set()
+    for n, t in enumerate(turns[:i], 1):
+        for key, rx in ((t.get("expect") or {}).get("file_regex") or {}).items():
+            pair = (key.split("#", 1)[0], rx)
+            if pair in own or pair in seen:
+                continue
+            seen.add(pair)
+            keep[f"{pair[0]}#t{n}"] = rx
+    return keep
+
+
 def check_turn(expect, turn, log_turn, workdir):
     """Returns the list of failed expectations (empty = pass)."""
     fails = []
@@ -304,6 +333,9 @@ def check_turn(expect, turn, log_turn, workdir):
     for key, rx in (expect.get("file_not_regex") or {}).items():
         if re.search(rx, body_of(key), re.S | re.M):
             fails.append(f"{key} matches forbidden /{rx}/")
+    for key, rx in (expect.get("keep_file_regex") or {}).items():
+        if not re.search(rx, body_of(key), re.S | re.M):
+            fails.append(f"earlier section lost: {key} /{rx}/")
     if expect.get("no_source_writes"):
         sw = source_writes(calls)
         if sw:
@@ -381,7 +413,11 @@ def run_cell(binary, model, ctx, script, cell_dir, turn_timeout, user_home):
             # turn's expectations are about.
             lts = session_log_turns(home)
             rec["log"] = lts[i] if i < len(lts) else None
-            rec["fails"] = check_turn(t.get("expect", {}), rec, rec["log"], work)
+            expect = dict(t.get("expect", {}))
+            keep = carried_checks(script["turns"], i)
+            if keep:
+                expect["keep_file_regex"] = keep
+            rec["fails"] = check_turn(expect, rec, rec["log"], work)
             turns.append(rec)
             if rec.get("error") and rec["error"] != "timeout":
                 break
@@ -454,6 +490,32 @@ def summary(results_dir):
           "asks = permission requests the rig answered.")
 
 
+def rescore(results_dir):
+    """Lost sections in finished cells: every KEEP_WORDS turn's carried checks against the
+    final `work/` folder (the cells keep it). Prints, never rewrites score.json."""
+    scripts = {s["id"]: s for s in load_scripts([])}
+    lost_cells = 0
+    rows = sorted(glob.glob(os.path.join(results_dir, "*", "*", "score.json")))
+    for sp in rows:
+        cell = os.path.dirname(sp)
+        sc = json.load(open(sp, encoding="utf-8"))
+        script = scripts.get(sc["script"])
+        work = os.path.join(cell, "work")
+        if not script or not os.path.isdir(work):
+            continue
+        lost = {}
+        for i in range(len(script["turns"])):
+            keep = carried_checks(script["turns"], i)
+            if keep:
+                for f in check_turn({"keep_file_regex": keep}, {"reply": "", "asks": [], "stop": None,
+                                                                 "error": None}, None, work):
+                    lost[f] = i + 1
+        if lost:
+            lost_cells += 1
+            print(f"{sc['model']} {sc['cell']}: " + "; ".join(f"{f} (by t{i})" for f, i in lost.items()))
+    print(f"{lost_cells} of {len(rows)} cells lost an earlier section")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="qwen3.5:4b", help="model tag, or a comma list")
@@ -465,10 +527,15 @@ def main():
     ap.add_argument("--turn-timeout-min", type=float, default=10)
     ap.add_argument("--user-home", default=os.path.expanduser("~/.ollama_agent"))
     ap.add_argument("--summary", action="store_true", help="only print the table for --results")
+    ap.add_argument("--rescore", action="store_true",
+                    help="lost earlier sections in the finished cells under --results (final files)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if a.summary:
         summary(a.results)
+        return
+    if a.rescore:
+        rescore(a.results)
         return
     only = [s for s in a.scripts.split(",") if s]
     scripts = load_scripts(only)

@@ -3072,3 +3072,35 @@ fn an_image_the_server_cannot_decode_is_dropped_and_the_run_goes_on() {
     );
     assert_eq!(out.last().map(|m| &m.role), Some(&Role::Assistant));
 }
+
+// Bead boubou-h5d: the ⚙ log line for a call whose result spans lines (the editor's
+// "closest match" excerpt after a failed edit) is still one line, and carries its tag.
+
+#[test]
+fn the_tool_log_line_stays_one_line_with_its_tag_after_a_multi_line_result() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![(
+        "edit_file",
+        json!({"path": "m08.py", "old": "zzz", "new": "y"}),
+        "[edit failed: old text not found. Closest match in m08.py, lines 1–2:\ndef f():\n    return 1",
+    )];
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = lines.clone();
+    let mut a = agent_for(d.path(), &calls).with_sink(move |e| {
+        if let AgentEvent::Log(l) = e {
+            seen.lock().expect("lock").push(l.clone());
+        }
+    });
+    a.run(start(TASK), None, None).expect("loop");
+    let lines = lines.lock().expect("lock").clone();
+    let gear: Vec<&String> = lines.iter().filter(|l| l.contains("⚙ edit_file")).collect();
+    assert_eq!(gear.len(), 1, "{lines:?}");
+    let line = gear[0];
+    assert!(!line.contains('\n'), "{line}");
+    assert!(line.ends_with(" ⟂error"), "{line}");
+    assert!(line.contains("lines 1–2: ⏎ def f(): ⏎ "), "{line}");
+    assert!(
+        lines.iter().all(|l| !l.contains('\n') || !l.contains("⟂")),
+        "a tag on a continuation line: {lines:?}"
+    );
+}

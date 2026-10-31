@@ -32,7 +32,7 @@ the row then shows as a failed turn with `stop cancelled_by_rig`.
 
 Per turn, under `expect`: `reply_regex` (string or list; case-insensitive, dot matches
 newline), `reply_not_regex`, `reply_max_lines`, `reply_nonempty`, `files_exist`,
-`files_absent` (paths relative to the workdir, or absolute), `file_regex` / `file_not_regex`
+`files_absent` (paths relative to the workdir, or absolute), `file_regex` / `file_not_regex`, `keep_file_regex` (added by the rig itself: a turn whose `say` has "Change nothing else" also keeps every earlier turn's `file_regex` pair it does not re-check, keyed `<file>#t<n>` by the turn that set it, bead boubou-dby; `--rescore` reports lost sections in finished cells from their final files)
 (`{path: regex}`; `path#tag` lets one file take several), `no_source_writes` (no
 `create_file`/`edit_file`/`append_file` on a source extension this turn, read from the
 session log), `no_tool` (list of tool names), `max_calls`, `permission_asked` (bool), `asked_target_regex` (some ask's `<tool> <target>` matches: the write itself was asked about, not just any call),

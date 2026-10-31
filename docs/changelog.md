@@ -2463,3 +2463,24 @@ boubou-dby (carry earlier file checks forward). Two `⟂error` tags: gemma r0 `l
 report.md (not a dir, tagged, right), and qwen r0's failed edit, whose tag landed on a second
 log line because the result head keeps newlines, so the bench read the call as landed: bead
 boubou-h5d. The extra read per append is invisible in the logs.
+
+## One ⚙ line per call (bead boubou-h5d, 2026-11-01)
+
+`text::one_line` folds line breaks to ` ⏎ ` (tabs to a space); both ⚙ log sites in the loop
+(the call and the corrector's retry) pass the result head through it before the status tag,
+so a multi-line result (the editor's "closest match" excerpt after a failed edit) no longer
+splits the line and strands the tag. The bench readers are unchanged. Tests: `tests/text.rs`
+(the helper) and `tests/agent_loop.rs` (a scripted multi-line edit failure yields one ⚙ line
+ending in ` ⟂error`). The bench's failed-call counts for runs before this release may be low
+by such cases; the 4b_lt_v2 qwen r0 edit is the one seen.
+
+## Rig: "Change nothing else" turns keep earlier sections (bead boubou-dby, 2026-11-01)
+
+`bench/acp_convo.py`: a turn whose `say` has "Change nothing else" (the script's words, not
+the model's) also carries every earlier turn's `file_regex` pair it does not re-check, keyed
+`<file>#t<n>` by the setting turn (a plain `report.md` key would be shadowed by the turn's own
+section check, which the first cut of this did; the rescore below caught it), failing as
+`earlier section lost: report.md#t7 /## Deadlines/`. `--rescore --results <dir>` reports lost
+sections in finished cells from their final `work/` files without rewriting score.json. Rescore
+of the 48 finished cells: the 4b_lt_v2 qwen r0 case alone (Deadlines, by turn 8); the baseline
+of 2026-10-31 and 4b_lt_v1 lost nothing. Tests: `bench/test_acp_convo.py`.
