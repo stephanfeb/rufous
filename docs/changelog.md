@@ -2203,3 +2203,27 @@ pulling it (the live case had `bd prime` in the prompt). Compaction never fired:
 peaked at 5.3k tokens of 12k, so the script now runs at ctx 7000. Wall per cell: gemma
 13–99 s, qwen 14–297 s. Rig correction made during analysis: a refused write is an attempt,
 not a write, in the `gsw` column.
+
+## Shell writes at the boundary, and what a Deny says (2026-10-31)
+
+Beads boubou-hzl and boubou-ik4, from the conversation rig's first run. Ring 3 gains
+`write_targets` / `bash_boundary_target` in `safety.rs`: redirect targets (`>`, `>>`, `>|`,
+`&>`, `2>`), what `tee` writes and the destination of `cp`/`mv`/`install`/`rsync`/`ln` (the
+last operand or `-t dir`) are resolved as a file tool's path is (home expansion, the `cd`
+before them, `safe_path_from`), and one outside the workdir and the allow-dirs goes to the
+confirmer with the file tools' "access" action and the resolved path as the target. Device
+files, descriptors (`2>&1`), process substitution, heredoc markers and targets the gate cannot
+evaluate (`> $OUT`) are not judged. The `.env` escape pattern became `\.env\b` (it matched
+`os.environ` in a heredoc, two false asks in one follow_ups cell). `Confirmer::attended()`
+(default true, `DenyAll` false) picks the refusal the model reads: unattended keeps its text;
+the user's Deny says "the user declined this: <tool> on <target>, outside the working
+directory …. Do not do it another way or write it somewhere else; say what you could not do
+and stop."; a headless Deny says "<tool> on <target> is <reason>; refused." The two old
+fallbacks ("CLI mode does not allow out-of-bounds access", "confirm it in the GUI prompt")
+are gone, and a denied sensitive read or uninstall no longer borrows the boundary text.
+New replay corpus `boundary_2026-10-31.jsonl` (12 entries: the rig's echo redirect and the
+follow_ups `cat > /tmp/head.txt` blocked, inside redirects, `/dev/null`, `2>&1`, heredoc and
+`os.environ` as written); `tests/safety.rs` covers the target extraction, the boundary
+through the gate and the three texts. The permission script's first turn now also requires
+`boubou_convo_perm.txt` absent from the project. Not yet measured: the permission script
+needs a rerun on both models (release not rebuilt). Prompt size unchanged.

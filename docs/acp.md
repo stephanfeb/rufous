@@ -63,7 +63,7 @@ harness files in any mode.
 | context usage | `usage_update` |
 | compaction, errors, turn limit | `notice` |
 | `finish` summary | the closing message, when the model wrote no prose after its last tool call |
-| a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny |
+| a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny. A shell redirect, `tee` or `cp`/`mv` destination outside the project asks the same question as a file tool (bead boubou-hzl). After Deny the model reads that the user declined and must not do it another way or elsewhere (bead boubou-ik4) |
 | the scope gate (bead boubou-6x3) | the same dialog, titled `outside the instruction: <path or command>`, when a tracker or docs instruction (beads, issues, specs, docs) is followed by a call that writes a source file or runs a build/test tool; Allow clears the turn, Deny hands the model the instruction back and asks for a report. A code instruction never asks. `"scope_gate": "shadow"` in `config.json` only logs |
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
 | `read_file`, `create_file`, `edit_file`, `append_file` | `fs/read_text_file` and `fs/write_text_file` when the client offered them at `initialize` (see below) |

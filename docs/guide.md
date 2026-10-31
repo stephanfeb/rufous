@@ -111,6 +111,13 @@ running another harness should check theirs does the equivalent.
   mixed) and asks the user before a tracker or docs turn first writes a source file or runs
   a build. *Observed* trigger (the beads turn of 2026-10-31 drifted into writing Dart after
   `bd ready`); the arrest itself is unmeasured until a live session trips it.
+- **Boundary refusals are instructions.** A 4B model reads every word of a refusal as its next
+  step. "CLI mode does not allow out-of-bounds access" led gemma4:e4b to write the file inside
+  the project and report success, and qwen3.5:4b to write it through a shell redirect the gate
+  did not judge (*observed*, conversation rig 2026-10-31, 6/6 cells). The refusal now says who
+  declined and forbids the workaround, and the shell's redirect, `tee` and `cp`/`mv`
+  destinations are judged like file-tool paths. Whether the words hold the models is the next
+  rig run's reading.
 
 ## 5. Per-model notes
 

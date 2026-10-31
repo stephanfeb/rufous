@@ -7,7 +7,7 @@
 //! | 0 | child sandbox | sub-agents are default-deny with no escalation path (not yet ported) |
 //! | 1 | [`DANGER_CMD`], [`PS_HIGH_RISK`] | irreversible system damage: refused outright, no exit |
 //! | 2 | [`risk_classify`] | uninstall / environment mutation (ask when attended, deny unattended); recursive delete and `find -delete` only inside the workspace, judged after `~`/`$HOME` expansion and any `cd` earlier in the command; a target or `cd` the gate cannot evaluate is refused |
-//! | 3 | [`BASH_ESCAPE_PATTERNS`], [`safe_path`], [`SENSITIVE_PATTERNS`], [`SYSTEM_DIRS`] | boundary and sensitive access go to the [`Confirmer`] (attended: user decides; unattended: refused) |
+//! | 3 | [`bash_boundary_target`], [`BASH_ESCAPE_PATTERNS`], [`safe_path`], [`SENSITIVE_PATTERNS`], [`SYSTEM_DIRS`] | boundary and sensitive access go to the [`Confirmer`] (attended: user decides; unattended: refused); a shell command's redirect, `tee`, `cp`/`mv`/`install` destination is judged as a file-tool path |
 //! | 4 | `.mingbird_trash`, `.bak`, overwrite guard (in the executor) | damage that gets through rings 0–3 stays reversible |
 //!
 //! Orthogonal mechanisms that are *not* part of the gate: the crawl guard (context
@@ -329,7 +329,7 @@ pub const BASH_ESCAPE_PATTERNS: [&str; 33] = [
     r"%localappdata%",
     r"\.ssh",
     r"\.aws",
-    r"\.env",
+    r"\.env\b",
     r"mv\s+[^&|;]*\s+~",
     r"cp\s+[^&|;]*\s+~",
     r"mv\s+[^&|;]*/home/",
@@ -435,6 +435,11 @@ pub enum Verdict {
 /// The human-in-the-loop channel (GUI dialog, CLI prompt). [`DenyAll`] is the headless default.
 pub trait Confirmer: Send {
     fn confirm(&mut self, req: &ConfirmRequest<'_>) -> Verdict;
+    /// Is a person answering? Decides which refusal the model reads after a Deny: the
+    /// user's decision, or a boundary with nobody to ask. Headless confirmers return false.
+    fn attended(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -443,6 +448,9 @@ pub struct DenyAll;
 impl Confirmer for DenyAll {
     fn confirm(&mut self, _req: &ConfirmRequest<'_>) -> Verdict {
         Verdict::Deny
+    }
+    fn attended(&self) -> bool {
+        false
     }
 }
 
@@ -669,6 +677,93 @@ pub fn delete_targets(cmd: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where a shell command writes, each target with its byte offset (so the `cd` before it
+/// applies): redirect targets (`>`, `>>`, `>|`, `&>`, `2>`), what `tee` writes, and the
+/// destination of `cp`, `mv`, `install`, `rsync` and `ln` (the last operand, or `-t dir`).
+/// A descriptor (`2>&1`), a process substitution (`>(…)`) and a heredoc marker are not
+/// paths and are skipped. The conversation rig (2026-10-31, bead boubou-hzl) found the
+/// file-tool boundary one redirect away: `create_file /tmp/x` was denied, `echo hello >
+/// /tmp/x` ran, because [`BASH_ESCAPE_PATTERNS`] knows drive letters and `~` but no redirect.
+pub fn write_targets(cmd: &str) -> Vec<(usize, String)> {
+    static REDIRECT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:\d|&)?>>?\|?\s*("[^"]*"|'[^']*'|[^\s;&|<>()]+)"#).expect("regex")
+    });
+    let mut out: Vec<(usize, String)> = Vec::new();
+    for cap in REDIRECT.captures_iter(cmd) {
+        let m = cap.get(1).expect("group");
+        out.push((m.start(), m.as_str().trim_matches(['"', '\'']).to_string()));
+    }
+    let mut pos = 0;
+    for seg in cmd.split(SEGMENT_SEPARATORS) {
+        let off = pos;
+        pos += seg.len() + 1;
+        let Some((program, rest)) = program_of(seg) else {
+            continue;
+        };
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let operand = |w: &&&str| !w.starts_with('-') && !w.contains(['>', '<']);
+        match program.as_str() {
+            "tee" => out.extend(
+                words
+                    .iter()
+                    .filter(operand)
+                    .map(|w| (off, w.trim_matches(['"', '\'']).to_string())),
+            ),
+            "cp" | "mv" | "install" | "rsync" | "ln" => {
+                let dest = words
+                    .iter()
+                    .position(|w| *w == "-t" || *w == "--target-directory")
+                    .and_then(|i| words.get(i + 1).copied())
+                    .or_else(|| {
+                        words
+                            .iter()
+                            .find_map(|w| w.strip_prefix("--target-directory="))
+                    })
+                    .or_else(|| {
+                        let ops: Vec<&&str> = words.iter().filter(operand).collect();
+                        (ops.len() >= 2).then(|| **ops.last().expect("two"))
+                    });
+                if let Some(d) = dest {
+                    out.push((off, d.trim_matches(['"', '\'']).to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The first path a shell command writes outside the workdir and the `allow_dirs`, resolved
+/// as the file tools resolve theirs ([`safe_path_from`] after home expansion and the `cd`
+/// before it). `None` when every target is inside, a device file, or one the gate cannot
+/// evaluate (`> $OUT`, a `cd $X` before it): a variable in a redirect is ordinary in a
+/// script and the write, unlike a recursive delete, is bounded to one file.
+pub fn bash_boundary_target(cmd: &str, workdir: &Path, allow_dirs: &[PathBuf]) -> Option<PathBuf> {
+    for (off, t) in write_targets(cmd) {
+        let ShellPath::Known(p) = expand_shell_path(&t) else {
+            continue;
+        };
+        if p.starts_with("/dev/") || p.eq_ignore_ascii_case("nul") {
+            continue;
+        }
+        let Some(base) = cwd_before(cmd, off, workdir) else {
+            continue;
+        };
+        let (real, inside) = safe_path_from(&base, workdir, &p, allow_dirs);
+        if !inside {
+            return Some(real);
+        }
+    }
+    None
+}
+
+/// One question to the confirmer. `Ok(allow_all)` lets the call through; `Err(text)` is
+/// what the model reads instead of the tool's output, and every word of it steers the next
+/// call (conversation rig 2026-10-31, bead boubou-ik4): after the user's Deny the old text
+/// said "CLI mode does not allow out-of-bounds access", and gemma4:e4b wrote the file inside
+/// the project instead while qwen3.5:4b wrote it through a shell redirect, both reporting
+/// success. Three texts now, by what happened: unattended (nobody in the loop), the user
+/// declined (say so, forbid the workaround, ask for a report), or a headless boundary.
 fn ask(
     policy: &SafetyPolicy,
     confirmer: &mut dyn Confirmer,
@@ -676,13 +771,12 @@ fn ask(
     target: String,
     workdir: &Path,
     action: &str,
-) -> (bool, bool, String) {
+    reason: &str,
+) -> Result<bool, String> {
     if policy.unattended {
-        return (
-            false,
-            false,
-            format!("[safety gate: unattended mode (AGENT_UNATTENDED=1) has nobody in the loop; {action} is always refused. Target: {target}]"),
-        );
+        return Err(format!(
+            "[safety gate: unattended mode (AGENT_UNATTENDED=1) has nobody in the loop; {action} is always refused. Target: {target}]"
+        ));
     }
     let req = ConfirmRequest {
         tool,
@@ -691,17 +785,20 @@ fn ask(
         workdir,
     };
     match confirmer.confirm(&req) {
-        Verdict::Allow => (true, false, String::new()),
-        Verdict::AllowAll => (true, true, String::new()),
-        Verdict::Deny => (
-            false,
-            false,
-            format!(
-                "[safety gate: path {target} is outside the working directory. Working directory: {}. Refused. CLI mode does not allow out-of-bounds access.]",
-                resolve_path(workdir).display()
-            ),
-        ),
+        Verdict::Allow => Ok(false),
+        Verdict::AllowAll => Ok(true),
+        Verdict::Deny if confirmer.attended() => Err(format!(
+            "[safety gate: the user declined this: {tool} on {target}, {reason}. Do not do it another way or write it somewhere else; say what you could not do and stop.]"
+        )),
+        Verdict::Deny => Err(format!("[safety gate: {tool} on {target} is {reason}; refused.]")),
     }
+}
+
+fn boundary_reason(workdir: &Path) -> String {
+    format!(
+        "outside the working directory {}",
+        resolve_path(workdir).display()
+    )
 }
 
 /// Ring 2: `_risk_classify`. Returns the refusal text, or `None` to let the command through.
@@ -718,23 +815,16 @@ pub fn risk_classify(
         if policy.unattended {
             return Some("[safety net: package uninstall/removal detected; refused by default in unattended mode (stops a small model impulsively removing dependencies). If you really must uninstall, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into());
         }
-        let (allow, _, msg) = ask(
+        return ask(
             policy,
             confirmer,
             "run_bash",
             format!("uninstall: {}", head(cmd, 60)),
             workdir,
             "uninstall a package",
-        );
-        return if allow {
-            None
-        } else {
-            Some(if msg.is_empty() {
-                "[safety net: uninstall refused]".into()
-            } else {
-                msg
-            })
-        };
+            "a package uninstall",
+        )
+        .err();
     }
     if ENV_MUTATE_RE.is_match(cmd) {
         if policy.allow_env_mutation {
@@ -743,23 +833,16 @@ pub fn risk_classify(
         if policy.unattended {
             return Some("[safety net: system-environment change detected (setx / scheduled task / service removal / registry write); refused by default in unattended mode. If you really must, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into());
         }
-        let (allow, _, msg) = ask(
+        return ask(
             policy,
             confirmer,
             "run_bash",
             format!("env-mutate: {}", head(cmd, 60)),
             workdir,
             "change the system environment",
-        );
-        return if allow {
-            None
-        } else {
-            Some(if msg.is_empty() {
-                "[safety net: system-environment change refused]".into()
-            } else {
-                msg
-            })
-        };
+            "a system-environment change",
+        )
+        .err();
     }
     if let Some(m) = RECURSE_DELETE_RE.find(cmd) {
         let targets = delete_targets(cmd);
@@ -849,6 +932,15 @@ const FILE_TOOLS: [&str; 7] = [
     "search_files",
 ];
 const WRITE_TOOLS: [&str; 4] = ["create_file", "edit_file", "append_file", "delete_file"];
+
+/// The `'static` name of a file tool, for the allow-all set.
+fn file_tool(name: &str) -> &'static str {
+    FILE_TOOLS
+        .iter()
+        .find(|t| **t == name)
+        .copied()
+        .unwrap_or("read_file")
+}
 
 impl Gate {
     pub fn new(policy: SafetyPolicy, confirmer: Box<dyn Confirmer>) -> Self {
@@ -946,29 +1038,46 @@ impl Gate {
                     return Some(r);
                 }
             }
-            if !self.allow_all.contains("run_bash") && matches_escape_pattern(&low) {
-                let (allow, allok, msg) = ask(
+            if self.allow_all.contains("run_bash") {
+                return None;
+            }
+            if let Some(real) = bash_boundary_target(command, workdir, &self.policy.allow_dirs) {
+                return match ask(
+                    &self.policy,
+                    self.confirmer.as_mut(),
+                    name,
+                    real.display().to_string(),
+                    workdir,
+                    "access",
+                    &boundary_reason(workdir),
+                ) {
+                    Ok(allok) => {
+                        if allok {
+                            self.allow_all.insert("run_bash");
+                        }
+                        None
+                    }
+                    Err(msg) => Some(msg),
+                };
+            }
+            if matches_escape_pattern(&low) {
+                return match ask(
                     &self.policy,
                     self.confirmer.as_mut(),
                     name,
                     format!("bash: {}", head(command, 60)),
                     workdir,
                     "run a command",
-                );
-                if allow {
-                    if allok {
-                        self.allow_all.insert("run_bash");
+                    &format!("a command that reaches {}", boundary_reason(workdir)),
+                ) {
+                    Ok(allok) => {
+                        if allok {
+                            self.allow_all.insert("run_bash");
+                        }
+                        None
                     }
-                    return None;
-                }
-                return Some(if msg.is_empty() {
-                    format!(
-                        "[safety gate: the command appears to access paths outside the working directory; refused. Original command: {}]",
-                        head(command, 80)
-                    )
-                } else {
-                    msg
-                });
+                    Err(msg) => Some(msg),
+                };
             }
             return None;
         }
@@ -979,35 +1088,23 @@ impl Gate {
             if let Some(path) = inv.file_path().filter(|p| !p.is_empty()) {
                 let (real, inside) = safe_path(workdir, path, &self.policy.allow_dirs);
                 if !inside {
-                    let (allow, allok, msg) = ask(
+                    return match ask(
                         &self.policy,
                         self.confirmer.as_mut(),
                         name,
                         real.display().to_string(),
                         workdir,
                         "access",
-                    );
-                    if allow {
-                        if allok {
-                            self.allow_all.insert(
-                                FILE_TOOLS
-                                    .iter()
-                                    .find(|t| **t == name)
-                                    .copied()
-                                    .unwrap_or("read_file"),
-                            );
+                        &boundary_reason(workdir),
+                    ) {
+                        Ok(allok) => {
+                            if allok {
+                                self.allow_all.insert(file_tool(name));
+                            }
+                            None
                         }
-                        return None;
-                    }
-                    return Some(if msg.is_empty() {
-                        format!(
-                            "[safety gate: path {} is outside the working directory. Working directory: {}. Refused. If access is really needed, confirm it in the GUI prompt.]",
-                            real.display(),
-                            resolve_path(workdir).display()
-                        )
-                    } else {
-                        msg
-                    });
+                        Err(msg) => Some(msg),
+                    };
                 }
                 if is_sensitive_path(&real) {
                     if WRITE_TOOLS.contains(&name) {
@@ -1016,34 +1113,23 @@ impl Gate {
                             real.display()
                         ));
                     }
-                    let (allow, allok, msg) = ask(
+                    return match ask(
                         &self.policy,
                         self.confirmer.as_mut(),
                         name,
                         real.display().to_string(),
                         workdir,
                         "read a sensitive file",
-                    );
-                    if allow {
-                        if allok {
-                            self.allow_all.insert(
-                                FILE_TOOLS
-                                    .iter()
-                                    .find(|t| **t == name)
-                                    .copied()
-                                    .unwrap_or("read_file"),
-                            );
+                        "a sensitive file",
+                    ) {
+                        Ok(allok) => {
+                            if allok {
+                                self.allow_all.insert(file_tool(name));
+                            }
+                            None
                         }
-                        return None;
-                    }
-                    return Some(if msg.is_empty() {
-                        format!(
-                            "[safety gate: path {} matches a sensitive pattern; read refused.]",
-                            real.display()
-                        )
-                    } else {
-                        msg
-                    });
+                        Err(msg) => Some(msg),
+                    };
                 }
             }
         }

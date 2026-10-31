@@ -437,3 +437,132 @@ fn recursive_delete_resolves_home_variables_and_cd_before_judging() {
         assert!(classify(cmd, d.path(), &p).is_none(), "{cmd}");
     }
 }
+
+// Ring 3 for the shell (bead boubou-hzl, conversation rig 2026-10-31): a redirect, `tee` or
+// `cp`/`mv` destination outside the workdir is judged like a file-tool path.
+
+#[test]
+fn write_targets_finds_redirects_tee_and_copy_destinations() {
+    use boubou_kernel::safety::write_targets;
+    let t = |cmd: &str| -> Vec<String> { write_targets(cmd).into_iter().map(|(_, p)| p).collect() };
+    assert_eq!(t("echo hello > /tmp/x.txt"), ["/tmp/x.txt"]);
+    assert_eq!(t("cat >> notes.md"), ["notes.md"]);
+    assert_eq!(t("make 2> err.log"), ["err.log"]);
+    assert_eq!(
+        t("echo a | tee -a /tmp/log out.txt"),
+        ["/tmp/log", "out.txt"]
+    );
+    assert_eq!(t("cp a.txt b.txt /tmp/dir/"), ["/tmp/dir/"]);
+    assert_eq!(t("mv -f old.rs new.rs"), ["new.rs"]);
+    assert_eq!(t("cp -t ~/bin a b"), ["~/bin"]);
+    assert_eq!(t("echo 'a > b'"), ["b"]); // a quoted arrow is a harmless relative token
+    assert!(t("python -m pytest 2>&1").is_empty());
+    assert!(t("diff <(sort a) >(cat)").is_empty());
+    assert!(t("cat <<'EOF'\nhello\nEOF").is_empty());
+    assert!(t("mv a.txt").is_empty()); // one operand: no destination
+}
+
+#[test]
+fn a_shell_write_outside_the_workdir_is_judged_like_a_file_tool_path() {
+    let d = tempfile::tempdir().expect("tmp");
+    let outside = tempfile::tempdir().expect("tmp");
+    let out = outside.path().display();
+    let mut gate = Gate::headless(SafetyPolicy::default());
+    for cmd in [
+        format!("echo hello > {out}/perm.txt"),
+        format!("cat a.txt | tee {out}/copy.txt"),
+        format!("cp a.txt {out}/"),
+        format!("cd {out} && echo hi > x.txt"),
+        "echo hi > ~/boubou_test_never_written".to_string(),
+    ] {
+        let msg = gate.check(&bash(&cmd), d.path()).expect(&cmd);
+        assert!(
+            msg.contains("outside the working directory"),
+            "{cmd}: {msg}"
+        );
+        assert!(
+            !msg.contains("CLI mode") && !msg.contains("GUI prompt"),
+            "{msg}"
+        );
+    }
+    for cmd in [
+        "echo hello > perm.txt",
+        "python -m pytest -q > /dev/null 2>&1",
+        "cp a.txt sub/",
+        "echo x > $OUT",
+        "cd $X && echo hi > x.txt",
+        "git status 2>&1 | tee build.log",
+        "python3 -c \"import os; print(os.environ)\"",
+    ] {
+        assert!(gate.check(&bash(cmd), d.path()).is_none(), "{cmd}");
+    }
+    assert!(matches_escape_pattern("cat .env"));
+    assert!(matches_escape_pattern("cat .env.local"));
+    assert!(!matches_escape_pattern("print(os.environ)"));
+}
+
+// The three refusals (bead boubou-ik4): after the user's Deny the model is told who declined
+// and not to work around it; headless and unattended keep their own words.
+
+struct Says(boubou_kernel::safety::Verdict);
+
+impl boubou_kernel::safety::Confirmer for Says {
+    fn confirm(
+        &mut self,
+        _req: &boubou_kernel::safety::ConfirmRequest<'_>,
+    ) -> boubou_kernel::safety::Verdict {
+        self.0
+    }
+}
+
+#[test]
+fn the_deny_text_says_who_declined_and_forbids_the_workaround() {
+    use boubou_kernel::safety::Verdict;
+    let d = tempfile::tempdir().expect("tmp");
+    let write = ToolInvocation::CreateFile {
+        path: "/tmp/boubou_convo_perm.txt".into(),
+        content: "hello".into(),
+        replace: false,
+    };
+    let mut attended = Gate::new(SafetyPolicy::default(), Box::new(Says(Verdict::Deny)));
+    let msg = attended.check(&write, d.path()).expect("declined");
+    assert!(
+        msg.starts_with("[safety gate: the user declined this: create_file on "),
+        "{msg}"
+    );
+    assert!(msg.contains("outside the working directory"), "{msg}");
+    assert!(
+        msg.contains("Do not do it another way or write it somewhere else"),
+        "{msg}"
+    );
+    assert!(msg.contains("say what you could not do and stop"), "{msg}");
+    // The same words after a declined shell write.
+    let msg = attended
+        .check(&bash("echo hello > /tmp/boubou_convo_perm.txt"), d.path())
+        .expect("declined");
+    assert!(
+        msg.contains("the user declined this: run_bash on ")
+            && msg.contains("/tmp/boubou_convo_perm.txt, outside the working directory"),
+        "{msg}"
+    );
+    let mut headless = Gate::headless(SafetyPolicy::default());
+    let msg = headless.check(&write, d.path()).expect("refused");
+    // The target is the resolved path (`/private/tmp/…` on macOS), as a file tool's would be.
+    assert!(
+        msg.starts_with("[safety gate: create_file on ")
+            && msg.contains("/tmp/boubou_convo_perm.txt is outside the working directory"),
+        "{msg}"
+    );
+    assert!(
+        msg.ends_with("; refused.]") && !msg.contains("the user"),
+        "{msg}"
+    );
+    let mut unattended = Gate::headless(SafetyPolicy::unattended());
+    let msg = unattended.check(&write, d.path()).expect("refused");
+    assert!(
+        msg.contains("unattended mode") && !msg.contains("the user"),
+        "{msg}"
+    );
+    let mut allowed = Gate::new(SafetyPolicy::default(), Box::new(Says(Verdict::Allow)));
+    assert!(allowed.check(&write, d.path()).is_none());
+}
