@@ -1,0 +1,47 @@
+{
+ "id": "follow_ups",
+ "fixture": "ed01_slug",
+ "about": "The he2 shape: a code task, two one-line follow-ups, and a what-next question that must be answered, not acted on.",
+ "turns": [
+  {
+   "say": "In slug.py make slugify collapse runs of hyphens into one and strip leading and trailing hyphens. Then run the tests with python -m pytest -q.",
+   "expect": {
+    "file_regex": {
+     "slug.py": "(-\\+|-\\{2,\\}|strip\\(['\\\"]-|re\\.sub|rstrip|lstrip)"
+    }
+   }
+  },
+  {
+   "say": "Rename strip_accents to remove_accents everywhere it appears.",
+   "expect": {
+    "file_regex": {
+     "slug.py": "def remove_accents"
+    },
+    "file_not_regex": {
+     "slug.py": "strip_accents"
+    }
+   }
+  },
+  {
+   "say": "That one's done. What would you work on next in this module? Tell me in two or three lines; do not change anything.",
+   "expect": {
+    "no_tool": [
+     "create_file",
+     "edit_file",
+     "append_file"
+    ],
+    "reply_nonempty": true,
+    "reply_max_lines": 6,
+    "max_calls": 5
+   }
+  },
+  {
+   "say": "Add a one-line docstring to slug_path only; touch nothing else.",
+   "expect": {
+    "file_regex": {
+     "slug.py": "def slug_path[^\\n]*\\n\\s+(\\\"\\\"\\\"|''')"
+    }
+   }
+  }
+ ]
+}

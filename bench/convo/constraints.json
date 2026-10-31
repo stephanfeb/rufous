@@ -1,0 +1,59 @@
+{
+ "id": "constraints",
+ "fixture": "ch01_notes",
+ "about": "Instruction following under tool use: a standing format rule from turn 1 held through tool-heavy turns, a no-shell turn, a one-sentence reply.",
+ "turns": [
+  {
+   "say": "For the rest of this conversation, start every reply with the word OK.",
+   "expect": {
+    "reply_regex": "^\\s*OK"
+   }
+  },
+  {
+   "say": "List the files under notes/, names only, one per line, nothing else.",
+   "expect": {
+    "reply_regex": [
+     "^\\s*OK",
+     "2026-10-06_platform_sync\\.md",
+     "2026-10-20_platform_sync\\.md"
+    ],
+    "reply_max_lines": 6
+   }
+  },
+  {
+   "say": "How many markdown files are under notes/? Reply with OK and the number only.",
+   "expect": {
+    "reply_regex": "^\\s*OK\\W*3\\b",
+    "reply_max_lines": 2
+   }
+  },
+  {
+   "say": "Create brief.md with three bullet points summarising the notes. Do not run any shell command.",
+   "expect": {
+    "files_exist": [
+     "brief.md"
+    ],
+    "file_regex": {
+     "brief.md": "(^|\\n)\\s*[-*] "
+    },
+    "no_tool": [
+     "run_bash"
+    ],
+    "reply_regex": "^\\s*OK"
+   }
+  },
+  {
+   "say": "In one sentence, what did you create?",
+   "expect": {
+    "reply_regex": "^\\s*OK",
+    "reply_max_lines": 2,
+    "no_tool": [
+     "create_file",
+     "edit_file",
+     "append_file",
+     "run_bash"
+    ]
+   }
+  }
+ ]
+}

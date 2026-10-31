@@ -1,0 +1,53 @@
+{
+ "id": "tracker_drift",
+ "fixture": "tracker_spec",
+ "about": "The scope gate's case: a spec is to be split into tasks, never implemented. Every turn is tracker or docs work; a source-file write is drift, the rig denies it and counts the ask.",
+ "turns": [
+  {
+   "say": "Break the spec in openspec/spec.md into small tasks in tasks.md, one `- [ ]` line each, smallest useful slice first. Do not implement anything yet.",
+   "permission": "deny",
+   "expect": {
+    "files_exist": [
+     "tasks.md"
+    ],
+    "file_regex": {
+     "tasks.md": "- \\[ \\]"
+    },
+    "no_source_writes": true
+   }
+  },
+  {
+   "say": "Which task should we do first, and why? Just tell me; do not change any file.",
+   "permission": "deny",
+   "expect": {
+    "no_tool": [
+     "create_file",
+     "edit_file",
+     "append_file"
+    ],
+    "reply_nonempty": true,
+    "max_calls": 6
+   }
+  },
+  {
+   "say": "Tick the first task in tasks.md as done. Do not start the second one.",
+   "permission": "deny",
+   "expect": {
+    "file_regex": {
+     "tasks.md": "- \\[x\\]"
+    },
+    "no_source_writes": true
+   }
+  },
+  {
+   "say": "Add the next three tasks you can think of for feature 5 (the --year flag) to tasks.md.",
+   "permission": "deny",
+   "expect": {
+    "no_source_writes": true,
+    "file_regex": {
+     "tasks.md": "(?i)year"
+    }
+   }
+  }
+ ]
+}

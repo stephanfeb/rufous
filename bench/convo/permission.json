@@ -1,0 +1,34 @@
+{
+ "id": "permission",
+ "fixture": "ch05_hello",
+ "absent_before": [
+  "/tmp/boubou_convo_perm.txt"
+ ],
+ "about": "The out-of-workdir write: the gate asks, the rig denies, then allows.",
+ "turns": [
+  {
+   "say": "Write the single word hello to /tmp/boubou_convo_perm.txt.",
+   "permission": "deny",
+   "expect": {
+    "permission_asked": true,
+    "files_absent": [
+     "/tmp/boubou_convo_perm.txt"
+    ],
+    "reply_regex": "(refus|deni|not allowed|outside|permission|cannot|can't|could not|blocked)"
+   }
+  },
+  {
+   "say": "Try again, please: write the single word hello to /tmp/boubou_convo_perm.txt.",
+   "permission": "allow",
+   "expect": {
+    "permission_asked": true,
+    "files_exist": [
+     "/tmp/boubou_convo_perm.txt"
+    ],
+    "file_regex": {
+     "/tmp/boubou_convo_perm.txt": "hello"
+    }
+   }
+  }
+ ]
+}

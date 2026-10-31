@@ -1,0 +1,93 @@
+{
+ "id": "longform",
+ "fixture": "ch01_notes",
+ "ctx": 7000,
+ "about": "Ten turns on one growing file at a small window so compaction fires (first run at 12000 peaked at 5.3k tokens and never compacted; 7000 puts the 60% line at 4.2k); a turn-1 fact recalled at the end and a count the model must get from the file.",
+ "turns": [
+  {
+   "say": "We are writing report.md together. The project codename is Heron. Create report.md containing only the title line '# Heron report'.",
+   "expect": {
+    "file_regex": {
+     "report.md": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Attendance' to report.md with two sentences on attendance drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Attendance",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Decisions' to report.md with two sentences on decisions drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Decisions",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Postgres migration' to report.md with two sentences on postgres migration drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Postgres migration",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Risks' to report.md with two sentences on risks drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Risks",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Owners' to report.md with two sentences on owners drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Owners",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Deadlines' to report.md with two sentences on deadlines drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Deadlines",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Append a section '## Open questions' to report.md with two sentences on open questions drawn from the notes under notes/. Change nothing else in the file.",
+   "expect": {
+    "file_regex": {
+     "report.md": "## Open questions",
+     "report.md#title": "# Heron report"
+    }
+   }
+  },
+  {
+   "say": "Without reading any file: what is the project codename? One word.",
+   "expect": {
+    "reply_regex": "Heron",
+    "max_calls": 2
+   }
+  },
+  {
+   "say": "How many '## ' section headings does report.md have now? Reply with the number only.",
+   "expect": {
+    "reply_regex": "\\b7\\b",
+    "reply_max_lines": 2
+   }
+  }
+ ]
+}

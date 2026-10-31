@@ -2140,3 +2140,66 @@ refusing without an ask, shadow noting only. A unit test reads every bench task 
 asserts none that reads as tracker or docs names a source deliverable, so no cell can lose to
 the gate. 561 tests. The heuristic is the uncertain part: the first live sessions should be
 read for `[scope]` lines and any `[scope gate:` refusal that was wrong.
+
+## Conversation rig over ACP (2026-10-31, bead boubou-6gq)
+
+For the 4B tests the user wants (qwen3.5:4b and gemma4:e4b are on disk; tev1:4b is a
+decision model, not a candidate): `bench/acp_convo.py` drives `boubou acp` over stdio as an
+editor does (initialize, session/new, one session/prompt per turn, updates collected,
+`session/request_permission` answered from the script, default deny, every ask recorded; no
+`fs` capability, so files go to disk). One cell is model x script x run in its own folder:
+`home/` is BOUBOU_HOME with the user's `config.json` copied in, `work/` a fresh fixture copy;
+the session `.log` the server now writes there gives the tool calls per turn, split on its
+`[turn]` markers, so the rig reads the log it was built to make readable. Each turn's
+expectations are checked right after the turn (a later turn may change the files). Five
+scripts under `bench/convo/`: `tracker_drift` (the scope gate's case on a new fixture
+`convo/fixtures/tracker_spec`), `follow_ups` (the he2 shape on ed01_slug), `constraints`
+(a standing "start with OK" rule across tool-heavy turns, a no-shell turn, a one-sentence
+reply), `longform` (ten appending turns at ctx 12000 so compaction fires, a codename recalled
+without reading, a section count), `permission` (an out-of-workdir write denied then
+allowed). The table shows turns passed, asks, calls, `gsw` (source writes in turns the gate
+classed tracker or docs, refused calls excluded), compactions, peak tokens and wall, then the
+mean pass rate per model x script with n. Tests: the driver end to end against a fake ACP
+agent in Python (wire format, a permission round trip both ways, a session log, the cache
+hit, the summary), the log splitter, every checker key, and every script loading with its
+fixture. The real server was driven through initialize and session/new (no prompt, no model
+call) to confirm the shapes. Nothing here calls Ollama by itself.
+
+## First conversation-rig run: two 4B models, five scripts, n=3 (2026-10-31)
+
+`bench/results/convo/4b_2026-10-31`, ctx 32000 (longform 12000), release binary of 18:58,
+both models through `boubou acp` exactly as Zed drives it, the rig answering permission
+asks (deny unless the script says allow). Mean turn pass rate per script:
+
+| script | gemma4:e4b | qwen3.5:4b |
+|---|---|---|
+| constraints (standing "start with OK" rule) | 1.00 | 0.33 |
+| follow_ups (code task + follow-ups + what-next) | 1.00 | 1.00 |
+| longform (10 appends, recall, count) | 1.00 | 0.97 |
+| tracker_drift (spec → tasks.md, never implement) | 0.50 | 0.33 |
+| permission (out-of-workdir write, deny then allow) | 0.17 | 0.33 |
+
+Harness findings, each filed as a bead with a design: (1) P1, after the file tool's write to
+`/tmp/…` was denied, qwen3.5:4b wrote it with `echo … > /tmp/…` in 3/3 runs and ring 3 let
+it through: the bash escape patterns cover drive letters, `~`, `/home`, `/etc`, `/usr` for
+cp/mv only, no redirects, no `/tmp`; also `\.env` matched `os.environ` in a heredoc (two
+false asks in one follow_ups cell). (2) P1, the deny text the model reads after the user's
+Deny says "CLI mode does not allow out-of-bounds access" (the file-tool fallback: "confirm it
+in the GUI prompt"); gemma4:e4b then wrote the file inside the project and reported success
+3/3, qwen went round through bash; nothing told either not to substitute. (3) P2, the
+tracker script never armed the scope gate: the negated "do not implement" counted as a code
+signal, "task/tasks" are not tracker words, "feature" is a code word; 25 rig instructions plus
+the two live ones are now a labelled set for v2. No drift happened in 12 tracker cells
+(0 asks, 0 guarded source writes), so the gate was neither tested nor harmful. (4) P2, told
+to write the tasks into `tasks.md`, 5/6 cells put them into the `todo` tool and claimed the
+file was updated; the coding policy has no finish gate to bounce the claim. (5) P2, nine of
+qwen's ten failing constraint turns ended through `finish`, whose summary became the reply
+and read as a status report without the standing rule; the text-ending turns kept it. Model
+readings: gemma4:e4b held a standing format rule across five tool-using turns 15/15 and
+recalled a turn-1 fact 3/3; qwen3.5:4b recalled 3/3 and once spent 27 calls and 250 s on a
+rename, editing and then deleting the fixture's collateral checker to make it pass. Neither
+model drifted from tracker work into code in this fixture, which has no tracker workflow text
+pulling it (the live case had `bd prime` in the prompt). Compaction never fired: longform
+peaked at 5.3k tokens of 12k, so the script now runs at ctx 7000. Wall per cell: gemma
+13–99 s, qwen 14–297 s. Rig correction made during analysis: a refused write is an attempt,
+not a write, in the `gsw` column.

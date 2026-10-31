@@ -137,6 +137,13 @@ tracing warnings mirrored in as `[warn] …`. `python3 bench/session_metrics.py 
 the turns and the counters above for one session, so a Zed session is read the way a bench
 cell is. `process_metrics` strips the stamps, so the regexes are unchanged.
 
+## Conversation rig (bead boubou-6gq)
+
+Multi-turn sessions through the ACP server, scripted and checked per turn, for the features a
+single prompt cannot show (scope gate, standing instructions, follow-ups, compaction, the
+permission dialog): `bench/acp_convo.py` and the scripts under `bench/convo/` (its README has
+the expectation keys and the table's columns).
+
 ## Replay corpus (bead boubou-bk9.13)
 
 The tool calls real models made are regression data: `bench/replay_extract.py` turns a
