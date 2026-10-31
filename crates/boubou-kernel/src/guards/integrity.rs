@@ -176,18 +176,15 @@ impl CommandRecord {
         }
     }
 
-    /// A `create_file` / `edit_file` / `append_file` / `delete_file` call; it ran unless the
-    /// result is an error, a refusal, a missed edit or an edit that was already in the file.
-    pub fn file_write(tool: &str, path: &str, result: &str) -> Self {
-        let r = result.trim_start();
-        let ran = !(r.starts_with("[tool error")
-            || r.starts_with("[safety gate")
-            || r.starts_with("[edit failed")
-            || r.starts_with("[no change"));
+    /// A `create_file` / `edit_file` / `append_file` / `delete_file` call. `landed` is the
+    /// executor's word ([`crate::exec::ToolStatus::Ok`]): until 2026-10-31 (bead
+    /// boubou-bj4) this read four result openings and missed the scope gate's and the
+    /// blocked-path ones, so a refused write counted as a landed one here.
+    pub fn file_write(tool: &str, path: &str, landed: bool) -> Self {
         Self {
             kind: ActionKind::FileWrite,
             command: format!("{tool} {path}"),
-            exit: ran.then_some(0),
+            exit: landed.then_some(0),
         }
     }
 
@@ -967,14 +964,14 @@ mod tests {
         ]));
         assert!(!verified_at_end(&[
             rec("python check.py", "[exit 0]"),
-            CommandRecord::file_write("create_file", "result.txt", "[created result.txt]")
+            CommandRecord::file_write("create_file", "result.txt", true)
         ]));
         // a refused write never ran, nor did a missed edit or one already in the file
         assert!(verified_at_end(&[
             rec("python check.py", "[exit 0]"),
-            CommandRecord::file_write("delete_file", "/etc/x", "[safety gate: refused]"),
-            CommandRecord::file_write("edit_file", "a.py", "[edit failed: old text not found."),
-            CommandRecord::file_write("edit_file", "a.py", "[no change: a.py already contains")
+            CommandRecord::file_write("delete_file", "/etc/x", false),
+            CommandRecord::file_write("edit_file", "a.py", false),
+            CommandRecord::file_write("edit_file", "a.py", false)
         ]));
         assert!(!verified_at_end(&[rec("python check.py", "[exit 1]")]));
         assert!(!verified_at_end(&[]));
@@ -997,7 +994,7 @@ mod tests {
         // a file tool after the check is a change too
         let cmds = vec![
             rec("python check.py", "[exit 0]\nOK"),
-            CommandRecord::file_write("edit_file", "result.txt", "[edited result.txt]"),
+            CommandRecord::file_write("edit_file", "result.txt", true),
         ];
         assert!(claim_contradiction("check.py printed OK", &cmds).is_some());
         // reading after the check is fine
@@ -1069,7 +1066,7 @@ mod tests {
             assert!(!is_read_only_command(c), "{c}");
         }
         // file tool names never look like verification commands
-        assert!(!CommandRecord::file_write("edit_file", "test_x.py", "[edited]").is_verification());
+        assert!(!CommandRecord::file_write("edit_file", "test_x.py", true).is_verification());
     }
 
     #[test]

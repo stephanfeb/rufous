@@ -19,7 +19,7 @@ use crate::hooks::Hooks;
 use crate::mcp::{self, McpRegistry};
 use crate::memory;
 use crate::parallel::{ChildSandbox, ParallelConfig};
-use crate::safety::{resolve_path, safe_path, Gate, SafetyPolicy};
+use crate::safety::{resolve_path, safe_path, Gate, RefusalKind, Refused, SafetyPolicy};
 use crate::skills::{Skill, SkillSet};
 use crate::text::{self, clen, head};
 use crate::todo::run_todo;
@@ -169,6 +169,88 @@ pub struct CrawlEntry {
     pub throttle_notified: bool,
 }
 
+/// What a tool call came to, as data beside its text (bead boubou-bj4). The text is for the
+/// model and changes under measurement; the loop, the session status, the integrity record
+/// and the bench read this. [`Executor::run_tool`] sets it from the gate and the hooks
+/// directly and from a tool's own result through [`ToolStatus::of_text`], the one place
+/// that knows the executor's result openings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    /// The tool did what was asked (a shell command that ran counts, whatever its exit).
+    Ok,
+    /// A write that changed nothing: the edit was already in the file.
+    NoChange,
+    /// The tool could not do it: bad arguments, a missing file, an edit text not found, an
+    /// I/O error, the overwrite guard, a network or MCP error.
+    Error,
+    /// A gate refused it before it ran.
+    Refused(Refused),
+}
+
+/// Result openings the executor writes for a call that did not do what was asked. New
+/// openings go here; `of_text` is the only reader.
+const ERROR_OPENINGS: [&str; 15] = [
+    "[tool error",
+    "[edit failed",
+    "[overwrite guard",
+    "[not found",
+    "[not a file",
+    "[not a dir",
+    "[unknown tool",
+    "[invalid tool name",
+    "[mcp_call error",
+    "[MCP server",
+    "[web_fetch error",
+    "[web_search error",
+    "[spawn failed",
+    "[skill '",
+    "[tool ",
+];
+
+impl ToolStatus {
+    /// The status a result text stands for. Used by the executor for its own tools' results
+    /// (the gate's and the hooks' refusals are typed before any text exists) and by the loop
+    /// for a [`crate::agent::run::ToolRunner`] that reports no status (test doubles); the
+    /// kinds it assigns to a refusal text it did not issue are the common ones.
+    pub fn of_text(res: &str) -> Self {
+        let r = res.trim_start();
+        if r.starts_with("[no change") {
+            return Self::NoChange;
+        }
+        if r.starts_with("[blocked: path out of bounds")
+            || r.starts_with("[safety gate")
+            || r.starts_with("[child safety gate")
+        {
+            return Self::Refused(Refused::gate(RefusalKind::Boundary));
+        }
+        if r.starts_with("[scope gate") {
+            return Self::Refused(Refused::gate(RefusalKind::Scope));
+        }
+        if r.starts_with("[safety net") {
+            return Self::Refused(Refused::gate(RefusalKind::Risk));
+        }
+        if ERROR_OPENINGS.iter().any(|o| r.starts_with(o)) {
+            return Self::Error;
+        }
+        Self::Ok
+    }
+
+    /// The log tag after the result head: `error`, `nochange`, `refused:<kind>[:user]`;
+    /// none for a call that did its job.
+    pub fn tag(&self) -> Option<String> {
+        match self {
+            Self::Ok => None,
+            Self::NoChange => Some("nochange".to_string()),
+            Self::Error => Some("error".to_string()),
+            Self::Refused(r) => Some(format!(
+                "refused:{}{}",
+                r.kind.tag(),
+                if r.by_user { ":user" } else { "" }
+            )),
+        }
+    }
+}
+
 pub struct Executor {
     pub workdir: PathBuf,
     /// Where the harness's own files go (`todo.json`, backups, trash, the image queue):
@@ -211,6 +293,8 @@ pub struct Executor {
     pub child: Option<ChildSandbox>,
     /// Set once the child sandbox trips its fuse; the loop ends the run with exit 53.
     child_terminated: Option<String>,
+    /// What the last [`Self::run_tool`] came to.
+    last_status: ToolStatus,
     /// The agent's stop flag: raised, a running command's process tree is terminated at
     /// the next poll and the tool returns what it had.
     pub stop: Option<Arc<AtomicBool>>,
@@ -261,6 +345,7 @@ impl Executor {
             install_dir,
             builtin_skills: Vec::new(),
             child: None,
+            last_status: ToolStatus::Ok,
             child_terminated: None,
         }
     }
@@ -380,10 +465,24 @@ impl Executor {
     /// `PreToolUse` hooks run after the safety gate has passed the call (a hook can only
     /// narrow; its block reads as a tool error so the failure ladder sees it), the
     /// `PostToolUse` hooks after dispatch, their context appended to the result.
+    /// What the last [`Self::run_tool`] came to, as data.
+    pub fn last_status(&self) -> ToolStatus {
+        self.last_status
+    }
+
     pub fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        self.last_status = ToolStatus::Ok;
+        self.gate.clear_refusal();
         let inv = match self.prepare(name, args) {
             Ok(inv) => inv,
-            Err(text) => return text,
+            Err(text) => {
+                if let Some(r) = self.gate.last_refusal() {
+                    self.last_status = ToolStatus::Refused(r);
+                } else if !matches!(self.last_status, ToolStatus::Refused(_)) {
+                    self.last_status = ToolStatus::Error;
+                }
+                return text;
+            }
         };
         let name = resolve_alias(name);
         if !self.hooks.is_empty() {
@@ -392,10 +491,12 @@ impl Executor {
                 tracing::warn!(target: "boubou_kernel::hooks", "{n}");
             }
             if let Some(reason) = pre.blocked {
+                self.last_status = ToolStatus::Refused(Refused::gate(RefusalKind::Hook));
                 return format!("[tool error: blocked by a project hook: {reason}]");
             }
         }
         let mut res = self.dispatch(inv);
+        self.last_status = ToolStatus::of_text(&res);
         if !self.hooks.is_empty() {
             let post = self.hooks.post_tool(name, args, &res);
             for n in &post.notes {
@@ -552,6 +653,7 @@ impl Executor {
         if let Some(sb) = self.child.as_mut() {
             let chk = sb.check_tool(name, &map);
             if !chk.allowed() {
+                self.last_status = ToolStatus::Refused(Refused::gate(RefusalKind::Child));
                 if sb.should_terminate() && self.child_terminated.is_none() {
                     self.child_terminated = Some(format!(
                         "{} target={}",

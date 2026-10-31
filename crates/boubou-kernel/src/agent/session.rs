@@ -394,24 +394,27 @@ fn initial_cursor(dir: &Path, session: &str, transcript: &Path, n: usize) -> usi
     }
 }
 
-/// Session status derived from the tail of the conversation.
-fn session_status(msgs: &[Message]) -> &'static str {
-    for m in msgs.iter().rev() {
-        if m.content.contains("TASK_COMPLETE") {
-            return "done";
-        }
-        if m.content.contains("MAX ITERATIONS") {
-            return "max-iter";
-        }
-        if m.tool_calls.iter().any(|tc| tc.function.name == "finish") {
-            return "done";
-        }
+/// Session status: the loop's own word on how it ended (`done`, `max-iter`), or `done` when
+/// the model called `finish`, else `running`. Until 2026-10-31 (bead boubou-bj4) this
+/// searched every message for the substrings `TASK_COMPLETE` and `MAX ITERATIONS`, so a
+/// pasted log or an echoed banner set the status.
+fn session_status(end: Option<&str>, msgs: &[Message]) -> String {
+    if let Some(e) = end {
+        return e.to_string();
     }
-    "running"
+    if msgs
+        .iter()
+        .any(|m| m.tool_calls.iter().any(|tc| tc.function.name == "finish"))
+    {
+        return "done".to_string();
+    }
+    "running".to_string()
 }
 
 /// `save_session`: transcript first, then the context JSON, the todo snapshot and meta.
-/// `policy` is the name of the turn policy this turn ran under, recorded in the meta file.
+/// `policy` is the name of the turn policy this turn ran under, recorded in the meta file;
+/// `end` is how the loop ended (`done`, `max-iter`), `None` while it runs.
+#[allow(clippy::too_many_arguments)]
 pub fn save_session(
     dir: &Path,
     name: Option<&str>,
@@ -419,6 +422,7 @@ pub fn save_session(
     workdir: Option<&Path>,
     plan_dir: Option<&Path>,
     policy: &str,
+    end: Option<&str>,
     transcript: &mut Transcript,
 ) {
     let Some(name) = name else {
@@ -451,7 +455,7 @@ pub fn save_session(
         Value::String(chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()),
     );
     upd.insert("task".into(), Value::String(task));
-    upd.insert("status".into(), Value::String(session_status(msgs).into()));
+    upd.insert("status".into(), Value::String(session_status(end, msgs)));
     upd.insert("msgs".into(), Value::from(msgs.len()));
     upd.insert("policy".into(), Value::String(policy.to_string()));
     if let Some(wd) = workdir {

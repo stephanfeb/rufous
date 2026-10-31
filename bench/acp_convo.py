@@ -210,7 +210,8 @@ def session_log_turns(home):
         cur["lines"] += 1
         m = CALL.match(line)
         if m:
-            cur["calls"].append({"tool": m.group(3), "args": m.group(4), "result": m.group(5) or ""})
+            result, status = split_status(m.group(5) or "")
+            cur["calls"].append({"tool": m.group(3), "args": m.group(4), "result": result, "status": status})
         m = re.search(r"\[ctx: (\d+)/(\d+)", line)
         if m:
             cur["ctx_peak"] = max(cur["ctx_peak"], int(m.group(1)))
@@ -226,15 +227,34 @@ def is_source_path(p):
     return p.rsplit(".", 1)[-1].lower() in SOURCE_EXT if "." in os.path.basename(p) else False
 
 
+# Result openings of a refused or failed call, for logs written before the status tag
+# (bead boubou-bj4); a tagged log says `⟂refused:<kind>` and the prefixes are not consulted.
 REFUSED = ("[scope gate", "[safety gate", "[blocked", "[tool error", "[child safety gate")
 
 
+def split_status(result):
+    """`<result head> ⟂<tag>` → (head, tag); an untagged result → (result, "")."""
+    if " ⟂" in result:
+        head, tag = result.rsplit(" ⟂", 1)
+        return head, tag.strip()
+    return result, ""
+
+
+def did_not_land(call):
+    """The call was refused or failed: by its status tag when the log has one, else by the
+    result's opening."""
+    status = call.get("status", "")
+    if status:
+        return status != "nochange" and status != ""
+    return call["result"].startswith(REFUSED)
+
+
 def source_writes(calls):
-    """Source-file writes that happened: a call the gate refused (its result starts with the
-    refusal marker) is an attempt, counted under `asks` when it was asked about, not a write."""
+    """Source-file writes that happened: a call the gate refused is an attempt, counted under
+    `asks` when it was asked about, not a write."""
     out = []
     for c in calls:
-        if c["tool"] in WRITE_TOOLS and not c["result"].startswith(REFUSED):
+        if c["tool"] in WRITE_TOOLS and not did_not_land(c):
             m = PATH_IN_ARGS.search(c["args"])
             if m and is_source_path(m.group(1)):
                 out.append(m.group(1))

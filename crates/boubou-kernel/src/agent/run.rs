@@ -191,6 +191,11 @@ pub trait ToolRunner {
     fn take_scope_notes(&mut self) -> Vec<String> {
         Vec::new()
     }
+    /// What the last `run_tool` came to, as data ([`crate::exec::ToolStatus`]); `None` from
+    /// a runner that only returns text, which the loop then classifies by the executor's rule.
+    fn last_status(&self) -> Option<crate::exec::ToolStatus> {
+        None
+    }
     /// `mcp_tool_defs`: flattened `server.tool` definitions for the routed categories.
     fn mcp_tool_defs(
         &self,
@@ -209,6 +214,9 @@ pub trait ToolRunner {
 impl ToolRunner for Executor {
     fn run_tool(&mut self, name: &str, args: &Value) -> String {
         Executor::run_tool(self, name, args)
+    }
+    fn last_status(&self) -> Option<crate::exec::ToolStatus> {
+        Some(Executor::last_status(self))
     }
     fn set_hooks(&mut self, hooks: crate::hooks::Hooks) {
         self.hooks = hooks;
@@ -754,6 +762,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 );
             }
         }
+        // How the loop ended, for the session meta; `None` while it runs.
+        let mut session_end: Option<&str> = None;
         macro_rules! save {
             () => {
                 session::save_session(
@@ -763,6 +773,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     Some(workdir),
                     Some(hdir),
                     policy.name,
+                    session_end,
                     transcript,
                 );
                 if session.is_some() {
@@ -1370,6 +1381,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 let args_v = Value::Object(args.clone());
                 let sig_json = args_v.to_string(); // keys sorted: serde_json Map is a BTreeMap
                 let res: String;
+                // What the call came to, as data: the executor's word, or the executor's
+                // rule over the text for a runner that has no word (bead boubou-bj4).
+                let status: crate::exec::ToolStatus;
                 // A note that must follow this call's tool output (call → error → note).
                 let mut after_output: Option<String> = None;
                 let n = name.as_str();
@@ -1406,6 +1420,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     } else {
                         format!("[tool {shown} is not available (not in the tool list assembled for this run: either its category was not loaded, or the name does not exist). Do not invent tool names: create_file for output files, edit_file/create_file to change files, read_file to read; the full list is in your tool definitions.]")
                     };
+                    status = crate::exec::ToolStatus::Error;
                     if recall == (Recall::Refuse { note: true }) {
                         messages.push(Message::user(format!(
                             "⚠️ The tool {shown} is unavailable (disabled or not assembled) and you have tried it several times. Calling it again will not run and it will no longer appear in your tool list. Change action now: write output files with create_file; use read_file/list_dir to inspect what exists."
@@ -1517,6 +1532,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 } else {
                     sink(AgentEvent::ToolCall(tc.clone()));
                     res = tools.run_tool(n, &args_v);
+                    status = tools
+                        .last_status()
+                        .unwrap_or_else(|| crate::exec::ToolStatus::of_text(&res));
                     calls.ran(&name, &sig_json);
                     if let Some(reason) = tools.child_terminated() {
                         // ≥1 severe refusal (system-area write, irreversible command): end
@@ -1559,7 +1577,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     "create_file" | "edit_file" | "append_file" | "delete_file"
                 ) {
                     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
-                    cmd_records.push(integrity::CommandRecord::file_write(n, path, &res));
+                    cmd_records.push(integrity::CommandRecord::file_write(
+                        n,
+                        path,
+                        status == crate::exec::ToolStatus::Ok,
+                    ));
                 }
                 // A successful change to the world makes every earlier verdict about *other*
                 // calls stale (same rule as the integrity gate's stale-evidence branch): the
@@ -1572,10 +1594,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     ledger.lift_others(&name, &sig_json);
                 }
                 log!(
-                    "[{i}|+{}s] ⚙ {name} {} -> {}",
+                    "[{i}|+{}s] ⚙ {name} {} -> {}{}",
                     t0.elapsed().as_secs(),
                     text::head(&sig_json, 160),
-                    text::head(&res, 90)
+                    text::head(&res, 90),
+                    status.tag().map(|t| format!(" ⟂{t}")).unwrap_or_default()
                 );
                 // A failed command's first stderr line as a protocol fact (bead boubou-bk9.14):
                 // the bench reads it to count failures the shell or an interpreter reported,
@@ -1599,7 +1622,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     name: name.clone(),
                     args: args_v.clone(),
                     output: res.clone(),
-                    blocked: false,
+                    blocked: matches!(status, crate::exec::ToolStatus::Refused(_)),
                 });
 
                 if n == "finish" {
@@ -1887,6 +1910,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             summary.clone()
                         },
                     });
+                    session_end = Some("done");
                     save!();
                     return Ok(messages);
                 }
@@ -1948,7 +1972,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     sink(AgentEvent::ToolCall(tc.clone()));
                                 }
                                 let cres = tools.run_tool(&cname, &cargs);
-                                let cfailed = is_tool_error(&cres)
+                                let cstatus = tools
+                                    .last_status()
+                                    .unwrap_or_else(|| crate::exec::ToolStatus::of_text(&cres));
+                                let cfailed = cstatus != crate::exec::ToolStatus::Ok
+                                    || is_tool_error(&cres)
                                     || (cname == "run_bash"
                                         && integrity::exit_code_of(&cres).is_some_and(|c| c != 0));
                                 sink(AgentEvent::ToolResult {
@@ -1970,7 +1998,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     let path =
                                         cargs.get("path").and_then(Value::as_str).unwrap_or("");
                                     cmd_records.push(integrity::CommandRecord::file_write(
-                                        &cname, path, &cres,
+                                        &cname,
+                                        path,
+                                        cstatus == crate::exec::ToolStatus::Ok,
                                     ));
                                 }
                                 if !cfailed && cmd_records.last().is_some_and(|r| r.mutates()) {
@@ -1989,10 +2019,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     text::head(&cargs.to_string(), 60)
                                 );
                                 log!(
-                                    "[{i}|+{}s] ⚙ {cname} {} -> {}",
+                                    "[{i}|+{}s] ⚙ {cname} {} -> {}{}",
                                     t0.elapsed().as_secs(),
                                     text::head(&cargs.to_string(), 60),
-                                    text::head(&cres, 90)
+                                    text::head(&cres, 90),
+                                    cstatus.tag().map(|t| format!(" ⟂{t}")).unwrap_or_default()
                                 );
                                 messages.push(cmsg);
                                 messages.push(Message::tool_output(cres));
@@ -2080,9 +2111,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             ));
                         }
                         Failure::Redirect { count } => {
-                            let path_refused = res.contains("outside the working directory")
-                                || res.contains("out of bounds")
-                                || res.contains("the user declined this call");
+                            // The gate's word, not its prose (bead boubou-bj4).
+                            let path_refused = matches!(
+                                status,
+                                crate::exec::ToolStatus::Refused(crate::safety::Refused {
+                                    kind: crate::safety::RefusalKind::Boundary
+                                        | crate::safety::RefusalKind::Substitute
+                                        | crate::safety::RefusalKind::Child,
+                                    ..
+                                })
+                            );
                             let hint = if path_refused {
                                 "⚠️ The rejected path is outside the working directory. All of the task's input files are already in your working directory: run list_dir(path='.') now, read the files it lists, and do not touch any path outside the working directory again."
                             } else if n == "run_bash" {
@@ -2224,6 +2262,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         if exhausted {
             log!("===== MAX ITERATIONS =====");
             sink(AgentEvent::MaxIterations);
+            session_end = Some("max-iter");
         }
         save!();
         Ok(messages)

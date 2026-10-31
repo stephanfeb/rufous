@@ -129,7 +129,7 @@ def test_session_log_turns_split_on_markers(tmp_path):
         "2026-10-31 19:00:01 [0|+1s] ⚙ read_file {\"path\":\"openspec/spec.md\"} -> # Spec\n"
         "2026-10-31 19:00:02 [ctx: 5000/12000 = 41%]\n"
         "2026-10-31 19:00:03 [1|+3s] ⚙ create_file {\"path\":\"tasks.md\",\"content\":\"x\"} -> [created]\n"
-        "2026-10-31 19:00:04 [2|+5s] ⚙ edit_file {\"path\":\"lib/export.py\",\"old\":\"a\"} -> [scope gate: …]\n"
+        "2026-10-31 19:00:04 [2|+5s] ⚙ edit_file {\"path\":\"lib/export.py\",\"old\":\"a\"} -> [the text may say anything] ⟂refused:scope:user\n"
         "2026-10-31 19:00:04 [3|+6s] ⚙ append_file {\"path\":\"lib/cli.py\",\"content\":\"a\"} -> [appended 1 line]\n"
         "2026-10-31 19:00:05 [context compaction L1: 10 -> 4 messages]\n"
         "2026-10-31 19:00:06 [turn] Which task first?\n"
@@ -170,3 +170,13 @@ def test_every_script_loads_and_names_a_fixture():
         assert s["turns"], s["id"]
         for t in s["turns"]:
             assert t["say"].strip() and isinstance(t.get("expect", {}), dict), (s["id"], t)
+
+
+def test_a_status_tag_decides_what_landed_and_old_logs_fall_back_to_the_opening():
+    assert rig.split_status("[created x] ") == ("[created x] ", "")
+    assert rig.split_status("[whatever the gate said] ⟂refused:boundary:user") == (
+        "[whatever the gate said]", "refused:boundary:user")
+    tagged = {"tool": "create_file", "args": '{"path":"lib/a.py"}', "result": "[anything]", "status": "refused:scope"}
+    old = {"tool": "create_file", "args": '{"path":"lib/a.py"}', "result": "[scope gate: …]", "status": ""}
+    landed = {"tool": "create_file", "args": '{"path":"lib/a.py"}', "result": "[created lib/a.py]", "status": ""}
+    assert rig.source_writes([tagged, old, landed]) == ["lib/a.py"]

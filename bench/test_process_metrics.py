@@ -210,3 +210,17 @@ def test_harness_damage_counters():
     assert m["harness_notes"] == 3
     assert m["loop_interceptions"] == 1, "the disable line counts as before"
     assert [k for _l, k in lrab_h2h.PROCESS_COLS][-3:] == ["shell_errors", "bak_calls", "harness_notes"]
+
+
+def test_the_status_tag_counts_failures_and_refusals_without_reading_the_text(tmp_path):
+    text = (
+        '[0|+1s] ⚙ create_file {"path":"a.txt"} -> [some words the model reads] ⟂refused:boundary:user\n'
+        '[1|+2s] ⚙ edit_file {"path":"a.txt"} -> [other words] ⟂error\n'
+        '[2|+3s] ⚙ edit_file {"path":"a.txt"} -> [no change: …] ⟂nochange\n'
+        '[3|+4s] ⚙ run_bash {"command":"x"} -> [exit 0]\n'
+        '[4|+5s] ⚙ create_file {"content":"x"} -> [tool error: missing path]\n'
+    )
+    m = pm.parse_transcript(text)
+    assert m["tool_calls"] == 5
+    assert m["refused_calls"] == 1
+    assert m["failed_calls"] == 2, "the tag counts the first, the untagged opening the last"

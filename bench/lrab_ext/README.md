@@ -137,6 +137,14 @@ tracing warnings mirrored in as `[warn] …`. `python3 bench/session_metrics.py 
 the turns and the counters above for one session, so a Zed session is read the way a bench
 cell is. `process_metrics` strips the stamps, so the regexes are unchanged.
 
+Since 2026-10-31 (bead boubou-bj4) a `⚙` call line whose call did not do its job ends with a
+status tag after the result head: ` ⟂error`, ` ⟂nochange`, or ` ⟂refused:<kind>[:user]` with the
+gate's kind (`danger`, `risk`, `boundary`, `sensitive`, `system_dir`, `scope`, `substitute`,
+`child`, `hook`) and `:user` when a person answered the dialog. `process_metrics.py` counts
+`failed_calls` and `refused_calls` from the tag and falls back to the result's opening on an
+untagged (older) log; `acp_convo.py` decides "landed" the same way. The text between `->` and
+the tag is what the model read and may change without the readers noticing.
+
 ## Conversation rig (bead boubou-6gq)
 
 Multi-turn sessions through the ACP server, scripted and checked per turn, for the features a

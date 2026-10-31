@@ -48,7 +48,16 @@ fn first_turn_compacted(dir: &Path) -> Vec<Message> {
     ];
     t.flush(dir, Some(S), &compacted);
     assert_eq!(lines(dir).len(), 7, "the summary is logged");
-    save_session(dir, Some(S), &compacted, None, None, "unattended", &mut t);
+    save_session(
+        dir,
+        Some(S),
+        &compacted,
+        None,
+        None,
+        "unattended",
+        None,
+        &mut t,
+    );
     assert_eq!(cursor(dir), Some(4));
     compacted
 }
@@ -165,12 +174,12 @@ fn a_session_records_the_policy_it_ran_under() {
         None,
         "Mingbird wrote no policy"
     );
-    save_session(d.path(), Some(S), &ctx, None, None, "general", &mut t);
+    save_session(d.path(), Some(S), &ctx, None, None, "general", None, &mut t);
     assert_eq!(recorded_policy(d.path(), S).as_deref(), Some("general"));
     let meta = load_session_meta(d.path(), S);
     assert_eq!(meta.get("title"), Some(&json!("Inventory fix")));
     assert_eq!(meta.get("status"), Some(&json!("running")));
     // The next turn under another policy overwrites the key: the meta holds the latest.
-    save_session(d.path(), Some(S), &ctx, None, None, "coding", &mut t);
+    save_session(d.path(), Some(S), &ctx, None, None, "coding", None, &mut t);
     assert_eq!(recorded_policy(d.path(), S).as_deref(), Some("coding"));
 }

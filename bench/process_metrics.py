@@ -102,7 +102,7 @@ def _strip(text):
 def parse_transcript(text):
     """Counts and the call list from one transcript (ANSI allowed)."""
     m = {k: 0 for k, _ in GUARDS}
-    m.update(tool_calls=0, failed_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
+    m.update(tool_calls=0, failed_calls=0, refused_calls=0, nonzero_exits=0, peak_prompt_tokens=0,
              compaction_max_level=0, prunes=0, pruned_results=0,
              budget_nudges=0, idle_notes=0, idle_streak_max=0, forced_end=False, finish_accepted=False,
              corrector_calls=0, corrector_fixes=0, corrector_giveups=0,
@@ -140,12 +140,20 @@ def parse_transcript(text):
         c = CALL.match(line)
         if c:
             name, result = c.group(3), c.group(5) or ""
+            status = ""
+            if " ⟂" in result:
+                # The status tag after the result head (bead boubou-bj4): `error`,
+                # `nochange`, `refused:<kind>[:user]`; absent on a call that did its job.
+                result, status = result.rsplit(" ⟂", 1)
+                status = status.strip()
             m["tool_calls"] += 1
             calls.append((name, result))
             if ".bak" in (c.group(4) or ""):
                 m["bak_calls"] += 1
-            if result.startswith("[tool error:"):
+            if status == "error" or (not status and result.startswith("[tool error:")):
                 m["failed_calls"] += 1
+            if status.startswith("refused"):
+                m["refused_calls"] += 1
             ex = EXIT.search(result) if name == "run_bash" else None
             if ex and int(ex.group(1)) != 0:
                 m["nonzero_exits"] += 1

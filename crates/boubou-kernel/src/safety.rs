@@ -432,6 +432,64 @@ pub enum Verdict {
     Deny,
 }
 
+/// Why the gate refused a call, as data (bead boubou-bj4). The text the model reads is
+/// chosen for how a small model reads it and changes under measurement; the loop and the
+/// bench branch on this instead of on that prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalKind {
+    /// Ring 1: a dangerous command or a high-risk powershell shape.
+    Danger,
+    /// Ring 2: uninstall, environment mutation, recursive delete outside the workspace.
+    Risk,
+    /// Ring 3: a path or a shell write target outside the working directory.
+    Boundary,
+    /// Ring 3: a sensitive path.
+    Sensitive,
+    /// Ring 3: a system-directory target.
+    SystemDir,
+    /// The scope gate: outside the turn's instruction.
+    Scope,
+    /// The declined file name at another path (bead boubou-sxx).
+    Substitute,
+    /// Ring 0: the child sandbox.
+    Child,
+    /// A project hook blocked the call.
+    Hook,
+}
+
+impl RefusalKind {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Danger => "danger",
+            Self::Risk => "risk",
+            Self::Boundary => "boundary",
+            Self::Sensitive => "sensitive",
+            Self::SystemDir => "system_dir",
+            Self::Scope => "scope",
+            Self::Substitute => "substitute",
+            Self::Child => "child",
+            Self::Hook => "hook",
+        }
+    }
+}
+
+/// A refusal and who decided it: a person answering the dialog, or the gate alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Refused {
+    pub kind: RefusalKind,
+    pub by_user: bool,
+}
+
+impl Refused {
+    pub fn gate(kind: RefusalKind) -> Self {
+        Self {
+            kind,
+            by_user: false,
+        }
+    }
+}
+
 /// The human-in-the-loop channel (GUI dialog, CLI prompt). [`DenyAll`] is the headless default.
 pub trait Confirmer: Send {
     fn confirm(&mut self, req: &ConfirmRequest<'_>) -> Verdict;
@@ -841,12 +899,22 @@ pub fn risk_classify(
     policy: &SafetyPolicy,
     confirmer: &mut dyn Confirmer,
 ) -> Option<String> {
+    risk_refusal(cmd, workdir, policy, confirmer).map(|r| r.text)
+}
+
+/// [`risk_classify`] with the deciding party kept.
+fn risk_refusal(
+    cmd: &str,
+    workdir: &Path,
+    policy: &SafetyPolicy,
+    confirmer: &mut dyn Confirmer,
+) -> Option<Refusal> {
     if UNINSTALL_RE.is_match(cmd) {
         if policy.allow_env_mutation {
             return None;
         }
         if policy.unattended {
-            return Some("[safety net: package uninstall/removal detected; refused by default in unattended mode (stops a small model impulsively removing dependencies). If you really must uninstall, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into());
+            return Some(refused("[safety net: package uninstall/removal detected; refused by default in unattended mode (stops a small model impulsively removing dependencies). If you really must uninstall, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into()));
         }
         return ask(
             policy,
@@ -857,15 +925,14 @@ pub fn risk_classify(
             "uninstall a package",
             "a package uninstall",
         )
-        .err()
-        .map(|r| r.text);
+        .err();
     }
     if ENV_MUTATE_RE.is_match(cmd) {
         if policy.allow_env_mutation {
             return None;
         }
         if policy.unattended {
-            return Some("[safety net: system-environment change detected (setx / scheduled task / service removal / registry write); refused by default in unattended mode. If you really must, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into());
+            return Some(refused("[safety net: system-environment change detected (setx / scheduled task / service removal / registry write); refused by default in unattended mode. If you really must, set AGENT_ALLOW_ENV_MUTATION=1 and retry.]".into()));
         }
         return ask(
             policy,
@@ -876,58 +943,57 @@ pub fn risk_classify(
             "change the system environment",
             "a system-environment change",
         )
-        .err()
-        .map(|r| r.text);
+        .err();
     }
     if let Some(m) = RECURSE_DELETE_RE.find(cmd) {
         let targets = delete_targets(cmd);
         if targets.is_empty() {
-            return Some(
+            return Some(refused(
                 "[safety net: could not work out a definite target for this recursive delete; refused. Give an explicit target path.]".into(),
-            );
+            ));
         }
         let Some(base) = cwd_before(cmd, m.start(), workdir) else {
-            return Some(UNKNOWN_CWD_MSG.into());
+            return Some(refused(UNKNOWN_CWD_MSG.into()));
         };
         for t in targets {
             let t = match expand_shell_path(&t) {
                 ShellPath::Known(p) => p,
                 ShellPath::Unknown => {
-                    return Some(format!(
+                    return Some(refused(format!(
                         "[safety net: recursive-delete target '{}' depends on a variable or substitution the gate cannot evaluate; refused. Give an explicit path.]",
                         head(&t, 60)
-                    ));
+                    )));
                 }
             };
             let (_, inside) = safe_path_from(&base, workdir, &t, &policy.allow_dirs);
             if !inside {
-                return Some(format!(
+                return Some(refused(format!(
                     "[safety net: recursive-delete target '{}' is outside the working directory; refused. Recursive deletes inside the working directory are unrestricted; for files outside it use delete_file one at a time.]",
                     head(&t, 60)
-                ));
+                )));
             }
         }
     }
     if let Some(m) = FIND_DELETE_RE.captures(cmd) {
         let target = &m[1];
         let Some(base) = cwd_before(cmd, m.get(0).map_or(0, |w| w.start()), workdir) else {
-            return Some(UNKNOWN_CWD_MSG.into());
+            return Some(refused(UNKNOWN_CWD_MSG.into()));
         };
         let target = match expand_shell_path(target) {
             ShellPath::Known(p) => p,
             ShellPath::Unknown => {
-                return Some(format!(
+                return Some(refused(format!(
                     "[safety net: the find -delete target '{}' depends on a variable or substitution the gate cannot evaluate; refused. Give an explicit path.]",
                     head(target, 60)
-                ));
+                )));
             }
         };
         let (_, inside) = safe_path_from(&base, workdir, &target, &policy.allow_dirs);
         if !inside {
-            return Some(format!(
+            return Some(refused(format!(
                 "[safety net: the find -delete target '{}' is outside the working directory; refused. find -delete inside the working directory is unrestricted.]",
                 head(&target, 60)
-            ));
+            )));
         }
     }
     None
@@ -951,6 +1017,8 @@ pub struct Gate {
     /// and reporting success, whatever the refusal said. The same name at another path in
     /// the same turn is the substitution and is refused without asking.
     declined_writes: Vec<(String, PathBuf)>,
+    /// The last refusal [`Gate::check`] issued, as data; `None` after a pass.
+    last_refusal: Option<Refused>,
 }
 
 impl std::fmt::Debug for Gate {
@@ -993,7 +1061,25 @@ impl Gate {
             scope_cleared: false,
             scope_notes: Vec::new(),
             declined_writes: Vec::new(),
+            last_refusal: None,
         }
+    }
+
+    /// Why the last [`Gate::check`] refused, if it did.
+    pub fn last_refusal(&self) -> Option<Refused> {
+        self.last_refusal
+    }
+
+    /// Forget the last refusal (the executor calls this before a new tool call, so a call
+    /// that fails before reaching the gate is not blamed on the previous one).
+    pub fn clear_refusal(&mut self) {
+        self.last_refusal = None;
+    }
+
+    /// Record a refusal and hand back its text.
+    fn refuse(&mut self, kind: RefusalKind, by_user: bool, text: String) -> Option<String> {
+        self.last_refusal = Some(Refused { kind, by_user });
+        Some(text)
     }
 
     pub fn headless(policy: SafetyPolicy) -> Self {
@@ -1033,6 +1119,7 @@ impl Gate {
     /// `_gate_check`: the refusal text, or `None` to let the call through. The five rings
     /// first; a call they pass is then held against the turn's scope.
     pub fn check(&mut self, inv: &ToolInvocation, workdir: &Path) -> Option<String> {
+        self.last_refusal = None;
         if let Some(refusal) = self.rings(inv, workdir) {
             return Some(refusal);
         }
@@ -1060,8 +1147,9 @@ impl Gate {
             ));
             return None;
         }
+        let text = scope::deny_text(sc, why);
         if self.policy.unattended {
-            return Some(scope::deny_text(sc, why));
+            return self.refuse(RefusalKind::Scope, false, text);
         }
         let req = ConfirmRequest {
             tool: inv.name(),
@@ -1074,7 +1162,7 @@ impl Gate {
                 self.scope_cleared = true;
                 None
             }
-            Verdict::Deny => Some(scope::deny_text(sc, why)),
+            Verdict::Deny => self.refuse(RefusalKind::Scope, true, text),
         }
     }
 
@@ -1083,22 +1171,24 @@ impl Gate {
         if let ToolInvocation::RunBash { command } = inv {
             let low = command.to_lowercase();
             if danger_hit(&low).is_some() {
-                return Some(format!(
+                let text = format!(
                     "[safety gate: the command contains a dangerous operation; refused. Original command: {}]",
                     head(command, 80)
-                ));
+                );
+                return self.refuse(RefusalKind::Danger, false, text);
             }
             if low.contains("powershell") && PS_HIGH_RISK.iter().any(|p| low.contains(p)) {
-                return Some(format!(
+                let text = format!(
                     "[safety gate: the powershell command contains a high-risk operation (download-and-execute / script injection / privilege escalation); refused. Original command: {}]",
                     head(command, 80)
-                ));
+                );
+                return self.refuse(RefusalKind::Danger, false, text);
             }
             if !self.policy.unsafe_mode {
                 if let Some(r) =
-                    risk_classify(command, workdir, &self.policy, self.confirmer.as_mut())
+                    risk_refusal(command, workdir, &self.policy, self.confirmer.as_mut())
                 {
-                    return Some(r);
+                    return self.refuse(RefusalKind::Risk, r.by_user, r.text);
                 }
             }
             let targets = resolved_write_targets(command, workdir, &self.policy.allow_dirs);
@@ -1106,7 +1196,7 @@ impl Gate {
                 .iter()
                 .find_map(|(real, _)| self.substitute_of(real))
             {
-                return Some(text);
+                return self.refuse(RefusalKind::Substitute, true, text);
             }
             if self.allow_all.contains("run_bash") {
                 return None;
@@ -1131,7 +1221,7 @@ impl Gate {
                         if r.by_user {
                             self.note_declined(&real);
                         }
-                        Some(r.text)
+                        self.refuse(RefusalKind::Boundary, r.by_user, r.text)
                     }
                 };
             }
@@ -1151,7 +1241,7 @@ impl Gate {
                         }
                         None
                     }
-                    Err(r) => Some(r.text),
+                    Err(r) => self.refuse(RefusalKind::Boundary, r.by_user, r.text),
                 };
             }
             return None;
@@ -1161,7 +1251,7 @@ impl Gate {
                 let (real, _) = safe_path(workdir, path, &self.policy.allow_dirs);
                 if WRITE_TOOLS.contains(&name) {
                     if let Some(text) = self.substitute_of(&real) {
-                        return Some(text);
+                        return self.refuse(RefusalKind::Substitute, true, text);
                     }
                 }
             }
@@ -1190,16 +1280,17 @@ impl Gate {
                             if r.by_user && WRITE_TOOLS.contains(&name) {
                                 self.note_declined(&real);
                             }
-                            Some(r.text)
+                            self.refuse(RefusalKind::Boundary, r.by_user, r.text)
                         }
                     };
                 }
                 if is_sensitive_path(&real) {
                     if WRITE_TOOLS.contains(&name) {
-                        return Some(format!(
+                        let text = format!(
                             "[safety gate: path {} matches a sensitive pattern; writes are always refused.]",
                             real.display()
-                        ));
+                        );
+                        return self.refuse(RefusalKind::Sensitive, false, text);
                     }
                     return match ask(
                         &self.policy,
@@ -1216,7 +1307,7 @@ impl Gate {
                             }
                             None
                         }
-                        Err(r) => Some(r.text),
+                        Err(r) => self.refuse(RefusalKind::Sensitive, r.by_user, r.text),
                     };
                 }
             }
@@ -1225,10 +1316,11 @@ impl Gate {
             if let Some(path) = inv.file_path() {
                 let p = format!("{path}\\").to_lowercase();
                 if SYSTEM_DIRS.iter().any(|d| p.contains(d)) {
-                    return Some(format!(
+                    let text = format!(
                         "[safety gate: the target path contains a system directory; refused. Path: {}]",
                         head(path, 80)
-                    ));
+                    );
+                    return self.refuse(RefusalKind::SystemDir, false, text);
                 }
             }
         }

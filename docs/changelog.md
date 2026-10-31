@@ -2305,3 +2305,32 @@ the day on this script (release 18:58, 20:20, 21:01, 21:35), turn 1 went 0/6, 3/
 "a safety restriction" rather than the user's decision; that attribution did not matter once the
 phrase they could generalise was gone. Bead boubou-bj4 (refusals as data) is next, so the
 wording can keep moving without the loop or the bench noticing.
+
+## Refusals as data (2026-10-31, bead boubou-bj4)
+
+Tool invocations were typed on the way in and a `String` on the way out, so every consumer
+re-derived structure from the prose the model also reads. Audit of the day (in the bead): the
+Redirect ladder's `res.contains("outside the working directory")`, the integrity record's four
+result openings (missing the scope gate's and the blocked-path ones, so a refused write counted
+as landed for the finish gates), the session status scanning every message for `TASK_COMPLETE`
+and `MAX ITERATIONS`, a harness note recognised by a leading ⚠️ beside the existing prefix list,
+the missing-argument key parsed out of a sentence, the MCP help keyed on "timed out", the ACP
+replay's `[tool` prefix, the `[edited` success prefix in two places; and the bench readers, which
+treat the run log as their data format by design. Now: `safety::RefusalKind` (danger, risk,
+boundary, sensitive, system_dir, scope, substitute, child, hook) and `Refused { kind, by_user }`,
+recorded by `Gate::check` through one `refuse()` helper at every refusal site;
+`exec::ToolStatus` (`Ok`, `NoChange`, `Error`, `Refused`) on the executor, typed from the gate,
+the child sandbox and the hooks before any text exists and from a tool's own result through
+`ToolStatus::of_text`, the one place that knows the executor's result openings (also the loop's
+rule for a test runner that returns text only); `ToolRunner::last_status()`. Consumers moved:
+the Redirect ladder's refused-path hint matches the kind; `CommandRecord::file_write(tool,
+path, landed)` takes the executor's word; `AgentEvent::ToolResult.blocked` is true for a
+refusal, so Zed shows it as failed; the session meta `status` comes from the loop's own end
+(`done`, `max-iter`) or a `finish` call in the history, never from message text. The ⚙ log line
+ends with ` ⟂<tag>` when the call did not do its job; `process_metrics.py` gains `refused_calls`
+and both readers fall back to the opening on untagged logs. Not moved (still text, by design or
+pending): `is_tool_error`'s marker scan over command output (a heuristic over world text, used
+for failure counting), the `[exit N]` shape (documented, one parser), the harness-note prefix
+list, the missing-argument sentence, the MCP help, the ACP replay prefix. Tests:
+`tests/tool_status.rs` (every outcome through the executor and the text rule), the integrity
+and testguard tests on the flag, bench tests for the tag and the fallback. 568 tests pass.

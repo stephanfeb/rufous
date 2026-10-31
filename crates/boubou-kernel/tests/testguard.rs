@@ -12,7 +12,7 @@ fn shell(cmd: &str, exit: i32) -> CommandRecord {
 }
 
 fn edit(path: &str) -> CommandRecord {
-    CommandRecord::file_write("edit_file", path, "[edited]")
+    CommandRecord::file_write("edit_file", path, true)
 }
 
 #[test]
