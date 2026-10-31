@@ -171,6 +171,8 @@ pub trait ToolRunner {
     fn set_slim_output(&mut self, _on: bool) {}
     /// The profile's workdir-prefix rule ([`Executor::rebase_workdir_prefix`]), set once per run.
     fn set_rebase_workdir_prefix(&mut self, _on: bool) {}
+    /// `edit_file`'s matcher ([`crate::edit_match`]), off under the `edit_match` ablation.
+    fn set_edit_match(&mut self, _on: bool) {}
     /// The agent's stop flag: raised, a running command is terminated and the tool returns.
     fn set_stop(&mut self, _flag: Arc<AtomicBool>) {}
     /// The skills compiled into the product, for the `skills` tool's listing and loading.
@@ -199,6 +201,9 @@ impl ToolRunner for Executor {
     }
     fn set_rebase_workdir_prefix(&mut self, on: bool) {
         self.rebase_workdir_prefix = on;
+    }
+    fn set_edit_match(&mut self, on: bool) {
+        self.edit_match = on;
     }
     fn set_stop(&mut self, flag: Arc<AtomicBool>) {
         self.stop = Some(flag);
@@ -780,6 +785,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         tools.set_rebase_workdir_prefix(
             params.profile.rebase_workdir_prefix && !params.ablated(ablation::PATH_REBASE),
         );
+        tools.set_edit_match(!params.ablated(ablation::EDIT_MATCH));
         let mut edit_guard = EditConvergenceGuard::default();
 
         // Time budget: explicit parameter beats the env fallback; resume continues the clock.

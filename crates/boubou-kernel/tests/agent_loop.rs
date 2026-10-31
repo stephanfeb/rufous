@@ -991,6 +991,78 @@ fn gemma_e2b_gets_the_workdir_prefix_rule_from_its_profile_until_it_is_ablated()
     assert_eq!(tool[0].content, "[not found: workdir/slug.py]");
 }
 
+// ---- edit_file answers with the truth about the file (bead boubou-bk9.3) ----
+
+#[test]
+fn a_stale_second_edit_is_no_change_and_the_first_edit_stands() {
+    // The model edits, then re-issues the edit against the text it already changed, quoting
+    // `old` a little differently (so the duplicate block does not take the call first) and
+    // the same `new`. With the matcher on the second call is no-change, not a failure; off,
+    // it is the old miss.
+    use boubou_kernel::exec::Executor;
+    use boubou_kernel::safety::SafetyPolicy;
+    fn run(workdir: &Path, ablation: &[&str]) -> Vec<Message> {
+        let mut params = RunParams::plain("qwen3.5:9b", workdir);
+        params
+            .ablation
+            .extend(ablation.iter().map(|s| s.to_string()));
+        let tools = Executor::with_policy(workdir, SafetyPolicy::default());
+        let mut a = Agent::new(
+            params,
+            Responder {
+                n: 0,
+                f: |n| match n {
+                    1 => ChatResponse::call(
+                        "",
+                        "edit_file",
+                        json!({"path": "repo.py", "old": "def fetchAll(conn):", "new": "def fetch_all(conn):"}),
+                    ),
+                    2 => ChatResponse::call(
+                        "",
+                        "edit_file",
+                        json!({"path": "repo.py", "old": "def fetchAll(conn):\n", "new": "def fetch_all(conn):"}),
+                    ),
+                    _ => ChatResponse::call("done", "finish", json!({"summary": "renamed"})),
+                },
+            },
+            tools,
+        );
+        a.run(
+            start("Rename fetchAll to fetch_all in repo.py."),
+            None,
+            None,
+        )
+        .expect("loop")
+    }
+    for (ablation, second) in [
+        (&[][..], "[no change: repo.py"),
+        (
+            &["edit_match"][..],
+            "[edit failed: old text not found. Preview",
+        ),
+    ] {
+        let d = tempfile::tempdir().expect("tmp");
+        std::fs::write(d.path().join("repo.py"), "def fetchAll(conn):\n    pass\n")
+            .expect("fixture");
+        let msgs = run(d.path(), ablation);
+        let tool: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+        assert!(
+            tool[0].content.starts_with("[edited repo.py"),
+            "{ablation:?}: {}",
+            tool[0].content
+        );
+        assert!(
+            tool[1].content.starts_with(second),
+            "{ablation:?}: {}",
+            tool[1].content
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("repo.py")).expect("read"),
+            "def fetch_all(conn):\n    pass\n"
+        );
+    }
+}
+
 // ---- output cap: truncation feedback and the empty-turn ladder ----
 
 fn debris() -> ChatResponse {

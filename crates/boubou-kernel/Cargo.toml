@@ -24,6 +24,7 @@ sha1.workspace = true
 scraper.workspace = true
 rmcp.workspace = true
 sysinfo.workspace = true
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -140,8 +140,8 @@ pub fn core_tools() -> Vec<Value> {
             json!({"path": s(), "content": s(), "replace": b()}), &["path", "content"]),
         spec("read_file", "Read a file's content (optional start_line/end_line to read a range)",
             json!({"path": s(), "start_line": n(), "end_line": n()}), &["path"]),
-        spec("edit_file", "Find-and-replace text in a file",
-            json!({"path": s(), "old": s(), "new": s()}), &["path", "old", "new"]),
+        spec("edit_file", "Replace text in a file. old must match exactly once: quote the lines as they are in the file, whitespace included; pass all=true to replace every occurrence",
+            json!({"path": s(), "old": s(), "new": s(), "all": b()}), &["path", "old", "new"]),
         spec("list_dir", "List files in a directory", json!({"path": s()}), &["path"]),
         spec("run_bash", "Run a command (cwd=workspace, no cd /workspace)", json!({"command": s()}), &["command"]),
         spec("todo", "Manage the task plan. action: create(plan), update(item done; index is 1-based), list",
@@ -205,13 +205,34 @@ fn arg_types() -> BTreeMap<String, BTreeMap<String, String>> {
 
 /// Mingbird v3.0.0 argument type correction: `"3"` → `3`, `"true"` → `true` for
 /// number/boolean parameters. Unparseable strings return the structured error text the
-/// model is fed back; non-string shapes (lists, objects) pass through untouched.
+/// model is fed back. Structural repair (pi and opencode do the same before validation,
+/// bead boubou-bk9.3): an array or object parameter sent as a JSON string is parsed, and a
+/// single object where an array is expected is wrapped; anything else passes through to the
+/// validator untouched.
 pub fn coerce_args(name: &str, args: &mut Map<String, Value>) -> std::result::Result<(), String> {
     let types = arg_types();
     let Some(types) = types.get(name) else {
         return Ok(());
     };
     for (k, want) in types {
+        if want == "array" || want == "object" {
+            let repaired = match args.get(k) {
+                Some(Value::String(s)) => match serde_json::from_str::<Value>(s.trim()) {
+                    Ok(v @ Value::Array(_)) if want == "array" => Some(v),
+                    Ok(v @ Value::Object(_)) if want == "object" => Some(v),
+                    Ok(v @ Value::Object(_)) => Some(Value::Array(vec![v])),
+                    _ => None,
+                },
+                Some(v @ Value::Object(_)) if want == "array" => {
+                    Some(Value::Array(vec![v.clone()]))
+                }
+                _ => None,
+            };
+            if let Some(v) = repaired {
+                args.insert(k.clone(), v);
+            }
+            continue;
+        }
         if want != "number" && want != "boolean" {
             continue;
         }
@@ -307,6 +328,7 @@ pub enum ToolInvocation {
         path: String,
         old: String,
         new: String,
+        all: bool,
     },
     ListDir {
         path: String,
@@ -392,6 +414,7 @@ impl ToolInvocation {
                 path: arg!(String, "path"),
                 old: arg!(String, "old"),
                 new: arg!(String, "new"),
+                all: arg!(Option<bool>, "all").unwrap_or(false),
             },
             "list_dir" => Self::ListDir {
                 path: arg!(Option<String>, "path").unwrap_or_else(|| ".".into()),

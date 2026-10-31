@@ -1651,3 +1651,41 @@ single-occurrence `replacen` would have changed `csv_line`, so both of the fixtu
 are live on this binary. This is the number `bk9.3` is measured against for this task; the
 folder now holds all twelve task-and-policy cells at three runs (36 cells, 0.822, run means
 0.85/0.71/0.90, sd 0.10).
+
+## edit_file answers with the truth about the file (2026-10-31, bead boubou-bk9.3)
+
+Design on the bead and in `crates/boubou-kernel/src/edit_match.rs`'s module doc. Matching
+tiers, each run only when the previous found nothing: exact on the text as given (the
+inherited unconditional unescape is gone as a preprocessor; ED-06's eighteen misses were
+correct quotes of a line containing `\n`), then the escape sequences unescaped (and `new`
+unescaped only then), then whole lines after NFKC, then with trailing whitespace ignored, then
+with typographic quotes, dashes and non-breaking spaces normalised. A tier applies only when
+it finds something; nothing is guessed below the tiers. Every tier counts occurrences: more
+than one is `[edit failed: old text found N times in <path>. Include more of the surrounding
+lines so it matches once, or pass all=true to replace every occurrence.]`, and `all=true`
+(new optional argument, string booleans coerced as before) replaces them all and says how
+many. When `old` is absent but `new` is in the file the call is `[no change: <path> already
+contains the new text …]`, a success that writes nothing and takes no backup: the stale quote
+after the model's own edit stops at its first call instead of after the duplicate block and
+the corrector. A miss shows the region of the file most like `old` (mean character-bigram
+similarity of aligned lines, earliest on a tie) with its line numbers, in place of the first
+two hundred characters of the file. Results that matched below exact say so: `(old text
+matched ignoring trailing whitespace)`. Argument repair in `coerce_args`: an array or object
+parameter sent as a JSON string is parsed and a lone object where an array is expected is
+wrapped; anything else still reaches the validator. The hunks array (design item 6, optional)
+is not in this change.
+
+One guard input corrected, outside the tool: `CommandRecord::file_write` counted
+`[edit failed` as a write that ran (it predates this change); it now treats a missed or
+no-change edit like a refused one, so the "files changed and no check ran" gate is not armed
+by an edit that changed nothing. The loop itself is untouched; the duplicate block, the
+corrector and the three-failure disable stay as the backstop. Ablation `edit_match` (in
+`kernel`) restores Mingbird's matcher exactly (`edit_file_legacy`). Tests: four unit tests in
+the module, seven in `exec_tools.rs` (ED-06's shape as written and the quoted newline, the
+count and `all`, no-change with no `.bak`, the nearest lines, the three line tiers, the
+switch off, the argument repair), one loop test through the real Executor (a stale re-quote
+is no-change with the matcher on and the old miss with it off), and the integrity record.
+New dependency `unicode-normalization`. After-measurement: tier6_editor (now six tasks) on
+gemma4:e2b at `--runs 3` against `gemma_e2b_no_small_rule`; the read is the miss count (23 in
+10 cells, plus ED-06's 18 in 6), ED-02 coding (0.62), ED-04 coding (the one-occurrence loss)
+and ED-06's six cells.

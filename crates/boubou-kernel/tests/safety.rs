@@ -289,6 +289,7 @@ fn edit_to_tokens_py_inside_the_workdir_passes_the_gate() {
         path: "textkit/tokens.py".into(),
         old: "x = 1".into(),
         new: "x = 2".into(),
+        all: false,
     };
     assert!(gate.check(&edit, d.path()).is_none());
     let cred = ToolInvocation::CreateFile {

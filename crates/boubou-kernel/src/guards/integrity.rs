@@ -177,10 +177,13 @@ impl CommandRecord {
     }
 
     /// A `create_file` / `edit_file` / `append_file` / `delete_file` call; it ran unless the
-    /// result is an error or a refusal.
+    /// result is an error, a refusal, a missed edit or an edit that was already in the file.
     pub fn file_write(tool: &str, path: &str, result: &str) -> Self {
         let r = result.trim_start();
-        let ran = !(r.starts_with("[tool error") || r.starts_with("[safety gate"));
+        let ran = !(r.starts_with("[tool error")
+            || r.starts_with("[safety gate")
+            || r.starts_with("[edit failed")
+            || r.starts_with("[no change"));
         Self {
             kind: ActionKind::FileWrite,
             command: format!("{tool} {path}"),
@@ -966,10 +969,12 @@ mod tests {
             rec("python check.py", "[exit 0]"),
             CommandRecord::file_write("create_file", "result.txt", "[created result.txt]")
         ]));
-        // a refused write never ran
+        // a refused write never ran, nor did a missed edit or one already in the file
         assert!(verified_at_end(&[
             rec("python check.py", "[exit 0]"),
-            CommandRecord::file_write("delete_file", "/etc/x", "[safety gate: refused]")
+            CommandRecord::file_write("delete_file", "/etc/x", "[safety gate: refused]"),
+            CommandRecord::file_write("edit_file", "a.py", "[edit failed: old text not found."),
+            CommandRecord::file_write("edit_file", "a.py", "[no change: a.py already contains")
         ]));
         assert!(!verified_at_end(&[rec("python check.py", "[exit 1]")]));
         assert!(!verified_at_end(&[]));

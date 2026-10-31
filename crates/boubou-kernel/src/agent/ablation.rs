@@ -40,6 +40,10 @@ pub const SALVAGE: &str = "salvage";
 /// The profile's workdir-prefix rule: a path under an invented subdirectory named like the
 /// working directory is left as given (gemma4:e2b, bead boubou-8e6).
 pub const PATH_REBASE: &str = "path_rebase";
+/// `edit_file`'s matcher ([`crate::edit_match`]): the tiers, occurrence counting, the
+/// already-applied rule and the nearest-region miss; off, Mingbird's exact-after-unescape
+/// matcher with the file-head preview (bead boubou-bk9.3).
+pub const EDIT_MATCH: &str = "edit_match";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -53,6 +57,7 @@ pub const KERNEL: &[&str] = &[
     ANTI_LOOP,
     SALVAGE,
     PATH_REBASE,
+    EDIT_MATCH,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

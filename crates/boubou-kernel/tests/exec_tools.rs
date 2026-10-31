@@ -175,6 +175,174 @@ fn edit_file_backs_up_and_reports_misses() {
     assert!(miss.starts_with("[edit failed: old text not found."));
 }
 
+// ---- edit_file's matcher (bead boubou-bk9.3) ----
+
+fn edit(e: &mut Executor, path: &str, old: &str, new: &str) -> String {
+    e.run_tool("edit_file", &json!({"path": path, "old": old, "new": new}))
+}
+
+#[test]
+fn a_source_escape_is_edited_as_written_and_a_quoted_newline_is_unescaped() {
+    // ED-06's shape: the file has the two characters `\n` inside a string literal, the model
+    // quotes them as they are, and the edit must not turn them into a real newline.
+    let (d, mut e) = ex();
+    let src = "def f(cells):\n    return \",\".join(cells) + \"\\n\"\n";
+    create(&mut e, "export.py", src);
+    let r = edit(
+        &mut e,
+        "export.py",
+        "return \",\".join(cells) + \"\\n\"",
+        "return \"\\t\".join(cells) + \"\\n\"",
+    );
+    assert!(
+        r.starts_with("[edited export.py") && !r.contains("matched"),
+        "{r}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("export.py")).expect("read"),
+        "def f(cells):\n    return \"\\t\".join(cells) + \"\\n\"\n"
+    );
+    // A real newline quoted as backslash-n: the unescape tier, applied to new as well.
+    create(&mut e, "two.py", "a = 1\nb = 2\n");
+    let r = edit(&mut e, "two.py", "a = 1\\nb = 2", "a = 1\\nb = 3");
+    assert!(
+        r.starts_with("[edited two.py") && r.contains("escape sequences unescaped"),
+        "{r}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("two.py")).expect("read"),
+        "a = 1\nb = 3\n"
+    );
+}
+
+#[test]
+fn a_second_occurrence_is_refused_with_the_count_until_all_is_passed() {
+    let (d, mut e) = ex();
+    create(
+        &mut e,
+        "store.py",
+        "def a():\n    return fetchAll(c)\n\ndef b():\n    return fetchAll(c)\n",
+    );
+    let r = edit(&mut e, "store.py", "fetchAll", "fetch_all");
+    assert!(
+        r.starts_with("[edit failed: old text found 2 times in store.py.")
+            && r.contains("all=true"),
+        "{r}"
+    );
+    assert!(std::fs::read_to_string(d.path().join("store.py"))
+        .expect("read")
+        .contains("fetchAll"));
+    let r = e.run_tool(
+        "edit_file",
+        &json!({"path": "store.py", "old": "fetchAll", "new": "fetch_all", "all": "true"}),
+    );
+    assert!(
+        r.starts_with("[edited store.py") && r.contains("(2 occurrences replaced)"),
+        "{r}"
+    );
+    assert!(!std::fs::read_to_string(d.path().join("store.py"))
+        .expect("read")
+        .contains("fetchAll"));
+}
+
+#[test]
+fn an_edit_already_in_the_file_is_no_change_and_writes_nothing() {
+    let (d, mut e) = ex();
+    create(&mut e, "repo.py", "def fetch_all(conn):\n    pass\n");
+    let r = edit(
+        &mut e,
+        "repo.py",
+        "def fetchAll(conn):",
+        "def fetch_all(conn):",
+    );
+    assert!(
+        r.starts_with("[no change: repo.py already contains the new text"),
+        "{r}"
+    );
+    assert!(!d.path().join("repo.py.bak").exists());
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("repo.py")).expect("read"),
+        "def fetch_all(conn):\n    pass\n"
+    );
+}
+
+#[test]
+fn a_miss_shows_the_closest_lines_with_their_numbers_instead_of_the_file_head() {
+    let (_d, mut e) = ex();
+    create(
+        &mut e,
+        "m.py",
+        "import os\n\ndef f(x):\n    retrun x + 1\n\ndef g():\n    pass\n",
+    );
+    let r = edit(&mut e, "m.py", "    return x + 1", "    return x + 2");
+    assert!(r.starts_with("[edit failed: old text not found. Closest match in m.py, lines 4–4:\n    retrun x + 1\n"), "{r}");
+    assert!(!r.contains("Preview of the file start"));
+}
+
+#[test]
+fn trailing_whitespace_unicode_and_typographic_differences_are_tiers_that_say_so() {
+    let (d, mut e) = ex();
+    create(&mut e, "t.py", "def f():\n    x = 1   \n    return x\n");
+    let r = edit(
+        &mut e,
+        "t.py",
+        "    x = 1\n    return x\n",
+        "    return 1\n",
+    );
+    assert!(r.contains("matched ignoring trailing whitespace"), "{r}");
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("t.py")).expect("read"),
+        "def f():\n    return 1\n"
+    );
+    create(&mut e, "u.py", "\u{fb01}le = 1\n");
+    assert!(edit(&mut e, "u.py", "file = 1", "file = 2").contains("after Unicode normalisation"));
+    create(&mut e, "q.py", "s = \u{201c}hi\u{201d}\n");
+    assert!(edit(&mut e, "q.py", "s = \"hi\"", "s = \"yo\"").contains("typographic quotes"));
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("q.py")).expect("read"),
+        "s = \"yo\"\n"
+    );
+}
+
+#[test]
+fn with_the_matcher_off_mingbirds_behaviour_is_back() {
+    let (d, mut e) = ex();
+    e.edit_match = false;
+    create(&mut e, "export.py", "return \",\".join(cells) + \"\\n\"\n");
+    let r = edit(
+        &mut e,
+        "export.py",
+        "return \",\".join(cells) + \"\\n\"",
+        "x",
+    );
+    assert!(
+        r.starts_with("[edit failed: old text not found. Preview of the file start:"),
+        "{r}"
+    );
+    create(&mut e, "two.py", "a\na\n");
+    assert!(edit(&mut e, "two.py", "a", "b").starts_with("[edited two.py"));
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("two.py")).expect("read"),
+        "b\na\n"
+    );
+}
+
+#[test]
+fn string_encoded_lists_and_lone_objects_are_repaired_before_validation() {
+    let (_d, mut e) = ex();
+    let r = e.run_tool(
+        "todo",
+        &json!({"action": "create", "items": "[\"read it\", \"fix it\"]"}),
+    );
+    assert!(r.contains("1. read it") && r.contains("2. fix it"), "{r}");
+    let r = e.run_tool("enable_tools", &json!({"tools": "[\"search_files\"]"}));
+    assert!(!r.starts_with("[tool error"), "{r}");
+    // A string that is not JSON is left for the validator (todo has its own newline-split
+    // reading of items, so the case is enable_tools).
+    let r = e.run_tool("enable_tools", &json!({"tools": "just text"}));
+    assert!(r.starts_with("[tool error"), "{r}");
+}
+
 // ---- crawl guard v2 ----
 
 #[test]

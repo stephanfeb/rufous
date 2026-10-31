@@ -13,6 +13,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::config::agent_home;
+use crate::edit_match;
 use crate::guards::format_bash_out;
 use crate::mcp::{self, McpRegistry};
 use crate::memory;
@@ -132,6 +133,9 @@ pub struct Executor {
     /// exists, is taken relative to the workdir. Applied once, in [`Self::dispatch`], to
     /// every file tool; the result carries [`PATH_REBASED_MARK`].
     pub rebase_workdir_prefix: bool,
+    /// `edit_file`'s matcher ([`crate::edit_match`]); off (ablation `edit_match`), the
+    /// inherited exact-after-unescape matcher with the file-head preview.
+    pub edit_match: bool,
     /// Advanced tools the model has enabled, in enable order.
     pub enabled: Vec<String>,
     pub bash_timeout: Duration,
@@ -180,6 +184,7 @@ impl Executor {
             crawl: HashMap::new(),
             slim_output: false,
             rebase_workdir_prefix: false,
+            edit_match: true,
             stop: None,
             enabled: Vec::new(),
             bash_timeout: Duration::from_secs(
@@ -346,7 +351,17 @@ impl Executor {
                     end_line
                 })
             }
-            ToolInvocation::EditFile { path, old, new } => with_path!(EditFile { path, old, new }),
+            ToolInvocation::EditFile {
+                path,
+                old,
+                new,
+                all,
+            } => with_path!(EditFile {
+                path,
+                old,
+                new,
+                all
+            }),
             ToolInvocation::AppendFile { path, content } => {
                 with_path!(AppendFile { path, content })
             }
@@ -371,7 +386,12 @@ impl Executor {
                 start_line,
                 end_line,
             } => self.read_file(&path, start_line, end_line),
-            ToolInvocation::EditFile { path, old, new } => self.edit_file(&path, &old, &new),
+            ToolInvocation::EditFile {
+                path,
+                old,
+                new,
+                all,
+            } => self.edit_file(&path, &old, &new, all),
             ToolInvocation::AppendFile { path, content } => self.append_file(&path, &content),
             ToolInvocation::DeleteFile { path } => self.delete_file(&path),
             ToolInvocation::ListDir { path } => self.list_dir(&path),
@@ -608,32 +628,80 @@ impl Executor {
         format!("[image attached: {display} ({} KB)] The image is loaded with this turn's request; you can describe it, read its text or analyse its content directly.", size / 1024)
     }
 
-    fn edit_file(&mut self, path: &str, old: &str, new: &str) -> String {
+    fn edit_file(&mut self, path: &str, old: &str, new: &str, all: bool) -> String {
         let p = self.workdir.join(path);
         let s = match text::read_text(&p) {
             Ok(s) => s,
             Err(e) => return format!("[tool error: {e}]"),
         };
-        let _ = std::fs::copy(
-            &p,
-            backup_target(&p, &self.workdir, self.backup_root().as_deref()),
-        );
-        let unescape = |t: &str| {
-            t.replace("\\n", "\n")
-                .replace("\\t", "\t")
-                .replace("\\\"", "\"")
-        };
-        let (old, new) = (unescape(old), unescape(new));
+        if !self.edit_match {
+            return self.edit_file_legacy(&p, path, &s, old, new);
+        }
+        match edit_match::find(&s, old, new) {
+            edit_match::Found::Hits { tier, ranges } => {
+                let n = ranges.len();
+                if n > 1 && !all {
+                    return format!(
+                        "[edit failed: old text found {n} times in {path}. Include more of the surrounding lines so it matches once, or pass all=true to replace every occurrence.]"
+                    );
+                }
+                let new_used = if tier == edit_match::Tier::Unescaped {
+                    edit_match::unescape(new)
+                } else {
+                    new.to_string()
+                };
+                let out = edit_match::apply(&s, &ranges, &new_used, all);
+                let mut r = self.write_edited(&p, path, &out);
+                if r.starts_with("[edited") {
+                    if all && n > 1 {
+                        r.push_str(&format!(" ({n} occurrences replaced)"));
+                    }
+                    if tier != edit_match::Tier::Exact {
+                        r.push_str(&format!(" (old text matched {})", tier.describe()));
+                    }
+                }
+                r
+            }
+            edit_match::Found::AlreadyApplied => format!(
+                "[no change: {path} already contains the new text and the old text is not there any more; nothing was written. Read the file if you expected something else.]"
+            ),
+            edit_match::Found::Miss {
+                first_line,
+                last_line,
+                region,
+            } => {
+                let shown = head(&region, 800);
+                let cut = if shown.len() < region.len() { "…" } else { "" };
+                format!(
+                    "[edit failed: old text not found. Closest match in {path}, lines {first_line}–{last_line}:\n{shown}{cut}\nQuote the lines exactly as they are in the file, whitespace included, or rewrite the file with create_file.]"
+                )
+            }
+        }
+    }
+
+    /// Mingbird's matcher, kept for the `edit_match` ablation: `\\n`, `\\t`, `\\"` unescaped in
+    /// both texts, exact `contains`, the first occurrence replaced, a miss shows the file head.
+    fn edit_file_legacy(&mut self, p: &Path, path: &str, s: &str, old: &str, new: &str) -> String {
+        let (old, new) = (edit_match::unescape(old), edit_match::unescape(new));
         if !s.contains(&old) {
-            let preview = head(&s, 200).replace('\n', "↵");
+            let preview = head(s, 200).replace('\n', "↵");
             return format!(
                 "[edit failed: old text not found. Preview of the file start: {preview}...] Use read_file to see the whole file and build an exactly matching old text, or rewrite the file with create_file."
             );
         }
-        if let Err(e) = std::fs::write(&p, s.replacen(&old, &new, 1)) {
+        self.write_edited(p, path, &s.replacen(&old, &new, 1))
+    }
+
+    /// Back the file up, write it, and report the way every edit has.
+    fn write_edited(&mut self, p: &Path, path: &str, out: &str) -> String {
+        let _ = std::fs::copy(
+            p,
+            backup_target(p, &self.workdir, self.backup_root().as_deref()),
+        );
+        if let Err(e) = std::fs::write(p, out) {
             return format!("[tool error: {e}]");
         }
-        let tag = if auto_repair(&p) {
+        let tag = if auto_repair(p) {
             "backed up, escapes auto-repaired"
         } else {
             "backed up"
