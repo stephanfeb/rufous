@@ -1689,3 +1689,61 @@ New dependency `unicode-normalization`. After-measurement: tier6_editor (now six
 gemma4:e2b at `--runs 3` against `gemma_e2b_no_small_rule`; the read is the miss count (23 in
 10 cells, plus ED-06's 18 in 6), ED-02 coding (0.62), ED-04 coding (the one-occurrence loss)
 and ED-06's six cells.
+
+## After bk9.3, gemma4:e2b tier6_editor at three runs (2026-10-31, `gemma_e2b_edit_match`)
+
+Same configuration as `gemma_e2b_no_small_rule`, binary at 7c184bf, six tasks, 36 cells:
+
+| | before (bk9.3 off) | after |
+|---|---|---|
+| mean over 36 cells | 0.822 | 0.794 |
+| run means | 0.85 / 0.71 / 0.90 | 0.82 / 0.80 / 0.76 |
+| sd across runs | 0.10 | 0.03 |
+| wall | 35 min | 41 min |
+| `edit_file` calls / landed | 95 / 40 | 175 / 53 |
+| "old text not found" | 41 | 16 |
+| "found N times" refusals | — | 3 |
+| "no change" answers | — | 87 |
+| calls sent with `all=true` | — | 150 |
+| edits that replaced 2+ occurrences | — | 7 |
+| a tier below exact matched | — | 0 |
+
+| task | coding before → after | unattended before → after |
+|---|---|---|
+| ED-01 | 0.86 → 0.86 | 1.00 → 1.00 |
+| ED-02 | 0.62 → 0.86 | 0.90 → 0.90 |
+| ED-03 | 0.57 → 0.33 | 0.71 → 0.57 |
+| ED-04 | 0.77 → 0.48 | 0.81 → 1.00 |
+| ED-05 | 1.00 → 1.00 | 1.00 → 0.86 |
+| ED-06 | 0.81 → 0.67 | 0.81 → 1.00 |
+
+What the tool fixed, it fixed: misses fell from 41 to 16, ED-06's escape case is gone (its
+quoted lines now land on the first call), ED-02 coding came back from the stale-quote loop,
+ED-04 and ED-06 unattended are 1.00 three times each, and the run-to-run spread is the
+smallest of any folder. The fuzzy tiers never matched once: this model's bad quotes are
+stale or of the wrong region, not whitespace or typography, so the tiers cost nothing and
+earned nothing here. Two new surfaces then did damage of their own.
+
+`all=true`. The model sent it on 150 of 175 calls: it fills every schema field, and a
+boolean it fills with `true`. On ED-06 the count refusal offered it by name ("or pass
+all=true") and the model took the offer: coding r2 is `found 2 times` → the same call with
+`all=true` → both lines replaced → finish, 0.00, the exact collateral the fixture was built
+to catch, produced by the error message that was meant to prevent it. Seven landed edits
+replaced two or more occurrences; two of them were right (ED-04's import and call in one
+file), the rest were ED-06's shared line.
+
+"No change". The answer is true about the file every time it was given, and the model does
+not take it as done: it re-issues the edit, usually with `all=true` and a wider quote, and
+the loop sees a success each time, so no ladder escalates. ED-06 coding r0 took 33 edit
+calls (3 landed, 28 no-change) before the loop disabled the tool and a whole-file write
+finished it at 1.00; unattended r0 and r2 the same at 25 and 23 calls; ED-04 coding r2 ran
+fourteen no-change answers in a row on a file it had already renamed and finished at 0.32.
+That is the six extra minutes of wall. ED-03's two drops are not the matcher's: coding r0
+was two empty replies and the turn ended with nothing done, unattended r2 was ten
+`edit_file` calls without `path` in a row.
+
+Reading. The matcher did the job it was built for and the two things added around it, an
+argument the model cannot be trusted with and a success message the model cannot act on, cost
+about what it gained. Both are small-model quirks meeting a surface that frontier harnesses
+can expose safely. Neither is a reason to switch the matcher off: the ablation `edit_match`
+restores the 41 misses as well. The design response is a bead, not a patch.
