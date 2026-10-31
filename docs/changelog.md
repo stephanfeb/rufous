@@ -2447,3 +2447,19 @@ empty file is appended to as before. One more read per append, through the same 
 editor's buffer under ACP). No prompt text. Test: `tests/exec_tools.rs`, the qwen `# Heron
 report` + `## Attendance` case and the four edges. To see it: the longform script's qwen cells
 should no longer have a one-line report.md (the rig does not score it; check the file).
+
+## Longform, release of 06:21 (append on a new line), n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_lt_v2`. 10/10 in all six cells (v1: qwen 10, 10, 9). The change shows
+in the files, which the rig does not score: qwen r1 and r2 appended from turn 2 and their
+report.md now begins `# Heron report` on its own line with seven `## ` headings at line start
+(v1: 3/3 glued, bead boubou-l3e); gemma 3/3 well-formed as before. qwen r0 never exercised the
+append: it edited the whole file as `old` text eight times, which grew the context (10
+compactions, 391 s against 92–114 s for the v1 cells; r1 and r2 took 242–304 s with twelve and
+sixteen reads and eight plan-tool calls), and in turn 8 that edit swallowed the Deadlines
+section appended in turn 7: the final file has six headings and the model said seven in turn 10.
+Every turn passed because each "Change nothing else" turn checks only its own heading: bead
+boubou-dby (carry earlier file checks forward). Two `⟂error` tags: gemma r0 `list_dir` on
+report.md (not a dir, tagged, right), and qwen r0's failed edit, whose tag landed on a second
+log line because the result head keeps newlines, so the bench read the call as landed: bead
+boubou-h5d. The extra read per append is invisible in the logs.
