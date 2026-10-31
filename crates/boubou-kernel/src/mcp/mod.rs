@@ -173,10 +173,26 @@ pub fn normalise_categories(tags: &[String]) -> Vec<String> {
 
 pub type McpConfig = BTreeMap<String, ServerConfig>;
 
+/// The project's own servers, the file the other harnesses share (bead boubou-w3i.3).
+pub const PROJECT_FILE: &str = ".mcp.json";
+
+/// A config file's text in either shape: Boubou's bare `{server: {...}}` map, or the
+/// shared `{"mcpServers": {server: {...}}}` wrapper (Claude Code, Cursor, Codex), whose
+/// entries use the same `command`/`args`/`env` and `url`/`headers` keys; a `type` key is
+/// ignored, and `categories`/`tools`/`expose` work in both.
+pub fn parse_config(text: &str, path: &Path) -> Result<McpConfig> {
+    let v: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+    let servers = match v.get("mcpServers") {
+        Some(inner) if inner.is_object() => inner.clone(),
+        _ => v,
+    };
+    serde_json::from_value(servers).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+}
+
 pub fn load_from(path: &Path) -> Result<McpConfig> {
     match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| Error::Config(format!("{}: {e}", path.display()))),
+        Ok(text) => parse_config(&text, path),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(McpConfig::new()),
         Err(e) => Err(Error::io(path, e)),
     }
@@ -189,6 +205,29 @@ pub fn load(agent_home: &Path, install_dir: &Path) -> Result<McpConfig> {
         return load_from(&user);
     }
     load_from(&install_dir.join("mcp.json"))
+}
+
+/// `<workdir>/.mcp.json`; empty under `AGENT_PROJECT_MCP=0`.
+pub fn load_project(workdir: &Path) -> Result<McpConfig> {
+    if std::env::var("AGENT_PROJECT_MCP").is_ok_and(|v| matches!(v.trim(), "0" | "off" | "false")) {
+        return Ok(McpConfig::new());
+    }
+    load_from(&workdir.join(PROJECT_FILE))
+}
+
+/// The servers of a session: the home file (or the install directory's), then the
+/// project's `.mcp.json`, a project server replacing a home server of the same name. A
+/// file that does not parse is logged and skipped, the other source still counts.
+pub fn load_for(agent_home: &Path, install_dir: &Path, workdir: &Path) -> McpConfig {
+    let mut servers = load(agent_home, install_dir).unwrap_or_else(|e| {
+        tracing::warn!("mcp.json: {e}");
+        McpConfig::new()
+    });
+    match load_project(workdir) {
+        Ok(project) => servers.extend(project),
+        Err(e) => tracing::warn!("{PROJECT_FILE}: {e}"),
+    }
+    servers
 }
 
 /// Model-facing tool identity: `server.tool`.

@@ -81,3 +81,12 @@ other: `AGENT_ABLATION=env_block` turns it off for a comparison run. The Q&A pro
 Skills cover "how to do it"; MCP covers "which extra tools exist". MCP servers are configured in `~/.ollama_agent/mcp.json`;
 once configured, their tools are routed by category (`files`, `code`, `web`, `memory`, `mcp`) and the model calls them as
 `server.tool`; see `mcp.json.example` in the repository root for the format. The "Skills" window in the UI also lists the configured MCP servers.
+
+A project brings its own servers in `<workdir>/.mcp.json`, the file Claude Code, Cursor and Codex read: either their
+`{"mcpServers": {...}}` wrapper (a `type` key is ignored; `command`/`args`/`env` and `url`/`headers` are the same keys) or
+Boubou's bare map, and `categories`/`tools`/`expose` work in both. The project's servers are added to the home file's, and
+a project server replaces a home server of the same name. Under an editor, the servers the client passes in
+`session/new` are added on top for that session. A server is still launched only when a tool of its category is routed
+or enabled, so a project's `.mcp.json` runs processes the project chose, as its hooks do: read it before running Boubou
+there; `AGENT_PROJECT_MCP=0` ignores it. `boubou doctor` counts the project's servers separately. Not yet: `${VAR}`
+expansion in `env` values, the SSE transport (an `sse` entry is tried as streamable HTTP).

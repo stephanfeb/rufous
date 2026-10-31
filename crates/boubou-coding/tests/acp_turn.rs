@@ -22,6 +22,9 @@ use agent_client_protocol::schema::v1::{
     SessionUpdate, StopReason, ToolCallStatus, ToolKind, WriteTextFileRequest,
     WriteTextFileResponse,
 };
+use agent_client_protocol::schema::v1::{
+    EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio,
+};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Channel, Client, ConnectTo, Responder};
 use boubou_coding::runner::{AgentFactory, TurnRunner, TurnSetup};
@@ -812,4 +815,106 @@ async fn without_the_capability_the_tools_use_the_disk_and_ask_the_editor_nothin
         std::fs::read_to_string(cwd.join("new.txt")).expect("read"),
         "made"
     );
+}
+
+/// Records what the server hands a turn as MCP servers; the turn itself finishes at once.
+struct McpSeeingFactory {
+    seen: Arc<Mutex<Vec<boubou_kernel::mcp::McpConfig>>>,
+}
+
+impl AgentFactory for McpSeeingFactory {
+    fn new_turn(&self, setup: TurnSetup) -> boubou_kernel::Result<Box<dyn TurnRunner>> {
+        self.seen
+            .lock()
+            .expect("lock")
+            .push(setup.mcp_servers.clone());
+        let mut params = RunParams::plain(setup.model, &setup.cwd);
+        params.policy = boubou_coding::harness::policy();
+        let backend = Scripted {
+            calls: vec![],
+            i: 0,
+            delay: Duration::ZERO,
+            forever: false,
+        };
+        let tools = Tools {
+            confirmer: setup.confirmer,
+            cwd: setup.cwd.clone(),
+        };
+        Ok(Box::new(
+            Agent::new(params, backend, tools)
+                .with_sink(setup.sink)
+                .with_stop(setup.stop),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn the_clients_mcp_servers_reach_the_turn_as_server_configs() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let agent = BoubouAcp::with_factory(
+        cwd.join("home"),
+        "scripted:1b".into(),
+        Arc::new(McpSeeingFactory { seen: seen.clone() }),
+    );
+    let (agent_ch, client_ch) = Channel::duplex();
+    let client = Client
+        .builder()
+        .name("test-editor")
+        .connect_with(client_ch, async move |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let mut notes = McpServerStdio::new("notes", "python3");
+            notes.args = vec!["notes_server.py".into()];
+            notes.env = vec![EnvVariable::new("NOTES_DIR", "/tmp/notes")];
+            let mut docs = McpServerHttp::new("docs", "http://127.0.0.1:1/mcp");
+            docs.headers = vec![HttpHeader::new("Authorization", "Bearer x")];
+            let ns = cx
+                .send_request(
+                    NewSessionRequest::new(cwd.clone())
+                        .mcp_servers(vec![McpServer::Stdio(notes), McpServer::Http(docs)]),
+                )
+                .block_task()
+                .await?;
+            cx.send_request(PromptRequest::new(
+                ns.session_id.clone(),
+                vec!["hello".into()],
+            ))
+            .block_task()
+            .await?;
+            // A second session without servers gets none.
+            let ns2 = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            cx.send_request(PromptRequest::new(ns2.session_id, vec!["hello".into()]))
+                .block_task()
+                .await?;
+            Ok(())
+        });
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    client_res.expect("client side");
+
+    let seen = seen.lock().expect("lock");
+    assert_eq!(seen.len(), 2);
+    let first = &seen[0];
+    assert_eq!(first.len(), 2, "{first:?}");
+    let notes = &first["notes"];
+    assert_eq!(notes.command.as_deref(), Some("python3"));
+    assert_eq!(notes.args, vec!["notes_server.py".to_string()]);
+    assert_eq!(
+        notes.env.get("NOTES_DIR").map(String::as_str),
+        Some("/tmp/notes")
+    );
+    assert_eq!(notes.server_categories(), vec!["mcp".to_string()]);
+    let docs = &first["docs"];
+    assert_eq!(docs.url.as_deref(), Some("http://127.0.0.1:1/mcp"));
+    assert_eq!(
+        docs.headers.get("Authorization").map(String::as_str),
+        Some("Bearer x")
+    );
+    assert!(seen[1].is_empty());
 }

@@ -739,38 +739,46 @@ async fn doctor(cfg: &Config) -> Result<()> {
         .with_builtin(builtin_skills());
     println!("skills       : {}", skills.len());
 
-    match mcp::load(&home, &install_dir()) {
-        Ok(servers) => {
+    {
+        let cwd = std::env::current_dir()?;
+        let project = mcp::load_project(&cwd).unwrap_or_default().len();
+        let servers = mcp::load_for(&home, &install_dir(), &cwd);
+        if project > 0 {
+            println!(
+                "mcp servers  : {} ({project} from {})",
+                servers.len(),
+                mcp::PROJECT_FILE
+            );
+        } else {
             println!("mcp servers  : {}", servers.len());
-            let manifest = if servers.is_empty() {
-                Default::default()
-            } else {
-                println!("  (probing, up to {}s each)", mcp::PROBE_TIMEOUT.as_secs());
-                mcp::McpRegistry::new(&home, servers.clone()).manifest(true)
-            };
-            for (name, s) in &servers {
-                let kind = if s.is_http() { "http" } else { "stdio" };
-                let bad = s.unknown_categories();
-                let warn = if bad.is_empty() {
-                    String::new()
-                } else {
-                    format!("  ⚠ unrouted categories: {}", bad.join(", "))
-                };
-                let tools = manifest.get(name).map(|m| &m.tools[..]).unwrap_or(&[]);
-                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).take(8).collect();
-                let more = if tools.len() > 8 {
-                    format!(" (+{} more)", tools.len() - 8)
-                } else {
-                    String::new()
-                };
-                println!(
-                    "  {name:<20} {kind}  {} tools: {}{more}{warn}",
-                    tools.len(),
-                    names.join(", ")
-                );
-            }
         }
-        Err(e) => println!("mcp servers  : error: {e}"),
+        let manifest = if servers.is_empty() {
+            Default::default()
+        } else {
+            println!("  (probing, up to {}s each)", mcp::PROBE_TIMEOUT.as_secs());
+            mcp::McpRegistry::new(&home, servers.clone()).manifest(true)
+        };
+        for (name, s) in &servers {
+            let kind = if s.is_http() { "http" } else { "stdio" };
+            let bad = s.unknown_categories();
+            let warn = if bad.is_empty() {
+                String::new()
+            } else {
+                format!("  ⚠ unrouted categories: {}", bad.join(", "))
+            };
+            let tools = manifest.get(name).map(|m| &m.tools[..]).unwrap_or(&[]);
+            let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).take(8).collect();
+            let more = if tools.len() > 8 {
+                format!(" (+{} more)", tools.len() - 8)
+            } else {
+                String::new()
+            };
+            println!(
+                "  {name:<20} {kind}  {} tools: {}{more}{warn}",
+                tools.len(),
+                names.join(", ")
+            );
+        }
     }
     Ok(())
 }

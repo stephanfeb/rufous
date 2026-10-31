@@ -1934,3 +1934,26 @@ a fresh directory, a branch, a detached head and a worktree; the ordering SYSTEM
 workdir line, environment line, platform block; the cap; the line through the agent, absent
 on a question's prompt and under the ablation. The two prompt-build functions in the loop now
 take one `PromptInputs` struct instead of eight arguments.
+
+## Project `.mcp.json` and the editor's MCP servers (2026-10-31, bead boubou-w3i.3)
+
+Third and last item of the extensibility epic boubou-w3i. MCP servers came from one file,
+the home `mcp.json`, so a project could not bring its own and the servers an editor passed in
+`session/new` were logged and dropped. One loader now serves a session: the home file as
+before, then the project's `.mcp.json` in either shape (the `mcpServers` wrapper the other
+harnesses write, with its `type` key ignored, or Boubou's bare map; `categories`, `tools` and
+`expose` work in both), a project server replacing a home server of the same name; under
+ACP the client's servers are converted to the same `ServerConfig` (stdio command, args and
+env; HTTP url and headers; SSE tried as HTTP) and merged on top for that session. Every
+consumer goes through the loader: the loop's executor, `boubou tool`, `boubou doctor` (which
+counts the project's separately). When a server is launched is unchanged: only when a tool
+of its category is routed or enabled, with the manifest cache as before, so the prompt cost
+is nil until then and the same as any configured server after. A project's `.mcp.json` runs
+processes the project chose, as its hooks do; `AGENT_PROJECT_MCP=0` ignores it and the docs
+say to read it first. Tests: both shapes parse to equal configs; the merge and its precedence,
+a broken project file skipped with the home kept, the executor's configured registry seeing a
+project server; over the in-process ACP client, a stdio and an HTTP server passed in
+`session/new` reach the turn as configs and a second session without servers gets none. Not
+done: `${VAR}` expansion in env values, the SSE transport proper, per-server approval. With
+this the epic's three items are in; what remains is the Zed verification on boubou-m64, which
+now covers the fs path and the session servers too.

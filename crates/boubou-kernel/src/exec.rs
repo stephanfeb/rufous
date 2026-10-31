@@ -314,11 +314,18 @@ impl Executor {
         self
     }
 
-    /// Load `mcp.json` from the agent home / install dir and attach it.
+    /// Load the session's MCP servers ([`mcp::load_for`]: the home `mcp.json`, then the
+    /// workdir's `.mcp.json`) and attach them.
     pub fn with_configured_mcp(self) -> Self {
-        let servers = mcp::load(&self.agent_home, &self.install_dir).unwrap_or_default();
+        let servers = mcp::load_for(&self.agent_home, &self.install_dir, &self.workdir);
         let reg = McpRegistry::new(&self.agent_home, servers);
         self.with_mcp(Arc::new(reg))
+    }
+
+    /// Replace the server set (a host adding its own for the session, as an ACP client
+    /// does in `session/new`); the registry is rebuilt, the manifest cache is shared.
+    pub fn set_mcp_servers(&mut self, servers: mcp::McpConfig) {
+        self.mcp = Arc::new(McpRegistry::new(&self.agent_home, servers));
     }
 
     /// Whether the harness files live outside the workdir.

@@ -14,6 +14,9 @@ A local-model autonomous agent, written in Rust. Boubou is the successor to
 - **Hooks.** A project or a user runs their own commands at the loop's events (`SessionStart`,
   `PreToolUse`, `PostToolUse`, `Stop`) from a `hooks.json` in the shape Claude Code, Codex and
   Cursor share; a project's `.claude/settings.json` hooks run as they are (see `docs/hooks.md`).
+- **MCP from the project.** A `.mcp.json` in the working directory, in the `mcpServers` shape the
+  other harnesses write, adds its servers to the home `mcp.json`; under an editor the servers the
+  client passes at `session/new` join them for that session (see `docs/skills.md`).
 
 The name: the Southern Boubou, *Laniarius ferrugineus*, is a rust-coloured African bush-shrike
 that sings in duet. *Ferrugineus* means "rusty".

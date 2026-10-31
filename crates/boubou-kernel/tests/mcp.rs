@@ -481,3 +481,80 @@ fn executor_calls_flattened_and_mcp_call_tools() {
     assert!(out.starts_with("### [1] fake.echo\necho: 1"), "{out}");
     assert!(out.contains("### [3] fake.echo\necho: 2"), "{out}");
 }
+
+// ---- the project's .mcp.json (bead boubou-w3i.3) ----
+
+#[test]
+fn both_config_shapes_parse_to_the_same_servers() {
+    let shared = r#"{
+      "mcpServers": {
+        "notes": { "command": "python3", "args": ["notes.py"], "env": { "NOTES_DIR": "/n" } },
+        "docs": { "type": "http", "url": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer x" }, "categories": ["web"] }
+      }
+    }"#;
+    let bare = r#"{
+      "notes": { "command": "python3", "args": ["notes.py"], "env": { "NOTES_DIR": "/n" } },
+      "docs": { "url": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer x" }, "categories": ["web"] }
+    }"#;
+    let a = mcp::parse_config(shared, Path::new(".mcp.json")).expect("shared shape");
+    let b = mcp::parse_config(bare, Path::new("mcp.json")).expect("bare shape");
+    assert_eq!(a, b);
+    assert_eq!(a["notes"].command.as_deref(), Some("python3"));
+    assert_eq!(a["notes"].env["NOTES_DIR"], "/n");
+    assert!(a["docs"].is_http());
+    assert_eq!(a["docs"].server_categories(), vec!["web".to_string()]);
+    let err = mcp::parse_config("{ not json", Path::new("x/.mcp.json")).expect_err("bad json");
+    assert!(err.to_string().contains(".mcp.json"), "{err}");
+}
+
+#[test]
+fn the_projects_servers_join_the_homes_and_win_a_name_clash() {
+    let d = tempfile::tempdir().expect("tmp");
+    let home = d.path().join("home");
+    let work = d.path().join("proj");
+    std::fs::create_dir_all(&home).expect("mkdir");
+    std::fs::create_dir_all(&work).expect("mkdir");
+    std::fs::write(
+        home.join("mcp.json"),
+        r#"{ "a": { "command": "home-a" }, "b": { "command": "home-b" } }"#,
+    )
+    .expect("w");
+    std::fs::write(
+        work.join(".mcp.json"),
+        r#"{ "mcpServers": { "b": { "command": "proj-b" }, "c": { "command": "proj-c" } } }"#,
+    )
+    .expect("w");
+    let servers = mcp::load_for(&home, &d.path().join("none"), &work);
+    assert_eq!(servers.len(), 3);
+    assert_eq!(servers["a"].command.as_deref(), Some("home-a"));
+    assert_eq!(
+        servers["b"].command.as_deref(),
+        Some("proj-b"),
+        "project wins"
+    );
+    assert_eq!(servers["c"].command.as_deref(), Some("proj-c"));
+
+    // A project file that does not parse is skipped; the home servers still count.
+    std::fs::write(work.join(".mcp.json"), "{ broken").expect("w");
+    let servers = mcp::load_for(&home, &d.path().join("none"), &work);
+    assert_eq!(servers.len(), 2);
+
+    // No project file: the home alone, as before.
+    std::fs::remove_file(work.join(".mcp.json")).expect("rm");
+    assert_eq!(mcp::load_for(&home, &d.path().join("none"), &work).len(), 2);
+    assert!(mcp::load_project(&work)
+        .expect("absent is empty")
+        .is_empty());
+
+    // The executor's configured registry sees the project's servers.
+    std::fs::write(
+        work.join(".mcp.json"),
+        r#"{ "mcpServers": { "proj_only_server": { "command": "x" } } }"#,
+    )
+    .expect("w");
+    let e = Executor::with_policy(&work, SafetyPolicy::default()).with_configured_mcp();
+    assert!(e.mcp.servers.contains_key("proj_only_server"));
+    let mut e = e;
+    e.set_mcp_servers(McpConfig::new());
+    assert!(e.mcp.servers.is_empty());
+}

@@ -16,6 +16,7 @@ use boubou_kernel::agent::session;
 use boubou_kernel::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner};
 use boubou_kernel::config::Config;
 use boubou_kernel::exec::{DiskStore, FileStore};
+use boubou_kernel::mcp::{McpConfig, ServerConfig};
 use boubou_kernel::ollama::Message;
 use boubou_kernel::safety::{ConfirmRequest, Confirmer, Gate, SafetyPolicy, Verdict};
 use tokio::sync::mpsc::UnboundedSender;
@@ -189,6 +190,68 @@ pub struct TurnSetup {
     /// Where the text-file tools read and write: the editor's buffers when the client
     /// offered `fs`, else the disk ([`AcpFileStore::for_turn`]).
     pub files: Box<dyn FileStore>,
+    /// The MCP servers the client passed in `session/new` or `session/load`
+    /// ([`mcp_config_from_acp`]), merged over the home and project files for the turn.
+    pub mcp_servers: McpConfig,
+}
+
+/// The client's `mcpServers` as Boubou's server configs: a stdio server's command, args
+/// and env, an HTTP or SSE server's url and headers (SSE is tried as streamable HTTP; the
+/// probe says if that fails). Categories default to `mcp`, as for an entry without any.
+pub fn mcp_config_from_acp(servers: &[agent_client_protocol::schema::v1::McpServer]) -> McpConfig {
+    use agent_client_protocol::schema::v1::McpServer;
+    let mut out = McpConfig::new();
+    for s in servers {
+        match s {
+            McpServer::Stdio(st) => {
+                out.insert(
+                    st.name.clone(),
+                    ServerConfig {
+                        command: Some(st.command.display().to_string()),
+                        args: st.args.clone(),
+                        env: st
+                            .env
+                            .iter()
+                            .map(|e| (e.name.clone(), e.value.clone()))
+                            .collect(),
+                        ..ServerConfig::default()
+                    },
+                );
+            }
+            McpServer::Http(h) => {
+                out.insert(
+                    h.name.clone(),
+                    ServerConfig {
+                        url: Some(h.url.clone()),
+                        headers: h
+                            .headers
+                            .iter()
+                            .map(|e| (e.name.clone(), e.value.clone()))
+                            .collect(),
+                        ..ServerConfig::default()
+                    },
+                );
+            }
+            McpServer::Sse(h) => {
+                out.insert(
+                    h.name.clone(),
+                    ServerConfig {
+                        url: Some(h.url.clone()),
+                        headers: h
+                            .headers
+                            .iter()
+                            .map(|e| (e.name.clone(), e.value.clone()))
+                            .collect(),
+                        ..ServerConfig::default()
+                    },
+                );
+            }
+            other => {
+                tracing::warn!(target: "boubou_coding", "mcpServers: unknown transport skipped: {other:?}")
+            }
+        }
+    }
+    out
 }
 
 impl std::fmt::Debug for TurnSetup {
@@ -255,6 +318,11 @@ impl AgentFactory for StandardFactory {
             .with_builtin_skills(crate::harness::skills());
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), setup.confirmer);
         agent.tools.store = setup.files;
+        if !setup.mcp_servers.is_empty() {
+            let mut servers = agent.tools.mcp.servers.clone();
+            servers.extend(setup.mcp_servers);
+            agent.tools.set_mcp_servers(servers);
+        }
         agent.checkpoint = Some(session::state_path(&setup.sessions_dir, &setup.session));
         agent.sessions_dir = setup.sessions_dir;
         Ok(Box::new(agent))

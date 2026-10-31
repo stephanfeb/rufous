@@ -16,10 +16,11 @@
 //!
 //! When the client advertises `fs.readTextFile` / `fs.writeTextFile` at `initialize`, the
 //! text-file tools read and write through the editor ([`runner::AcpFileStore`]), so an
-//! unsaved buffer is what the model sees and an edit lands in it.
+//! unsaved buffer is what the model sees and an edit lands in it. The MCP servers the
+//! client passes in `session/new` or `session/load` are merged over Boubou's `mcp.json` and
+//! the project's `.mcp.json` for that session ([`runner::mcp_config_from_acp`]).
 //!
-//! Protocol v1 (stable). Not yet: session modes, the client's `terminal` capability, MCP
-//! servers passed in `session/new` and `session/load` (Boubou keeps its own `mcp.json`).
+//! Protocol v1 (stable). Not yet: session modes, the client's `terminal` capability.
 //! stdout belongs to the protocol; diagnostics go to stderr via `tracing`.
 
 pub mod bridge;
@@ -60,6 +61,8 @@ struct SessionState {
     messages: Vec<Message>,
     stop: Arc<AtomicBool>,
     busy: bool,
+    /// The client's `mcpServers` for this session, merged over the files at each turn.
+    mcp_servers: boubou_kernel::mcp::McpConfig,
 }
 
 type Sessions = Arc<Mutex<HashMap<SessionId, SessionState>>>;
@@ -170,11 +173,12 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 })),
                             );
                         }
-                        if !req.mcp_servers.is_empty() {
-                            tracing::warn!(
+                        let mcp_servers = runner::mcp_config_from_acp(&req.mcp_servers);
+                        if !mcp_servers.is_empty() {
+                            tracing::info!(
                                 target: "boubou_coding",
-                                n = req.mcp_servers.len(),
-                                "session/new mcpServers ignored: Boubou uses its own mcp.json"
+                                servers = ?mcp_servers.keys().collect::<Vec<_>>(),
+                                "session/new mcpServers merged for the session"
                             );
                         }
                         let name = runner::unique_session_name(
@@ -189,6 +193,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                             messages: Vec::new(),
                             stop: Arc::new(AtomicBool::new(false)),
                             busy: false,
+                            mcp_servers,
                         };
                         lock(&sessions).insert(id.clone(), st);
                         tracing::info!(target: "boubou_coding", session = %id, cwd = %req.cwd.display(), "session/new");
@@ -219,11 +224,12 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 })),
                             );
                         }
-                        if !req.mcp_servers.is_empty() {
-                            tracing::warn!(
+                        let mcp_servers = runner::mcp_config_from_acp(&req.mcp_servers);
+                        if !mcp_servers.is_empty() {
+                            tracing::info!(
                                 target: "boubou_coding",
-                                n = req.mcp_servers.len(),
-                                "session/load mcpServers ignored: Boubou uses its own mcp.json"
+                                servers = ?mcp_servers.keys().collect::<Vec<_>>(),
+                                "session/load mcpServers merged for the session"
                             );
                         }
                         let Some(messages) =
@@ -266,6 +272,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                             messages,
                             stop,
                             busy: false,
+                            mcp_servers,
                         };
                         lock(&sessions).insert(req.session_id.clone(), st);
                         tracing::info!(
@@ -307,11 +314,12 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                         s.name.clone(),
                                         std::mem::take(&mut s.messages),
                                         s.stop.clone(),
+                                        s.mcp_servers.clone(),
                                     ))
                                 }
                             }
                         };
-                        let (cwd, name, prior, stop) = match taken {
+                        let (cwd, name, prior, stop, mcp_servers) = match taken {
                             Ok(t) => t,
                             Err(e) => return responder.respond_with_error(e),
                         };
@@ -336,6 +344,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                 },
                                 confirmer: Box::new(AcpConfirmer { tx: tx.clone() }),
                                 files: AcpFileStore::for_turn(tx.clone(), *lock(&client_fs)),
+                                mcp_servers,
                             },
                             prior.clone(),
                             text,
