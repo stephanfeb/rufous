@@ -110,6 +110,12 @@ pub enum Gate {
     /// Gate 3b: files the task names exist, unless the summary reports them as failed (one
     /// refusal).
     NamedFiles,
+    /// Gate 3c: a file the instruction asks to write or change got a landed write this
+    /// turn, unless the reply reports why not (one refusal, at the finish call and at the
+    /// text reply that ends a turn). Bead boubou-78s: both 4B models put "the tasks into
+    /// tasks.md" into the plan tool and reported the file updated. Only the coding preset
+    /// takes it until it is measured under unattended.
+    NamedWrites,
     /// Gate 4: files the plan names exist (two refusals).
     PlanFiles,
     /// Gate 5: the plan is synced (two refusals; waived, and the plan synced instead, when
@@ -125,12 +131,13 @@ pub enum Gate {
 
 impl Gate {
     /// Every gate, in the order the loop runs them.
-    pub const ALL: [Gate; 9] = [
+    pub const ALL: [Gate; 10] = [
         Gate::Delivery,
         Gate::Tests,
         Gate::Claims,
         Gate::ClaimedFiles,
         Gate::NamedFiles,
+        Gate::NamedWrites,
         Gate::PlanFiles,
         Gate::PlanSync,
         Gate::ReRead,
@@ -144,6 +151,7 @@ impl Gate {
             Gate::Claims => "claims",
             Gate::ClaimedFiles => "claimed files",
             Gate::NamedFiles => "named files",
+            Gate::NamedWrites => "named writes",
             Gate::PlanFiles => "plan files",
             Gate::PlanSync => "plan sync",
             Gate::ReRead => "re-read",
@@ -157,7 +165,7 @@ impl Gate {
     pub const fn plan_bookkeeping(self) -> bool {
         matches!(
             self,
-            Gate::NamedFiles | Gate::PlanFiles | Gate::PlanSync | Gate::ReRead
+            Gate::NamedFiles | Gate::NamedWrites | Gate::PlanFiles | Gate::PlanSync | Gate::ReRead
         )
     }
 
@@ -272,7 +280,9 @@ impl TurnPolicy {
         Self {
             name: "unattended",
             text_ends_turn: false,
-            gates: Gates::ALL,
+            // Mingbird's gate set; `NamedWrites` (bead boubou-78s) is measured under the
+            // coding preset first.
+            gates: Gates::ALL.without(Gate::NamedWrites),
             prompt: Prompt::Task(prompt::TASK_BASE),
             consult_decider: true,
             intent_routing: true,
@@ -293,6 +303,7 @@ impl TurnPolicy {
             text_ends_turn: false,
             gates: Gates::ALL
                 .without(Gate::NamedFiles)
+                .without(Gate::NamedWrites)
                 .without(Gate::PlanFiles)
                 .without(Gate::PlanSync)
                 .without(Gate::ReRead),
@@ -368,6 +379,8 @@ impl TurnPolicy {
         let on_off = |b: bool| if b { "on" } else { "off" };
         let gates = if self.gates == Gates::ALL {
             "all".to_string()
+        } else if self.gates == Gates::ALL.without(Gate::NamedWrites) {
+            "all but named writes".to_string()
         } else if self.gates.is_empty() {
             "none".to_string()
         } else {
@@ -417,7 +430,7 @@ mod tests {
                 route: Route::Task,
                 prompt: Prompt::Task(prompt::TASK_BASE),
                 working: true,
-                gates: Gates::ALL,
+                gates: Gates::ALL.without(Gate::NamedWrites),
                 dispatch: true
             }
         );
@@ -435,7 +448,7 @@ mod tests {
         // A follow-up works and is gated like a task; only its ending differs.
         let f = u.turn(Intent::FollowUp, false);
         assert_eq!(f.route, Route::FollowUp);
-        assert!(f.working && f.gates == Gates::ALL && f.dispatch);
+        assert!(f.working && f.gates == Gates::ALL.without(Gate::NamedWrites) && f.dispatch);
         // A child: its own prompt, the delivery gates but no plan bookkeeping, no decider,
         // no dispatch of its own, whatever the opening message looks like.
         let child = TurnPolicy::child();
@@ -532,7 +545,10 @@ mod tests {
         let u = TurnPolicy::default();
         assert!(u.is_unattended());
         assert!(
-            !u.text_ends_turn && u.gates == Gates::ALL && u.intent_routing && u.parallel_dispatch
+            !u.text_ends_turn
+                && u.gates == Gates::ALL.without(Gate::NamedWrites)
+                && u.intent_routing
+                && u.parallel_dispatch
         );
         assert!(!TurnPolicy::conversation().is_unattended());
         assert!(!TurnPolicy::child().is_unattended());
@@ -542,7 +558,7 @@ mod tests {
         );
         assert_eq!(
             TurnPolicy::unattended().describe(),
-            "unattended: text ends turn off, finish gates all, intent routing on, dispatch on, scope gate on"
+            "unattended: text ends turn off, finish gates all but named writes, intent routing on, dispatch on, scope gate on"
         );
     }
 }

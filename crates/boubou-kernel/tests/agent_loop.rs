@@ -3104,3 +3104,134 @@ fn the_tool_log_line_stays_one_line_with_its_tag_after_a_multi_line_result() {
         "a tag on a continuation line: {lines:?}"
     );
 }
+
+// Gate 3c (bead boubou-78s): under a coding-shaped policy, a text reply that ends the turn
+// is held once when the instruction's file got no write; the next reply, after the write,
+// ends the turn. A turn that asks for no write, or reports why it could not write, is
+// not held.
+
+fn coding_like() -> TurnPolicy {
+    TurnPolicy {
+        name: "coding-test",
+        gates: Gates::NONE.with(Gate::NamedWrites),
+        ..TurnPolicy::conversation()
+    }
+}
+
+fn run_coding_like<F: FnMut(usize) -> ChatResponse>(
+    d: &Path,
+    task: &str,
+    tools: &[Call],
+    f: F,
+) -> Vec<Message> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut params = RunParams::plain("gemma4:12b", d);
+    params.policy = coding_like();
+    let mut a = Agent::new(
+        params,
+        Lens { n: 0, f, seen },
+        ScriptedTools {
+            calls: tools.to_vec(),
+            repeat: Vec::new(),
+            served: Vec::new(),
+        },
+    );
+    a.sessions_dir = d.join("sessions");
+    a.run(start(task), None, None).expect("loop")
+}
+
+#[test]
+fn a_text_reply_is_held_once_until_the_named_file_is_written() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("tasks.md"), "# Tasks\n- [ ] one\n").expect("fixture");
+    let tools: Vec<Call> = vec![
+        (
+            "todo",
+            json!({"action": "update", "index": 1, "done": true}),
+            "[x] 1. one",
+        ),
+        (
+            "append_file",
+            json!({"path": "tasks.md", "content": "- [x] one\n"}),
+            "[appended tasks.md]",
+        ),
+    ];
+    let msgs = run_coding_like(
+        d.path(),
+        "Tick the first task in tasks.md as done. Do not start the second one.",
+        &tools,
+        |n| match n {
+            1 => ChatResponse::call(
+                "",
+                "todo",
+                json!({"action": "update", "index": 1, "done": true}),
+            ),
+            2 => ChatResponse::text("Ticked the first task in tasks.md."),
+            3 => ChatResponse::call(
+                "",
+                "append_file",
+                json!({"path": "tasks.md", "content": "- [x] one\n"}),
+            ),
+            _ => ChatResponse::text("Done: the first task is ticked in tasks.md."),
+        },
+    );
+    let held = user_msgs(&msgs, "nothing was written to them this turn");
+    assert_eq!(held.len(), 1, "{msgs:#?}");
+    assert!(
+        held[0].content.contains("- tasks.md"),
+        "{}",
+        held[0].content
+    );
+    assert!(held[0]
+        .content
+        .contains("todo plan is the harness's own list"));
+    assert!(
+        msgs.last().is_some_and(|m| m.content.starts_with("Done:")),
+        "{msgs:#?}"
+    );
+}
+
+#[test]
+fn a_reply_that_asks_for_no_write_or_reports_the_failure_is_not_held() {
+    let d = tempfile::tempdir().expect("tmp");
+    std::fs::write(d.path().join("tasks.md"), "# Tasks\n- [ ] one\n").expect("fixture");
+    // No write asked: the answer is the turn.
+    let msgs = run_coding_like(
+        d.path(),
+        "Which task should we do first, and why? Just tell me; do not change any file.",
+        &[],
+        |_| ChatResponse::text("The first one: everything else needs it."),
+    );
+    assert!(
+        user_msgs(&msgs, "nothing was written").is_empty(),
+        "{msgs:#?}"
+    );
+    assert_eq!(msgs.len(), 3, "{msgs:#?}");
+    // A write asked and declined: the report ends the turn.
+    let msgs = run_coding_like(
+        d.path(),
+        "Write the single word hello to /tmp/boubou_convo_perm.txt.",
+        &[],
+        |_| {
+            ChatResponse::text(
+                "I was unable to write /tmp/boubou_convo_perm.txt: the user declined it.",
+            )
+        },
+    );
+    assert!(
+        user_msgs(&msgs, "nothing was written").is_empty(),
+        "{msgs:#?}"
+    );
+    // Held once at most: a model that answers the hold with the same text still ends the turn.
+    let msgs = run_coding_like(
+        d.path(),
+        "Tick the first task in tasks.md as done.",
+        &[],
+        |_| ChatResponse::text("Ticked."),
+    );
+    assert_eq!(
+        user_msgs(&msgs, "nothing was written").len(),
+        1,
+        "{msgs:#?}"
+    );
+}

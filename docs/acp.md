@@ -80,7 +80,7 @@ test suite and bounce the turn into work you did not ask for. The loop's "contin
 task prompt and the full tool set (a question can still read files, and an instruction
 phrased as a question can still write them), and nothing is dispatched to child processes.
 The safety gate, the duplicate-call and failure ladders, the idle-streak nudges and context
-compaction are unchanged. Two empty replies in a row end the turn.
+compaction are unchanged. Two empty replies in a row end the turn. One check does run at either ending (bead boubou-78s): when your instruction names a file to write or change ("add … to tasks.md", "tick the first task in tasks.md") and no write reached it this turn, the reply or finish is held once with a note naming the file and saying the todo plan is not it; a reply that says why the file could not be written ends the turn.
 
 ## Files through the editor
 

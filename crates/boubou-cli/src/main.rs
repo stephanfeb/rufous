@@ -834,13 +834,15 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boubou_kernel::agent::{Gate, Gates};
 
     #[test]
-    fn the_two_product_presets_differ_in_name_and_prompt_only() {
-        // The CLI is the one crate that sees both products. The struct is the seam, not
-        // yet a difference: both presets are the kernel's conversation under their own name
-        // and their own copy of the task prefill, and the two copies are the same text.
-        // Refactor step 10 replaces this test with one stating the difference and why.
+    fn the_two_product_presets_differ_in_name_prompt_and_the_coding_gate() {
+        // The CLI is the one crate that sees both products. Both presets are the kernel's
+        // conversation under their own name and their own copy of the task prefill (the
+        // same text); since bead boubou-78s the coding preset alone holds a turn once when
+        // a file the instruction asks to write got no write (the plan tool stood in for
+        // tasks.md in the editor's tracker turns). General is not measured on that yet.
         let g = boubou_general::harness::policy();
         let c = boubou_coding::harness::policy();
         assert_eq!((g.name, c.name), ("general", "coding"));
@@ -848,10 +850,13 @@ mod tests {
             TurnPolicy {
                 name: c.name,
                 prompt: c.prompt,
+                gates: c.gates,
                 ..g
             },
             c
         );
+        assert_eq!(c.gates, Gates::NONE.with(Gate::NamedWrites));
+        assert_eq!(g.gates, Gates::NONE);
         assert_eq!(
             boubou_general::harness::TASK_PROMPT,
             boubou_coding::harness::TASK_PROMPT

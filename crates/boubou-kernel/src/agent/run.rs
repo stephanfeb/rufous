@@ -795,6 +795,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut claim_gate_warns = 0;
         let mut ledger = CorrectorLedger::default();
         let mut named_gate_warns = 0;
+        let mut named_writes_warns = 0;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
         let mut text_ladder = TextLadder::default();
@@ -1325,6 +1326,24 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         messages.push(Message::user(format!("[stop hook] {reason}")));
                         continue;
                     }
+                    // Gate 3c (bead boubou-78s) at the text ending: once, the reply is
+                    // held when a file the instruction asks to write got no write and the
+                    // reply does not say why.
+                    if turn.gates.has(Gate::NamedWrites) && named_writes_warns < 1 {
+                        let task_text = qa::task_original_text(&messages, 100_000);
+                        let unwritten =
+                            integrity::task_named_unwritten(&task_text, &content, &cmd_records);
+                        if !unwritten.is_empty() {
+                            named_writes_warns += 1;
+                            log!("[{i}] ⚠️ named-write check: the instruction names {unwritten:?} but nothing was written to them this turn, reply held once");
+                            messages.push(Message::user(named_writes_note(
+                                "Your reply was held",
+                                &unwritten,
+                                workdir,
+                            )));
+                            continue;
+                        }
+                    }
                     // The reply is the turn's answer: no note, no forced finish, nothing
                     // added to the history the next turn will see.
                     log!("[{i}] text reply ends the turn ({})", policy.name);
@@ -1780,6 +1799,27 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             )));
                             messages.push(Message::tool_output(
                                 "[finish rejected: deliverables named in the task are missing. Produce them or report why not, then finish.]",
+                            ));
+                            continue;
+                        }
+                    }
+                    // Gate 3c (bead boubou-78s): a file the instruction asks to write got a
+                    // landed write this turn, or the summary says why not. The same check
+                    // holds a text reply that would end the turn (below).
+                    if turn.gates.has(Gate::NamedWrites) && named_writes_warns < 1 {
+                        let task_text = qa::task_original_text(&messages, 100_000);
+                        let unwritten =
+                            integrity::task_named_unwritten(&task_text, &summary, &cmd_records);
+                        if !unwritten.is_empty() {
+                            named_writes_warns += 1;
+                            log!("[{i}] ⚠️ named-write check: the instruction names {unwritten:?} but nothing was written to them this turn, finish rejected");
+                            messages.push(Message::user(named_writes_note(
+                                "Your finish was rejected",
+                                &unwritten,
+                                workdir,
+                            )));
+                            messages.push(Message::tool_output(
+                                "[finish rejected: a file the instruction names was not written. Write it or report why not, then finish.]",
                             ));
                             continue;
                         }
@@ -2267,6 +2307,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         save!();
         Ok(messages)
     }
+}
+
+/// Gate 3c's note (bead boubou-78s): the plan tool is named as what it is, since both 4B
+/// models put the file's content there and called the file done.
+fn named_writes_note(opening: &str, files: &[String], workdir: &Path) -> String {
+    format!(
+        "⚠️ {opening}: the instruction names these files, but nothing was written to them this turn:\n{}\nThe todo plan is the harness's own list, not a file. Write to the file itself with create_file, edit_file or append_file, then reply again; if it cannot or should not be written, say so and why.{}",
+        bullet(files),
+        ws_note(workdir)
+    )
 }
 
 fn bullet(items: &[String]) -> String {

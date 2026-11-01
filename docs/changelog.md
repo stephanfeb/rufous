@@ -2484,3 +2484,29 @@ section check, which the first cut of this did; the rescore below caught it), fa
 sections in finished cells from their final `work/` files without rewriting score.json. Rescore
 of the 48 finished cells: the 4b_lt_v2 qwen r0 case alone (Deadlines, by turn 8); the baseline
 of 2026-10-31 and 4b_lt_v1 lost nothing. Tests: `bench/test_acp_convo.py`.
+
+## Gate 3c: a named file must be written before the turn ends (bead boubou-78s, 2026-11-01)
+
+The tracker score (0.25 and 0.58 in 4b_lt_v1) was one class: both 4B models put the tasks
+into the `todo` tool instead of tasks.md and reported the file done, 11 of 12 failing turns.
+The bead's design was the named-files finish gate under the coding preset; two things changed
+it before code (the amendment is on the bead). Under the coding policy 21 of 24 tracker turn
+ends were text replies, so the check runs at both endings, the `finish` call and the text
+reply that ends a turn, one hold per turn. And `Gate::NamedFiles` is an existence check while
+tasks.md exists in the fixture; the case is a named file that got no write. New
+`Gate::NamedWrites`: a file the instruction asks to write or change (an output cue in the six
+words before it, or a mutation verb anywhere in the instruction: tick, mark, add, append,
+update, edit, change, modify, write, rewrite, insert, remove, delete, rename, fix, record,
+create, fill, replace, extend, correct, adjust, put, cross/check off) must have a landed write
+this turn, a file tool that landed or a shell command that exited 0 with it among its write
+targets, unless the reply admits failure about it (the declined write's "unable" passes). The
+note names the file and says the todo plan is the harness's own list, not a file. Only the
+coding preset takes it; unattended is `all but named writes` and child is without it until it
+is measured on lrab. Prompt text unchanged. Tests: `integrity.rs` (the four tracker turns, the
+longform count question, the declined write, the shell redirect, the refused write),
+`tests/agent_loop.rs` (held once then ended after the write; not held for a no-write turn, a
+failure report, or a second time), the three preset tests restated. Known cost: a turn like
+"Fix the bug in m08.py" answered "nothing to fix" in text without a failure word is held once;
+"changes" as a noun matches the verb list. To measure: tracker_drift n=3 (t1/t3/t4 and the
+hold count in the log), permission (no false hold after a declined write), longform (no hold
+on the read-only turns).

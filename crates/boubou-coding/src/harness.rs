@@ -10,7 +10,7 @@
 //! says this harness should speak differently, the change is made here and the test that pins
 //! the equality is replaced by one stating the difference (`docs/refactor.md`, step 10).
 
-use boubou_kernel::agent::{Prompt, TurnPolicy};
+use boubou_kernel::agent::{Gate, Gates, Prompt, TurnPolicy};
 use boubou_kernel::skills::Skill;
 
 /// The task prefill this harness runs. `{PLATFORM_LINE}` and `{USER_HOME}` are filled by
@@ -30,11 +30,13 @@ RULES:
 - Be concise in text; put large content in tool arguments. Call finish only when answered or fully verified done."#;
 
 /// The `coding` preset: [`TurnPolicy::conversation`] under this harness's name, on its own
-/// task prefill.
+/// task prefill, with one gate: a file the instruction asks to write must have been
+/// written before the turn ends (bead boubou-78s; the plan tool stood in for tasks.md).
 pub const fn policy() -> TurnPolicy {
     TurnPolicy {
         name: "coding",
         prompt: Prompt::Task(TASK_PROMPT),
+        gates: Gates::NONE.with(Gate::NamedWrites),
         ..TurnPolicy::conversation()
     }
 }

@@ -1,19 +1,24 @@
-//! The coding harness's own things: its preset is the kernel's conversation under its name and
-//! its prompt, its prompt is still the kernel's task prefill, and its skills parse.
+//! The coding harness's own things: its preset is the kernel's conversation under its name,
+//! its prompt and the named-writes gate; its prompt is still the kernel's task prefill, and
+//! its skills parse.
 
 use boubou_coding::harness;
 use boubou_kernel::agent::prompt::TASK_BASE;
-use boubou_kernel::agent::{Prompt, TurnPolicy};
+use boubou_kernel::agent::{Gate, Gates, Prompt, TurnPolicy};
 
 #[test]
-fn the_preset_is_the_kernel_conversation_under_this_name_and_prompt() {
+fn the_preset_is_the_kernel_conversation_under_this_name_prompt_and_gate() {
     let p = harness::policy();
     assert_eq!(p.name, "coding");
     assert_eq!(p.prompt, Prompt::Task(harness::TASK_PROMPT));
+    // Bead boubou-78s: the one gate a conversation turn takes here, a file the instruction
+    // asks to write must have been written (or the reply say why not) before the turn ends.
+    assert_eq!(p.gates, Gates::NONE.with(Gate::NamedWrites));
     assert_eq!(
         TurnPolicy {
             name: "conversation",
             prompt: Prompt::Task(TASK_BASE),
+            gates: Gates::NONE,
             ..p
         },
         TurnPolicy::conversation(),

@@ -29,11 +29,8 @@ fn all_basenames_lower(dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-/// `_missing_files_in_text`: artifact-looking tokens in `text` that do not exist under
-/// `workdir`. A token counts as present if the relative path exists, a file with that
-/// basename exists anywhere below, or an existing basename is a suffix of the token
-/// (a word glued onto the filename with no space between them).
-pub fn missing_files_in_text(text: &str, workdir: &Path) -> Vec<String> {
+/// Artifact-looking tokens in `text` (a name with one of [`ARTIFACT_EXTS`]), sorted, once each.
+pub fn files_in_text(text: &str) -> Vec<String> {
     let mut toks: Vec<String> = FILE_TOKEN
         .find_iter(text)
         .map(|m| m.as_str().trim().to_string())
@@ -44,6 +41,15 @@ pub fn missing_files_in_text(text: &str, workdir: &Path) -> Vec<String> {
         .collect();
     toks.sort();
     toks.dedup();
+    toks
+}
+
+/// `_missing_files_in_text`: artifact-looking tokens in `text` that do not exist under
+/// `workdir`. A token counts as present if the relative path exists, a file with that
+/// basename exists anywhere below, or an existing basename is a suffix of the token
+/// (a word glued onto the filename with no space between them).
+pub fn missing_files_in_text(text: &str, workdir: &Path) -> Vec<String> {
+    let toks = files_in_text(text);
     if toks.is_empty() {
         return Vec::new();
     }

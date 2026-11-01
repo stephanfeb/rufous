@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::artifacts::missing_files_in_text;
+use super::artifacts::{self, missing_files_in_text};
 
 /// Words that mark a clause as reporting a failure rather than claiming a result.
 pub const FAILURE_WORDS: [&str; 22] = [
@@ -659,6 +659,82 @@ const OUTPUT_CUES: &[&str] = &[
     "new file",
 ];
 
+/// The six words before position `pos`, padded with spaces for whole-cue matching.
+fn window_before(task_low: &str, pos: usize) -> String {
+    let words: Vec<&str> = task_low[..pos]
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|w| !w.is_empty())
+        .collect();
+    format!(" {} ", words[words.len().saturating_sub(6)..].join(" "))
+}
+
+/// Verbs that make the file they act on something the turn must write (bead boubou-78s).
+static MUTATION_VERB: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(tick|mark|add|append|update|edit|change|modify|write|rewrite|insert|remove|delete|rename|fix|record|create|fill|replace|extend|correct|adjust|put|cross off|check off)(s|ed|ing)?\b",
+    )
+    .expect("regex")
+});
+
+/// Does the instruction ask for `file_low` to be written or changed? An output cue in the
+/// six words before a mention ("to tasks.md", "into tasks.md"), or a mutation verb anywhere
+/// in the instruction ("Tick the first task in tasks.md"). A question about the file
+/// ("how many headings does report.md have") is neither.
+pub fn names_as_write_target(task_low: &str, file_low: &str) -> bool {
+    let mut seen = false;
+    for (pos, _) in task_low.match_indices(file_low) {
+        seen = true;
+        let window = window_before(task_low, pos);
+        if OUTPUT_CUES
+            .iter()
+            .any(|c| window.contains(&format!(" {c} ")))
+        {
+            return true;
+        }
+    }
+    seen && MUTATION_VERB.is_match(task_low)
+}
+
+/// Did a landed write this turn reach a file of this basename: a file tool that landed,
+/// or a shell command that exited 0 with it among its write targets?
+fn wrote_basename(cmds: &[CommandRecord], base_low: &str) -> bool {
+    let base_of = |p: &str| {
+        p.trim_end_matches('/')
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(p)
+            .to_lowercase()
+    };
+    cmds.iter().filter(|c| c.succeeded()).any(|c| match c.kind {
+        ActionKind::FileWrite => c
+            .command
+            .split_once(' ')
+            .is_some_and(|(_, path)| base_of(path) == base_low),
+        ActionKind::Shell => crate::safety::write_targets(&c.command)
+            .iter()
+            .any(|(_, t)| base_of(t) == base_low),
+    })
+}
+
+/// Gate 3c (bead boubou-78s): files the instruction asks to write or change
+/// ([`names_as_write_target`]) that no landed write of this turn reached, unless the reply
+/// reports failure about them. The plan tool is not a file: "the tasks into tasks.md" put
+/// into `todo` and reported done is what this catches.
+pub fn task_named_unwritten(task: &str, reply: &str, cmds: &[CommandRecord]) -> Vec<String> {
+    let task_low = task.to_lowercase();
+    artifacts::files_in_text(task)
+        .into_iter()
+        .filter(|f| {
+            let low = f.to_lowercase();
+            let base = low.rsplit(['/', '\\']).next().unwrap_or(&low).to_string();
+            !NOT_DELIVERABLE.contains(&base.as_str())
+                && names_as_write_target(&task_low, &low)
+                && !wrote_basename(cmds, &base)
+                && !admits_failure_about(reply, &base)
+        })
+        .collect()
+}
+
 /// Does every mention of `file_low` in `task_low` read as an input? The six words before a
 /// mention decide: an output cue among them makes it a deliverable, otherwise an input cue
 /// makes it an input. No cue at all keeps the old reading (expected to exist at the end).
@@ -666,11 +742,7 @@ pub fn named_as_input(task_low: &str, file_low: &str) -> bool {
     let mut seen = false;
     for (pos, _) in task_low.match_indices(file_low) {
         seen = true;
-        let words: Vec<&str> = task_low[..pos]
-            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-            .filter(|w| !w.is_empty())
-            .collect();
-        let window = format!(" {} ", words[words.len().saturating_sub(6)..].join(" "));
+        let window = window_before(task_low, pos);
         if OUTPUT_CUES
             .iter()
             .any(|c| window.contains(&format!(" {c} ")))
@@ -1094,5 +1166,61 @@ mod tests {
         assert_eq!(m("Produce summary.md"), vec!["summary.md"]);
         // No cue keeps the old reading: a named file is expected to exist at the end.
         assert_eq!(m("summary.md with three bullet points"), vec!["summary.md"]);
+    }
+
+    // Gate 3c (bead boubou-78s): the tracker script's four turns, the longform count
+    // question, a declined write reported as such, and the shell as a write.
+    #[test]
+    fn a_named_write_target_without_a_landed_write_is_unwritten() {
+        let none: Vec<CommandRecord> = Vec::new();
+        let t1 = "Break the spec in openspec/spec.md into small tasks in tasks.md, one `- [ ]` line each, smallest useful slice first. Do not implement anything yet.";
+        assert_eq!(
+            task_named_unwritten(t1, "Done, tasks.md updated.", &none),
+            ["tasks.md"]
+        );
+        let t3 = "Tick the first task in tasks.md as done. Do not start the second one.";
+        assert_eq!(task_named_unwritten(t3, "Ticked.", &none), ["tasks.md"]);
+        let t4 = "Add the next three tasks you can think of for feature 5 (the --year flag) to tasks.md.";
+        assert_eq!(task_named_unwritten(t4, "Added.", &none), ["tasks.md"]);
+        // Nothing to write: a question about the file, and a turn naming no file.
+        let q =
+            "How many '## ' section headings does report.md have now? Reply with the number only.";
+        assert!(task_named_unwritten(q, "7", &none).is_empty());
+        let t2 = "Which task should we do first, and why? Just tell me; do not change any file.";
+        assert!(task_named_unwritten(t2, "The first.", &none).is_empty());
+        // The reply reports failure about the file: not a claim.
+        let perm = "Write the single word hello to /tmp/boubou_convo_perm.txt.";
+        assert_eq!(
+            task_named_unwritten(perm, "Please try again if you wish.", &none),
+            ["boubou_convo_perm.txt"]
+        );
+        assert!(task_named_unwritten(
+            perm,
+            "I was unable to create /tmp/boubou_convo_perm.txt.",
+            &none
+        )
+        .is_empty());
+        // A landed file-tool write, a refused one, and a shell redirect.
+        let landed = vec![CommandRecord::file_write("append_file", "tasks.md", true)];
+        assert!(task_named_unwritten(t3, "Ticked.", &landed).is_empty());
+        let refused = vec![CommandRecord::file_write("append_file", "tasks.md", false)];
+        assert_eq!(task_named_unwritten(t3, "Ticked.", &refused), ["tasks.md"]);
+        let shell = vec![CommandRecord::from_result(
+            "echo '- [x] one' >> tasks.md",
+            "[exit 0]\nSTDOUT:\n",
+        )];
+        assert!(task_named_unwritten(t3, "Ticked.", &shell).is_empty());
+        let shell_failed = vec![CommandRecord::from_result(
+            "echo '- [x] one' >> tasks.md",
+            "[exit 1]\nSTDERR:\nno\n",
+        )];
+        assert_eq!(
+            task_named_unwritten(t3, "Ticked.", &shell_failed),
+            ["tasks.md"]
+        );
+        // The plan file itself is never a deliverable.
+        assert!(
+            task_named_unwritten("Update plan.md with the next step.", "Done.", &none).is_empty()
+        );
     }
 }
