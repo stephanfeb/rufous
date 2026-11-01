@@ -2,11 +2,20 @@
 //! explicit paths win, a closed port reads as down, a bogus executable fails fast and
 //! quietly, and `api_alive` is callable from inside a tokio runtime.
 
+use std::net::TcpListener;
+use std::time::Duration;
+// The process tests below are unix-only; on Windows their helpers and imports would be dead
+// code, which CI's clippy -D warnings rejects (bead boubou-tfr).
+#[cfg(unix)]
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
+#[cfg(unix)]
+use std::net::SocketAddr;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Instant;
 
 use rufous_kernel::config::Config;
 use rufous_kernel::ollama_proc::{
@@ -16,6 +25,7 @@ use rufous_kernel::ollama_proc::{
 /// A stand-in `ollama serve`: answers every request on `listener` with 200 until `stop` is
 /// raised, then closes the port. `delay` holds the first answer back (a server still
 /// loading: the port is bound, the API is silent).
+#[cfg(unix)]
 fn serve_tags(listener: TcpListener, stop: Arc<AtomicBool>, delay: Duration) {
     std::thread::spawn(move || {
         std::thread::sleep(delay);
@@ -47,6 +57,7 @@ fn ports() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(unix)]
 fn free_port() -> SocketAddr {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")
@@ -69,6 +80,7 @@ fn marker_exe(dir: &std::path::Path) -> (String, std::path::PathBuf) {
     (exe.to_string_lossy().into_owned(), marker)
 }
 
+#[cfg(unix)]
 fn proc_for(addr: SocketAddr, exe: &str) -> OllamaProc {
     OllamaProc::new(
         format!("http://{addr}"),

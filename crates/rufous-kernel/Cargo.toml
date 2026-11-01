@@ -27,6 +27,12 @@ rmcp.workspace = true
 sysinfo.workspace = true
 unicode-normalization = "0.1"
 
+# Process-group SIGKILL for run_bash, hooks and child agents (bead boubou-tfr): the external
+# `kill -9 -<pid>` does not reliably reach the group under procps-ng 4. nix is safe (the
+# workspace forbids unsafe) and already in the tree through rmcp.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 

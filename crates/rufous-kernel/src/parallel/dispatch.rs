@@ -169,21 +169,8 @@ impl ChildProcess for OsChild {
         if self.poll().is_some() {
             return true;
         }
-        let pid = self.0.id();
-        if cfg!(windows) {
-            let _ = Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        } else {
-            // The child was started as a process-group leader (pgid == pid).
-            let _ = Command::new("kill")
-                .args(["-9", &format!("-{pid}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+        // The child was started as a process-group leader (pgid == pid).
+        crate::exec::kill_tree(self.0.id());
         let _ = self.0.kill();
         let _ = self.0.wait();
         true

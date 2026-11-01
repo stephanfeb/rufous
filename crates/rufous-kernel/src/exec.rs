@@ -1646,15 +1646,23 @@ fn exit_code(st: std::process::ExitStatus) -> i32 {
     1
 }
 
+/// Kills `pid` and everything it started. On unix the command was spawned as a process-group
+/// leader (`process_group(0)`, so its pgid is its pid) and the whole group gets SIGKILL through
+/// killpg(2): the external `kill -9 -<pid>` returns an error under procps-ng 4 (Ubuntu
+/// 24.04) and left a shell's children holding the output pipe (bead boubou-tfr).
 pub(crate) fn kill_tree(pid: u32) {
-    use std::process::Command;
-    if cfg!(windows) {
-        let _ = Command::new("taskkill")
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
-    } else {
-        let _ = Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
-            .output();
+    }
+    #[cfg(unix)]
+    if let Ok(pgid) = i32::try_from(pid) {
+        // A group that has already exited gives ESRCH, which is the outcome wanted.
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pgid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
     }
 }

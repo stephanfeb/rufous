@@ -3031,3 +3031,25 @@ The site's hero and download section now offer the install command and the five 
 The first release is v0.3.0: v0.2.0 is already a published checkpoint (2026-10-28), so the workspace version moved to 0.3.0 rather than moving that tag.
 
 The first v0.3.0 run lost both macOS jobs to GitHub's macos-14 retirement brownout (the image retires 2026-11-02); the workflow now builds them on macos-15.
+
+## CI on main: process-group kill without the external `kill`, Windows test lint (bead boubou-tfr, 2026-11-02)
+
+CI on main had been red since 2026-10-31, before the rename.
+
+**Linux.** `run_bash_timeout_kills_and_reports` and `a_raised_stop_flag_terminates_a_running_command`
+failed: the stop test took more than 10 s and the timeout test more than 4 s. The command's output
+was right, but the `sleep` the shell had started outlived the kill and held the pipe open.
+
+`kill_tree` used to send SIGKILL to the process group by running `kill -9 -<pid>`. It now calls
+killpg(2) through `nix`, which is safe code (the workspace forbids `unsafe`) and already in the
+dependency tree through rmcp. The parallel dispatcher shares `kill_tree`.
+
+In a plain Ubuntu 24.04 container, procps-ng 4.0.4's `kill -9 -310` exits 0 and leaves the group
+alive, while `kill -9 -- -310` kills it. But in Docker (`rust:1`), the old code passed both tests
+even with process ids above 300. So the CI failure is not reproduced locally, and the change is
+recorded as the likely cause, to be confirmed by CI.
+
+**Windows.** Clippy rejected helpers in `tests/ollama_proc.rs` that only the unix-only tests use;
+they are now `#[cfg(unix)]`.
+
+Locally: 589 tests, clippy and rustfmt pass.
