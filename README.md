@@ -30,7 +30,7 @@ curl -fsSL https://rufous.chat/install.sh | sh
 ```
 
 The script downloads the release archive for your machine from this repository's GitHub
-releases, checks its SHA-256 and puts `rufous` in `~/.local/bin` (no sudo). `RUFOUS_VERSION=v0.2.0`
+releases, checks its SHA-256 and puts `rufous` in `~/.local/bin` (no sudo). `RUFOUS_VERSION=v0.3.0`
 pins a release; `RUFOUS_INSTALL_DIR` picks another directory. Builds exist for macOS (Apple
 silicon, Intel), Linux (x86_64, arm64; glibc 2.35 or newer) and Windows (a zip on the releases
 page). Then run a model under [Ollama](https://ollama.com) and check the setup:

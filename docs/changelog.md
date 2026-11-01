@@ -3027,3 +3027,5 @@ The workflow itself runs for the first time on the first tag.
 
 The site's hero and download section now offer the install command and the five archives;
 "Build from source" is gone from the page. The README gains an Install section.
+
+The first release is v0.3.0: v0.2.0 is already a published checkpoint (2026-10-28), so the workspace version moved to 0.3.0 rather than moving that tag.
