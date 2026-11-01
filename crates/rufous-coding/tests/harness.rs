@@ -33,9 +33,10 @@ fn the_prompt_is_the_kernel_task_prefill_less_its_two_finish_sentences() {
     // standing reply rule (2/14 kept it against 13/16 for text endings). The unattended
     // kernel prefill keeps both sentences; finish carries its gates there.
     assert_eq!(
-        TASK_BASE
-            .replace(" Then call finish.", "")
-            .replace(" Call finish only when answered or fully verified done.", ""),
+        TASK_BASE.replace(" Then call finish.", "").replace(
+            " Call finish only when answered or fully verified done.",
+            ""
+        ),
         harness::TASK_PROMPT
     );
     assert!(!harness::TASK_PROMPT.contains("finish"));

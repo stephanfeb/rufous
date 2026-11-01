@@ -187,7 +187,12 @@ fn env_map<'de, D: serde::Deserializer<'de>>(
 
 /// Where rufous keeps config, global skills, sessions and memory.
 pub fn agent_home() -> PathBuf {
-    for var in ["RUFOUS_HOME", "BOUBOU_HOME", "MINGBIRD_HOME", "HUMMINGBIRD_HOME"] {
+    for var in [
+        "RUFOUS_HOME",
+        "BOUBOU_HOME",
+        "MINGBIRD_HOME",
+        "HUMMINGBIRD_HOME",
+    ] {
         if let Some(v) = std::env::var_os(var) {
             if !v.is_empty() {
                 return PathBuf::from(v);

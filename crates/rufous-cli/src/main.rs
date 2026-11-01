@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use rufous_kernel::agent::chat::model_can_think;
 use rufous_kernel::agent::openai;
 use rufous_kernel::agent::session::{self, load_checkpoint, load_session, sessions_dir};
@@ -27,7 +28,6 @@ use rufous_kernel::skills::{Skill, SkillSet};
 use rufous_kernel::text::read_text;
 use rufous_kernel::todo::todo_file;
 use rufous_kernel::{mcp, tools};
-use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "rufous", version = rufous_kernel::VERSION, about = "rufous · local-model autonomous agent")]
@@ -275,7 +275,8 @@ fn main() -> Result<()> {
         Cmd::Acp { model, ctx } => {
             let key = match model
                 .or_else(|| std::env::var("RUFOUS_MODEL").ok())
-                .or_else(|| std::env::var("BOUBOU_MODEL").ok()) {
+                .or_else(|| std::env::var("BOUBOU_MODEL").ok())
+            {
                 Some(m) if !m.trim().is_empty() => m,
                 _ => anyhow::bail!("rufous acp needs --model <tag> (or RUFOUS_MODEL)"),
             };
