@@ -4,6 +4,8 @@
 (`bench/acp_convo.py`, results under `bench/results/convo/4b_*`). The numbers are from
 those folders; the claim is as wide as those scripts and no wider.*
 
+*What happened when each mechanism was tested: `docs/small-models-follow-text-not-state-results.md`.*
+
 ## The observation
 
 A 2–12B model given one plain instruction usually does it. The same model, three turns
