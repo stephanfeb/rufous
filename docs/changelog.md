@@ -3055,3 +3055,20 @@ not split on `;`, so it echoed the whole command line and never ran the `sleep`.
 
 Locally: 589 tests, clippy and rustfmt pass.
 
+## `rufous mcp add/list/get/remove` (bead boubou-r5f, 2026-11-02)
+
+`rufous mcp add framit -- node …/framit/dist/cli.js serve` now does what `claude mcp add` does, and the
+flags are the same: `-s user|project`, `-t stdio|http`, `-e KEY=VALUE`, `-H "Name: value"`, and `--force`.
+
+The edit (`mcp::edit`) works on the file's JSON, not on `ServerConfig`. That way the shape
+(rufous's bare map, or the `mcpServers` wrapper) and any keys rufous does not read survive the edit.
+
+A server name must be letters, digits, `-` and `_`, because tools are `server.tool` split at the first dot.
+The first user-scope add copies in the install directory's `mcp.json`, because the loader reads that file
+only while the home file is absent. Without the copy, adding one server would hide the shipped ones.
+
+Add and remove delete `mcp_manifest_cache.json`. The cache does not record which servers it was built
+from, so it would otherwise hide a new server for up to five minutes.
+
+Tests: 8 kernel tests (`tests/mcp_edit.rs`) and one end-to-end CLI round trip.
+

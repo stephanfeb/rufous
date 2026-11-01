@@ -8,6 +8,7 @@
 //! `<home>/mcp_manifest_cache.json` shape, so a probe by either stack warms the other.
 
 mod client;
+pub mod edit;
 mod manifest;
 
 use std::collections::BTreeMap;

@@ -3,6 +3,7 @@
 //! The agent loop is synchronous and owns its own Ollama backend, so `main` is plain
 //! Rust; the async-only subcommands (model listing, doctor) run on a local runtime.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +35,45 @@ use rufous_kernel::{mcp, tools};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// `rufous mcp …` (bead boubou-r5f), in the shape of `claude mcp`.
+#[derive(Debug, Subcommand)]
+enum McpCmd {
+    /// Add a server: everything after the name (or after `--`) is the command and its
+    /// arguments, or the URL with `--transport http`.
+    Add {
+        /// `user` (every session, `~/.ollama_agent/mcp.json`) or `project` (`./.mcp.json`).
+        #[arg(short, long, default_value = "user", value_parser = ["user", "project"])]
+        scope: String,
+        /// `stdio` (spawn a command) or `http` (streamable HTTP at a URL).
+        #[arg(short, long, default_value = "stdio", value_parser = ["stdio", "http"])]
+        transport: String,
+        /// Environment for a stdio server, `KEY=VALUE`; repeatable.
+        #[arg(short, long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Header for an http server, `"Name: value"`; repeatable.
+        #[arg(short = 'H', long = "header", value_name = "NAME: VALUE")]
+        header: Vec<String>,
+        /// Replace a server of the same name.
+        #[arg(long)]
+        force: bool,
+        name: String,
+        /// The command and its arguments, or the URL.
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// List the configured servers and the file each comes from (no probing; `rufous doctor`
+    /// probes them).
+    List,
+    /// Print one server's entry and its file.
+    Get { name: String },
+    /// Remove a server; `--scope` picks the file when both have the name.
+    Remove {
+        #[arg(short, long, value_parser = ["user", "project"])]
+        scope: Option<String>,
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -85,6 +125,11 @@ enum Cmd {
     },
     /// Check the local setup: config, Ollama, models, skills, MCP servers.
     Doctor,
+    /// Configure MCP servers: `rufous mcp add framit -- node ./dist/cli.js serve`.
+    Mcp {
+        #[command(subcommand)]
+        cmd: McpCmd,
+    },
     /// Print this machine's parallel-dispatch capacity plan (read-only, nothing is spawned).
     Plan,
     /// Transcribe a 16 kHz WAV file (local sherpa-onnx model, else an Ollama audio model).
@@ -139,6 +184,154 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         workdir: PathBuf,
     },
+}
+
+fn scope_of(s: &str) -> mcp::edit::Scope {
+    if s == "project" {
+        mcp::edit::Scope::Project
+    } else {
+        mcp::edit::Scope::User
+    }
+}
+
+/// `KEY=VALUE` (env) or `Name: value` (header) pairs into a map.
+fn pairs(items: &[String], sep: char, what: &str) -> Result<BTreeMap<String, String>> {
+    items
+        .iter()
+        .map(|it| match it.split_once(sep) {
+            Some((k, v)) if !k.trim().is_empty() => {
+                Ok((k.trim().to_string(), v.trim().to_string()))
+            }
+            _ => anyhow::bail!(
+                "{what} {it:?}: expected {}",
+                if sep == '=' {
+                    "KEY=VALUE"
+                } else {
+                    "\"Name: value\""
+                }
+            ),
+        })
+        .collect()
+}
+
+/// `rufous mcp …`: edits the user or project server file (`mcp::edit`).
+fn mcp_cmd(cmd: McpCmd, home: &Path, cwd: &Path) -> Result<()> {
+    use mcp::edit::{self, Scope, Transport};
+    match cmd {
+        McpCmd::Add {
+            scope,
+            transport,
+            env,
+            header,
+            force,
+            name,
+            command,
+        } => {
+            let scope = scope_of(&scope);
+            let t = if transport == "http" {
+                if command.len() != 1 {
+                    anyhow::bail!("--transport http takes one URL after the name");
+                }
+                if !env.is_empty() {
+                    anyhow::bail!("--env is for stdio servers; an http server takes --header");
+                }
+                Transport::Http {
+                    url: command[0].clone(),
+                    headers: pairs(&header, ':', "--header")?,
+                }
+            } else {
+                if !header.is_empty() {
+                    anyhow::bail!("--header is for http servers; a stdio server takes --env");
+                }
+                let mut it = command.into_iter();
+                Transport::Stdio {
+                    command: it.next().unwrap_or_default(),
+                    args: it.collect(),
+                    env: pairs(&env, '=', "--env")?,
+                }
+            };
+            let path = scope.path(home, cwd);
+            let seed = install_dir().join("mcp.json");
+            let seed = (scope == Scope::User).then_some(seed.as_path());
+            let replaced = edit::add_server(&path, seed, &name, &t, force)?;
+            edit::invalidate_manifest(home);
+            println!(
+                "{} MCP server {name} ({} scope) in {}",
+                if replaced { "Replaced" } else { "Added" },
+                scope.label(),
+                path.display()
+            );
+        }
+        McpCmd::List => {
+            let mut any = false;
+            for scope in [Scope::User, Scope::Project] {
+                let path = scope.path(home, cwd);
+                let servers = edit::servers_in(&path)?;
+                if servers.is_empty() {
+                    continue;
+                }
+                any = true;
+                println!("{} ({}):", scope.label(), path.display());
+                for (name, s) in &servers {
+                    let what = match (&s.url, &s.command) {
+                        (Some(u), _) => format!("{u} (http)"),
+                        (None, Some(c)) => std::iter::once(c.as_str())
+                            .chain(s.args.iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        (None, None) => "(no command or url)".to_string(),
+                    };
+                    println!("  {name}: {what}");
+                }
+            }
+            if !any {
+                println!("No MCP servers configured. Add one with `rufous mcp add <name> -- <command> [args…]`.");
+            }
+        }
+        McpCmd::Get { name } => {
+            let mut found = false;
+            for scope in [Scope::User, Scope::Project] {
+                let path = scope.path(home, cwd);
+                if let Some(e) = edit::raw_entry(&path, &name)? {
+                    found = true;
+                    println!("{name} ({} scope, {}):", scope.label(), path.display());
+                    println!("{}", serde_json::to_string_pretty(&e)?);
+                }
+            }
+            if !found {
+                anyhow::bail!("no MCP server named {name:?} (see `rufous mcp list`)");
+            }
+        }
+        McpCmd::Remove { scope, name } => {
+            let scopes: Vec<Scope> = match scope.as_deref() {
+                Some(s) => vec![scope_of(s)],
+                None => [Scope::User, Scope::Project]
+                    .into_iter()
+                    .filter(|sc| {
+                        edit::raw_entry(&sc.path(home, cwd), &name)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    })
+                    .collect(),
+            };
+            match scopes.as_slice() {
+                [] => anyhow::bail!("no MCP server named {name:?} (see `rufous mcp list`)"),
+                [sc] => {
+                    let path = sc.path(home, cwd);
+                    if !edit::remove_server(&path, &name)? {
+                        anyhow::bail!("no MCP server named {name:?} in {}", path.display());
+                    }
+                    edit::invalidate_manifest(home);
+                    println!("Removed MCP server {name} from {}", path.display());
+                }
+                _ => anyhow::bail!(
+                    "{name:?} is in both the user and the project file; pass --scope user or --scope project"
+                ),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn install_dir() -> PathBuf {
@@ -228,6 +421,7 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(doctor(&cfg))?;
         }
+        Cmd::Mcp { cmd } => mcp_cmd(cmd, &agent_home(), &std::env::current_dir()?)?,
         Cmd::Voice { wav, lang, model } => {
             let bytes =
                 std::fs::read(&wav).with_context(|| format!("reading {}", wav.display()))?;

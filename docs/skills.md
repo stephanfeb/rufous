@@ -82,6 +82,14 @@ Skills cover "how to do it"; MCP covers "which extra tools exist". MCP servers a
 once configured, their tools are routed by category (`files`, `code`, `web`, `memory`, `mcp`) and the model calls them as
 `server.tool`; see `mcp.json.example` in the repository root for the format. The "Skills" window in the UI also lists the configured MCP servers.
 
+`rufous mcp add <name> -- <command> [args…]` writes the entry for you, in the shape of `claude mcp add`: `-e KEY=VALUE`
+for a stdio server's environment, `-t http <name> <url>` with `-H "Name: value"` for a streamable HTTP server, `-s project`
+for `./.mcp.json` instead of the home file, `--force` to replace a server of the same name. Everything after `--` is the
+server's command, flags included. The edit keeps the file's shape and any keys rufous does not read, the first user-scope
+add copies in the servers of the install directory's `mcp.json` (which `load` reads only while the home file is absent),
+and add and remove drop the probed tool manifest so the next session sees the change at once. `rufous mcp list`, `get` and
+`remove` read and edit the same two files; `remove` asks for `--scope` when both files have the name.
+
 A project brings its own servers in `<workdir>/.mcp.json`, the file Claude Code, Cursor and Codex read: either their
 `{"mcpServers": {...}}` wrapper (a `type` key is ignored; `command`/`args`/`env` and `url`/`headers` are the same keys) or
 rufous's bare map, and `categories`/`tools`/`expose` work in both. The project's servers are added to the home file's, and

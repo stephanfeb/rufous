@@ -118,6 +118,9 @@ from macOS or Linux: `cargo install cargo-xwin && cargo xwin build --release --t
 
 ```sh
 rufous doctor                    # config, Ollama reachability, models, skills, MCP servers
+rufous mcp add framit -- node /path/to/framit/dist/cli.js serve   # as `claude mcp add`
+rufous mcp add -s project -t http -H "Authorization: Bearer …" remote https://host/mcp
+rufous mcp list | get <name> | remove <name>
 rufous models
 rufous skills [workdir]
 rufous tools --enable web_fetch  # print the schemas the model receives

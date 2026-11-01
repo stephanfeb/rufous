@@ -202,3 +202,98 @@ fn doctor_runs_with_everything_unreachable() {
     assert!(t.contains("unreachable"), "{t}");
     assert!(t.contains("skills"));
 }
+
+#[test]
+fn mcp_add_list_get_remove_round_trip() {
+    // `rufous mcp add framit -- node …/cli.js serve`, as `claude mcp add` (bead boubou-r5f).
+    let home = tempfile::tempdir().expect("home");
+    let cwd = tempfile::tempdir().expect("cwd");
+    let o = rufous(
+        home.path(),
+        cwd.path(),
+        &[
+            "mcp",
+            "add",
+            "-e",
+            "TOKEN=x",
+            "framit",
+            "--",
+            "node",
+            "/opt/framit/dist/cli.js",
+            "serve",
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let user: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join("mcp.json")).expect("user file"),
+    )
+    .expect("json");
+    assert_eq!(user["framit"]["command"], "node");
+    assert_eq!(
+        user["framit"]["args"],
+        serde_json::json!(["/opt/framit/dist/cli.js", "serve"])
+    );
+    assert_eq!(user["framit"]["env"]["TOKEN"], "x");
+
+    // Arguments that look like flags belong to the server's command.
+    let o = rufous(
+        home.path(),
+        cwd.path(),
+        &[
+            "mcp",
+            "add",
+            "-s",
+            "project",
+            "-t",
+            "http",
+            "-H",
+            "Authorization: Bearer k",
+            "remote",
+            "https://mcp.example/mcp",
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let o = rufous(
+        home.path(),
+        cwd.path(),
+        &["mcp", "add", "flags", "--", "srv", "--port", "-v"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let o = rufous(home.path(), cwd.path(), &["mcp", "list"]);
+    let out = text(&o);
+    assert!(
+        out.contains("framit: node /opt/framit/dist/cli.js serve"),
+        "{out}"
+    );
+    assert!(out.contains("flags: srv --port -v"), "{out}");
+    assert!(
+        out.contains("remote: https://mcp.example/mcp (http)"),
+        "{out}"
+    );
+
+    let o = rufous(home.path(), cwd.path(), &["mcp", "get", "remote"]);
+    assert!(text(&o).contains("Bearer k"), "{}", text(&o));
+
+    // A name in use is refused; a mismatched flag is refused before anything is written.
+    let o = rufous(
+        home.path(),
+        cwd.path(),
+        &["mcp", "add", "framit", "--", "other"],
+    );
+    assert!(
+        !o.status.success() && text(&o).contains("--force"),
+        "{}",
+        text(&o)
+    );
+    let o = rufous(
+        home.path(),
+        cwd.path(),
+        &["mcp", "add", "-H", "A: b", "x", "--", "cmd"],
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+
+    let o = rufous(home.path(), cwd.path(), &["mcp", "remove", "framit"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = rufous(home.path(), cwd.path(), &["mcp", "get", "framit"]);
+    assert!(!o.status.success(), "{}", text(&o));
+}
