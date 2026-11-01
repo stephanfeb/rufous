@@ -61,7 +61,9 @@ and remeasured.
   name under another directory.
 
 The common thread is that the model does not distinguish instruction from history from
-tool output. All of it is text, and the nearest concrete text wins.
+tool output. All of it is text, and the nearest concrete text wins. That is true at the
+surface. The literature splits it into three mechanisms with three different fixes, and the
+split decides which lever to reach for (see "Three mechanisms, not one").
 
 ## Why the single instruction works
 
@@ -100,6 +102,49 @@ hold is debuggable from the log. Every gate accepts an honest failure report, so
 harness never fights the truth. A gate is added only after a script shows the failure and
 kept only if the rerun shows the fix without a regression elsewhere.
 
+## Three mechanisms, not one
+
+A literature pass on 2026-11-01 (summarised by another agent; the papers themselves are
+not quoted here, and the claims below are as reliable as that summary) found each of the
+four shapes above named and measured, and found that "flat text" hides three distinct
+mechanisms.
+
+| mechanism | our shape | what fixes it | what does not |
+|---|---|---|---|
+| stale history hijacks the decision | a wrong state compounds; tool output read as instruction | render state from the harness's ledger instead of replaying the transcript | a prompt line saying "ignore misleading history" (no effect at 1.7B) |
+| the model's own output is privileged | permission turn 2: its refusal obeyed as policy | re-attribute the earlier answer so it is no longer the model's own | repeating the instruction; the bias is to self, not to text |
+| standing constraints get evicted or weakened | "change nothing else" decays | pin the constraint with provenance, and keep the gate | restating it: models restate the constraint they just violated |
+
+Three results shape the ordering.
+
+- Giving an instruction in pieces across turns costs about 39% against the same instruction
+  at once, and an 8B model loses the same as a frontier one (Lost in Conversation). Restating
+  every earlier piece on each turn recovers only part of the gap. "Put the state in the text"
+  is real but partial, which is why the gates stay.
+- A harness-built state summary in place of the raw history lifted a 1.7B model's correct tool
+  decisions from 0.47 to 0.75 and an 8B from 0.69 to 0.89, untrained (When History Lies).
+  That is the largest effect any of the papers report and the one lever this harness has not
+  tried.
+- The self-consistency bias disappears when the same earlier answer is attributed to another
+  agent (choice-supportive bias study, tested on Gemma 3). One refusal in context drops later
+  compliance from about 55% to 7% in red-teaming work. Our own thirty permission cells show
+  the curve: turn 2 passed 19/23 after one refusal in context, 1/7 after two or more.
+
+The false-success work backs the ledger-and-gates design directly: false success is 45–48%
+of agent failures in one benchmark, no LLM judge beat AUROC 0.65 at detecting it, a lexical
+classifier reached 0.83–0.95, and models miss 64.5% of their own errors but fix the identical
+error when it arrives as external input.
+
+What the pass did not find: any paper testing 4B models on multi-turn coding. The nearest
+are 1.7B and 8B on tool calling. This rig is the only measurement at that size we have, so
+each adoption stays a bead with a before and an after.
+
+Order adopted from this: the admission-rule fix (bead boubou-e9i) as filed; permission
+turn 2 (bead boubou-alj) as two measured arms, re-attribution first and the hold as the
+backstop; a state-render ablation on tracker once alj has a number; a pre-write check at the
+call boundary (di6 moved earlier) only if the wrong-directory shape recurs; constraint
+pinning only when a script fails on a carried constraint.
+
 ## What this does not say
 
 - The scripts separate *independent* turns from *state-carrying* turns, not few from
@@ -115,13 +160,17 @@ kept only if the rerun shows the fix without a regression elsewhere.
 ## Implications for anyone building on small models
 
 1. Put the state in the text. If a later turn depends on something, say it again in that
-   turn, with the path. Do not rely on the model to remember the file it created.
+   turn, with the path. Do not rely on the model to remember the file it created. Expect a
+   partial recovery, not a full one; the gate stays.
 2. Treat the model's report as a claim and check it against your own record of what ran.
 3. Never add a judge that reads the same text the model read. It has the same blind spot.
 4. Measure state-carrying scripts separately from single-instruction ones. A model that
    scores well on the second will mislead you about the first.
 5. When a fix is a prompt line, ask whether the failure was in reading the instruction or
    in holding state. Prompt lines fix the first. Only a gate fixes the second.
+6. Ask which of the three mechanisms you are looking at. Stale history wants a state render,
+   the model's own prior answer wants re-attribution, a decayed constraint wants pinning plus
+   a gate. The same symptom, a wrong turn, has three causes with three fixes.
 
 ## References
 
@@ -131,3 +180,9 @@ kept only if the rerun shows the fix without a regression elsewhere.
 - Beads boubou-78s (gate 3c), boubou-18l, boubou-vj3, boubou-dml, boubou-di6,
   boubou-dby, boubou-l3e, boubou-gqw.
 - `bench/convo/README.md`: the scripts and their checks.
+- Literature (as summarised, not read in full): Lost in Conversation, arXiv 2505.06120;
+  When History Lies, arXiv 2608.06057; DriftBench, arXiv 2604.28031; choice-supportive
+  bias in LLMs, arXiv 2507.03120; multi-turn red teaming, arXiv 2504.03174; false success
+  in LLM agents, arXiv 2606.09863; The Unreliable Progress Bar, arXiv 2609.08589;
+  Self-Correction Bench, arXiv 2507.02778; Stateless Language Agents, arXiv 2610.07625;
+  StateMirror, arXiv 2610.32648; Better Harnesses, arXiv 2607.08938.
