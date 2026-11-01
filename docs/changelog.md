@@ -3047,9 +3047,11 @@ dependency tree through rmcp. The parallel dispatcher shares `kill_tree`.
 In a plain Ubuntu 24.04 container, procps-ng 4.0.4's `kill -9 -310` exits 0 and leaves the group
 alive, while `kill -9 -- -310` kills it. But in Docker (`rust:1`), the old code passed both tests
 even with process ids above 300. So the CI failure is not reproduced locally, and the change is
-recorded as the likely cause, to be confirmed by CI.
+recorded as the likely cause. CI on e5b2f40 confirmed it: ubuntu and macOS pass.
 
 **Windows.** Clippy rejected helpers in `tests/ollama_proc.rs` that only the unix-only tests use;
-they are now `#[cfg(unix)]`.
+they are now `#[cfg(unix)]`. The same run then failed `a_raised_stop_flag_terminates_a_running_command` on Windows: cmd does
+not split on `;`, so it echoed the whole command line and never ran the `sleep`. The test now gives cmd `&`.
 
 Locally: 589 tests, clippy and rustfmt pass.
+

@@ -27,10 +27,13 @@ fn a_raised_stop_flag_terminates_a_running_command() {
         })
     };
     let t0 = Instant::now();
-    let out = e.run_tool(
-        "run_bash",
-        &json!({"command": "echo started; sleep 30; echo late"}),
-    );
+    // run_bash runs `cmd /C` on Windows, where `;` is not a separator (bead boubou-tfr).
+    let command = if cfg!(windows) {
+        "echo started & sleep 30 & echo late"
+    } else {
+        "echo started; sleep 30; echo late"
+    };
+    let out = e.run_tool("run_bash", &json!({ "command": command }));
     raiser.join().expect("raiser");
     assert!(t0.elapsed() < Duration::from_secs(10), "{out}");
     assert!(out.contains("started"), "{out}");
