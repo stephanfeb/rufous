@@ -2580,3 +2580,12 @@ never written. Fixed in the rig: carried checks come only from pairs that passed
 turn (`passed_file_checks`, `--rescore` reads turns.jsonl); rescore of 4b_gate_v2 reports no
 lost section, 4b_lt_v2's real case still shows. Three `⟂error` tags (gemma's two escaped-
 backtick edits, one qwen edit on old text that was not there), six boundary refusals.
+
+## Escaped backticks in `edit_file` old text, measured and left alone (bead boubou-5jr, 2026-11-01)
+
+Across every stored transcript under `bench/results` (166 distinct `edit_file` old texts over
+the convo, lrab and surface runs) three carry a backslash before markdown punctuation, and all
+three are one gemma4:e4b call issued three times in one cell (4b_gate_v2 tracker r2). The
+session logs' eight edit failures contain the same three. Below the bead's threshold, so the
+matcher is unchanged; the one-token form if it recurs is `\`` in the Unescaped tier's
+`unescape`, which already reads `\"` as a quote.
