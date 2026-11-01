@@ -2818,6 +2818,38 @@ Misses:
   refused it; turn 2, with the ledger line in place of the reply, created the workspace copy
   again, the cross-turn ask fired under the declined name, the rig's turn-2 "allow" approved
   it. Second gemma cell of this shape in two runs. The rig answers that ask as no user would
-  (bead boubou-boubou-jjh: per-ask answers, deny the substitute in turn 2).
+  (bead boubou-jjh: per-ask answers, deny the substitute in turn 2).
 
 Permission turn 2 since re-attribution: 16/18 made the right call, 18/18 made a call.
+
+## Constraints and follow_ups baseline on the 19:13 release, n=3 per model (2026-11-02)
+
+`bench/results/convo/4b_cf_base_v1`, against `4b_2026-10-31`. Constraints: qwen 0.67 (was
+0.33), gemma 0.87 (was 1.00). Follow_ups: 1.00 for both models, as before. Gate 3c did not
+hold once in follow_ups, so the 11-01 gate changes stay quiet on code turns.
+
+The constraints misses are not decay. Across both baselines, 30 qwen turns:
+- 14 turns ended in `finish(summary)`. In 2 of them the summary began with OK.
+- 16 turns ended in plain text. In 13 of them the reply began with OK.
+- All three text misses are turn 2, "names only, … nothing else". That turn's own format rule
+  beat the standing one.
+- Turn 1, the turn that states the rule, failed in all 4 cells where it ended in finish.
+- Turn 5 is qwen's best turn.
+
+The rule is broken in the channel, not over time. A finish summary is written as a status
+report, not as a reply. The rise from 0.33 to 0.67 is in the channel mix: 4 of 15 turns ended
+in finish against 10 of 15 on 10-31. Nothing targeted at this changed, so the rise is not
+claimed as an effect. Bead boubou-twe's design (drop the two finish sentences from the
+conversation TASK_PROMPTs) fits the data as it stands. Constraint pinning is not indicated.
+
+gemma constraints r1 had a different failure in turn 2, a runaway generation:
+- Step 0 ran for 66 s. It wrote `list_dir` as text with template tokens (`<|"|>`,
+  `<channel|>`), invented a listing of four files that do not exist, then repeated
+  `finish(...)<channel|>OK. I have listed the files …` until roughly the 8192-token cap.
+- Salvage ran the `list_dir` and kept the whole text, invented result included. Context went
+  from 1636 to 9544 tokens. Two compactions followed, and the reply reached 52,625 characters
+  (736 lines).
+- Turn 3 then answered `OK.\nOK.3<channel|>OK.`.
+
+This is the first runaway of its kind in the convo rig. It is filed as bead boubou-60j (cut a
+salvaged text call's content at the end of the call).
