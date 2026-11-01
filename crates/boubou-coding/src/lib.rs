@@ -63,6 +63,8 @@ struct SessionState {
     busy: bool,
     /// The client's `mcpServers` for this session, merged over the files at each turn.
     mcp_servers: boubou_kernel::mcp::McpConfig,
+    /// Writes the user declined, carried across turns (bead boubou-vj3).
+    declined: Arc<Mutex<Vec<boubou_kernel::safety::DeclinedWrite>>>,
 }
 
 type Sessions = Arc<Mutex<HashMap<SessionId, SessionState>>>;
@@ -194,6 +196,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                             stop: Arc::new(AtomicBool::new(false)),
                             busy: false,
                             mcp_servers,
+                            declined: Arc::default(),
                         };
                         lock(&sessions).insert(id.clone(), st);
                         tracing::info!(target: "boubou_coding", session = %id, cwd = %req.cwd.display(), "session/new");
@@ -273,6 +276,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                             stop,
                             busy: false,
                             mcp_servers,
+                            declined: Arc::default(),
                         };
                         lock(&sessions).insert(req.session_id.clone(), st);
                         tracing::info!(
@@ -315,11 +319,12 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                         std::mem::take(&mut s.messages),
                                         s.stop.clone(),
                                         s.mcp_servers.clone(),
+                                        s.declined.clone(),
                                     ))
                                 }
                             }
                         };
-                        let (cwd, name, prior, stop, mcp_servers) = match taken {
+                        let (cwd, name, prior, stop, mcp_servers, declined) = match taken {
                             Ok(t) => t,
                             Err(e) => return responder.respond_with_error(e),
                         };
@@ -365,6 +370,7 @@ impl ConnectTo<AcpClient> for BoubouAcp {
                                     cwd.clone(),
                                 ),
                                 mcp_servers,
+                                declined,
                             },
                             prior.clone(),
                             text,
@@ -448,7 +454,11 @@ fn spawn_turn(
         .name("boubou-coding-turn".into())
         .spawn(move || {
             let result = (|| {
+                let declined = setup.declined.clone();
                 let mut agent = factory.new_turn(setup)?;
+                // The declined writes outlive the gate (bead boubou-vj3): seeded here,
+                // written back whatever the turn comes to.
+                agent.set_declined(std::mem::take(&mut *lock(&declined)));
                 let messages = if prior.is_empty() {
                     agent.task_messages(&text)
                 } else {
@@ -456,7 +466,9 @@ fn spawn_turn(
                     m.push(Message::user(&text));
                     m
                 };
-                agent.run(messages, Some(&session_name))
+                let result = agent.run(messages, Some(&session_name));
+                *lock(&declined) = agent.take_declined();
+                result
             })();
             let _ = tx.send(BridgeMsg::Done(result));
         });

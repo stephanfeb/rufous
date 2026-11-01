@@ -1040,3 +1040,151 @@ async fn the_editor_is_asked_only_inside_the_cwd_and_the_disk_backs_it_up() {
         .collect();
     assert_eq!(writes, vec![&kept, &refused], "{asked:?}");
 }
+
+// Bead boubou-vj3: the server builds a new gate per prompt, so the declined-write list
+// (bead boubou-dml) has to be carried by the session. A write declined in one editor turn
+// and tried under the same name inside the project in the next is asked about, not done.
+
+/// The real executor with its gate on the editor's dialog, one script per prompt.
+struct GatedFactory {
+    scripts: Vec<Script>,
+    turns: Arc<AtomicUsize>,
+}
+
+impl AgentFactory for GatedFactory {
+    fn new_turn(&self, setup: TurnSetup) -> boubou_kernel::Result<Box<dyn TurnRunner>> {
+        let k = self.turns.fetch_add(1, Ordering::SeqCst);
+        let mut params = RunParams::plain(setup.model, &setup.cwd);
+        params.policy = boubou_coding::harness::policy();
+        let backend = Scripted {
+            calls: self.scripts[k.min(self.scripts.len() - 1)].clone(),
+            i: 0,
+            delay: Duration::ZERO,
+            forever: false,
+        };
+        let mut tools = boubou_kernel::exec::Executor::new(&setup.cwd);
+        tools.gate = boubou_kernel::safety::Gate::new(
+            boubou_kernel::safety::SafetyPolicy::default(),
+            setup.confirmer,
+        );
+        let a = Agent::new(params, backend, tools)
+            .with_sink(setup.sink)
+            .with_stop(setup.stop);
+        Ok(Box::new(a))
+    }
+}
+
+#[tokio::test]
+async fn a_write_declined_in_one_turn_is_asked_about_under_its_name_in_the_next() {
+    let d = tempfile::tempdir().expect("tmp");
+    let outside = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let target = outside.path().join("boubou_convo_perm.txt");
+    let factory = GatedFactory {
+        scripts: vec![
+            vec![(
+                "create_file",
+                json!({"path": target.to_string_lossy(), "content": "hello"}),
+            )],
+            vec![(
+                "create_file",
+                json!({"path": "boubou_convo_perm.txt", "content": "hello"}),
+            )],
+        ],
+        turns: Arc::new(AtomicUsize::new(0)),
+    };
+    let agent = BoubouAcp::with_factory(cwd.join("home"), "scripted:1b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let client_seen = seen.clone();
+    let perm_seen = seen.clone();
+    let client = Client
+        .builder()
+        .name("test-editor")
+        .on_receive_notification(
+            async move |n: SessionNotification, _cx| {
+                client_seen.lock().expect("lock").updates.push(n.update);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |req: RequestPermissionRequest,
+                        responder: Responder<RequestPermissionResponse>,
+                        _cx| {
+                perm_seen.lock().expect("lock").permissions.push(req);
+                // The user says no both times.
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                        PermissionOptionId::new("deny"),
+                    )),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(client_ch, async |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let ns = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            let p1 = cx
+                .send_request(PromptRequest::new(
+                    ns.session_id.clone(),
+                    vec!["Set up the scratch note".into()],
+                ))
+                .block_task()
+                .await?;
+            let p2 = cx
+                .send_request(PromptRequest::new(
+                    ns.session_id.clone(),
+                    vec!["Try again, please".into()],
+                ))
+                .block_task()
+                .await?;
+            Ok((p1, p2))
+        });
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    let (p1, p2) = client_res.expect("client side");
+    assert_eq!(p1.stop_reason, StopReason::EndTurn);
+    assert_eq!(p2.stop_reason, StopReason::EndTurn);
+
+    let seen = seen.lock().expect("lock");
+    let actions: Vec<String> = seen
+        .permissions
+        .iter()
+        .map(|p| {
+            p.tool_call
+                .fields
+                .raw_input
+                .as_ref()
+                .and_then(|v| v.get("action"))
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        ["access", "write the declined file name elsewhere"],
+        "{:#?}",
+        seen.permissions
+    );
+    let second = seen.permissions[1]
+        .tool_call
+        .fields
+        .raw_input
+        .as_ref()
+        .expect("raw");
+    let target_text = second["target"].as_str().expect("target");
+    assert!(
+        target_text.starts_with("boubou_convo_perm.txt (declined at ")
+            && target_text.contains("in an earlier turn), now "),
+        "{target_text}"
+    );
+    assert!(!target.exists());
+    assert!(!cwd.join("boubou_convo_perm.txt").exists());
+}

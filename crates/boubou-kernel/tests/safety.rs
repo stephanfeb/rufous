@@ -787,6 +787,46 @@ fn a_declined_name_is_forgotten_after_enough_turns() {
         .is_none());
 }
 
+// The declined list carried between gates (bead boubou-vj3): a host that builds a new gate
+// per turn takes it out of one and seeds the next; the next turn's reset ages it as usual.
+
+#[test]
+fn declined_writes_taken_from_one_gate_seed_the_next() {
+    use boubou_kernel::safety::Verdict::Deny;
+    use boubou_kernel::scope::ScopeGateMode::Off;
+    let d = tempfile::tempdir().expect("tmp");
+    let create = |path: &str| ToolInvocation::CreateFile {
+        path: path.into(),
+        content: "hello".into(),
+        replace: false,
+    };
+    let mut first = Gate::new(SafetyPolicy::default(), Box::new(Says(Deny)));
+    first.set_scope(None, Off);
+    assert!(first
+        .check(&create("/tmp/boubou_convo_perm.txt"), d.path())
+        .is_some());
+    let carried = first.take_declined();
+    assert_eq!(carried.len(), 1);
+    assert_eq!(carried[0].name, "boubou_convo_perm.txt");
+    assert_eq!(carried[0].turns_ago, 0);
+    assert!(first.take_declined().is_empty(), "taken out, not copied");
+    // A fresh gate without the list lets the name through; seeded, it asks (and this
+    // confirmer says no).
+    let mut bare = Gate::new(SafetyPolicy::default(), Box::new(Says(Deny)));
+    bare.set_scope(None, Off);
+    assert!(bare
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .is_none());
+    let mut next = Gate::new(SafetyPolicy::default(), Box::new(Says(Deny)));
+    next.set_declined(carried);
+    next.set_scope(None, Off);
+    let msg = next
+        .check(&create("boubou_convo_perm.txt"), d.path())
+        .expect("asked and declined");
+    assert!(msg.contains("same thing somewhere else"), "{msg}");
+    assert_eq!(next.take_declined()[0].turns_ago, 1);
+}
+
 // Inline interpreter code (bead boubou-zjy): the path literals it names are judged like
 // file-tool paths; a program's own path, a URL and arithmetic are not paths.
 

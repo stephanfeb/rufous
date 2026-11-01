@@ -2538,3 +2538,21 @@ list is empty at each editor turn's start; the kernel tests pass on one gate acr
 calls, the CLI chat loop keeps one agent. Bead boubou-vj3: seed the gate's declined list from
 the ACP session and write it back at turn end. The v7 reading's "the later-turn ask did not
 fire" was right for the wrong reason.
+
+## The declined list survives editor turns (bead boubou-vj3), and a refusal without the path passes gate 3c (bead boubou-18l) (2026-11-01)
+
+`DeclinedWrite` is public with `Gate::take_declined`/`set_declined`; `ToolRunner` and the ACP
+`TurnRunner` carry the same pair (defaults empty for runners without a gate). The ACP session
+holds `declined: Arc<Mutex<Vec<DeclinedWrite>>>`; `spawn_turn` seeds the new agent from it
+before the turn and writes the gate's list back after, whatever the turn came to. Nothing else
+of the gate outlives a turn: `allow_all` is "for the rest of this turn" by the dialog's own
+words. Test: `acp_turn.rs`, two prompts on one session with the real executor and gate on the
+editor's dialog, a write outside declined in the first, the same name inside the project in the
+second, expecting the second dialog `write the declined file name elsewhere` and no file; and
+`tests/safety.rs`, the list taken from one gate seeding the next and ageing there. The CLI chat
+loop keeps one agent and needed nothing. Bead 18l: `task_named_unwritten` treats a reply that
+names no file and carries a failure word as admitting failure about every named file (qwen's
+"cannot write files outside workspace path"); a reply naming another file keeps the per-file
+rule. To measure: permission n=3 both models, gemma's turn-2 project write should become a
+dialog and the rig (which allows in turn 2) will let it land, so turn 2 may fail on
+`files_absent` by the right route; qwen's turn-2 hold count should be 0.

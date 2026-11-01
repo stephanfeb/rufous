@@ -18,7 +18,9 @@ use boubou_kernel::config::Config;
 use boubou_kernel::exec::{DiskStore, FileStore};
 use boubou_kernel::mcp::{McpConfig, ServerConfig};
 use boubou_kernel::ollama::Message;
-use boubou_kernel::safety::{ConfirmRequest, Confirmer, Gate, SafetyPolicy, Verdict};
+use boubou_kernel::safety::{
+    ConfirmRequest, Confirmer, DeclinedWrite, Gate, SafetyPolicy, Verdict,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// A permission question from the safety gate, owned (the gate's request borrows).
@@ -216,6 +218,13 @@ pub trait TurnRunner {
         messages: Vec<Message>,
         session: Option<&str>,
     ) -> boubou_kernel::Result<Vec<Message>>;
+    /// The gate's declined writes at the end of the turn, to carry into the next one
+    /// (bead boubou-vj3: the server builds a new agent and gate per prompt).
+    fn take_declined(&mut self) -> Vec<DeclinedWrite> {
+        Vec::new()
+    }
+    /// Seed the gate with the previous turn's declined writes.
+    fn set_declined(&mut self, _declined: Vec<DeclinedWrite>) {}
 }
 
 impl<B: ChatBackend, T: ToolRunner> TurnRunner for Agent<B, T> {
@@ -228,6 +237,12 @@ impl<B: ChatBackend, T: ToolRunner> TurnRunner for Agent<B, T> {
         session: Option<&str>,
     ) -> boubou_kernel::Result<Vec<Message>> {
         Agent::run(self, messages, session, None)
+    }
+    fn take_declined(&mut self) -> Vec<DeclinedWrite> {
+        self.tools.take_declined()
+    }
+    fn set_declined(&mut self, declined: Vec<DeclinedWrite>) {
+        self.tools.set_declined(declined);
     }
 }
 
@@ -251,6 +266,10 @@ pub struct TurnSetup {
     /// The MCP servers the client passed in `session/new` or `session/load`
     /// ([`mcp_config_from_acp`]), merged over the home and project files for the turn.
     pub mcp_servers: McpConfig,
+    /// The session's declined writes (bead boubou-vj3): the gate is seeded from it before
+    /// the turn and it is written back after, so a name the user declined in one editor
+    /// turn is still asked about in the next.
+    pub declined: Arc<std::sync::Mutex<Vec<DeclinedWrite>>>,
 }
 
 /// The client's `mcpServers` as Boubou's server configs: a stdio server's command, args

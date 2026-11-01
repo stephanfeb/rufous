@@ -209,6 +209,13 @@ pub trait ToolRunner {
     fn child_terminated(&self) -> Option<String> {
         None
     }
+    /// The gate's declined writes, for a host that builds a new runner per turn (bead
+    /// boubou-vj3); a runner without a gate has none.
+    fn take_declined(&mut self) -> Vec<crate::safety::DeclinedWrite> {
+        Vec::new()
+    }
+    /// Seed the gate's declined writes from an earlier turn.
+    fn set_declined(&mut self, _declined: Vec<crate::safety::DeclinedWrite>) {}
 }
 
 impl ToolRunner for Executor {
@@ -223,6 +230,12 @@ impl ToolRunner for Executor {
     }
     fn set_scope(&mut self, scope: Option<crate::scope::Scope>, mode: crate::scope::ScopeGateMode) {
         self.gate.set_scope(scope, mode);
+    }
+    fn take_declined(&mut self) -> Vec<crate::safety::DeclinedWrite> {
+        self.gate.take_declined()
+    }
+    fn set_declined(&mut self, declined: Vec<crate::safety::DeclinedWrite>) {
+        self.gate.set_declined(declined);
     }
     fn take_scope_notes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.gate.scope_notes)

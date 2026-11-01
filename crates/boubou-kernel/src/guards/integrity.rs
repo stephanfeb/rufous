@@ -722,6 +722,11 @@ fn wrote_basename(cmds: &[CommandRecord], base_low: &str) -> bool {
 /// into `todo` and reported done is what this catches.
 pub fn task_named_unwritten(task: &str, reply: &str, cmds: &[CommandRecord]) -> Vec<String> {
     let task_low = task.to_lowercase();
+    // A refusal phrased without the path ("cannot write files outside the workspace",
+    // qwen3.5:4b, bead boubou-18l) admits failure about every named file: the hold is
+    // for claims and silence. A reply that names some file keeps the per-file rule.
+    let general_failure =
+        artifacts::files_in_text(reply).is_empty() && admits_failure_about(reply, "");
     artifacts::files_in_text(task)
         .into_iter()
         .filter(|f| {
@@ -730,6 +735,7 @@ pub fn task_named_unwritten(task: &str, reply: &str, cmds: &[CommandRecord]) -> 
             !NOT_DELIVERABLE.contains(&base.as_str())
                 && names_as_write_target(&task_low, &low)
                 && !wrote_basename(cmds, &base)
+                && !general_failure
                 && !admits_failure_about(reply, &base)
         })
         .collect()
@@ -1200,6 +1206,22 @@ mod tests {
             &none
         )
         .is_empty());
+        // Bead boubou-18l: a failure report that names no file admits it for every file;
+        // one that names another file does not.
+        assert!(task_named_unwritten(
+            perm,
+            "Responded directly to user's request - cannot write files outside workspace path due to security restrictions",
+            &none
+        )
+        .is_empty());
+        assert_eq!(
+            task_named_unwritten(
+                perm,
+                "I could not read notes.txt, so nothing was done.",
+                &none
+            ),
+            ["boubou_convo_perm.txt"]
+        );
         // A landed file-tool write, a refused one, and a shell redirect.
         let landed = vec![CommandRecord::file_write("append_file", "tasks.md", true)];
         assert!(task_named_unwritten(t3, "Ticked.", &landed).is_empty());

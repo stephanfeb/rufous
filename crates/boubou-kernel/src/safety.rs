@@ -1155,7 +1155,7 @@ pub struct Gate {
     /// on the user's "try again" gemma wrote the name into the project once the list had
     /// been cleared). An entry is forgotten when the declined path is later allowed, or
     /// after [`DECLINED_TURNS`] turns.
-    declined_writes: Vec<Declined>,
+    declined_writes: Vec<DeclinedWrite>,
     /// The last refusal [`Gate::check`] issued, as data; `None` after a pass.
     last_refusal: Option<Refused>,
 }
@@ -1173,11 +1173,13 @@ impl std::fmt::Debug for Gate {
 pub const DECLINED_TURNS: u8 = 5;
 
 /// A write the user declined: the file name, where it was declined, and how many turns ago.
-#[derive(Debug, Clone)]
-struct Declined {
-    name: String,
-    path: PathBuf,
-    turns_ago: u8,
+/// Public so a host that builds a new gate per turn (the ACP server, bead boubou-vj3) can
+/// carry the list across turns with [`Gate::take_declined`] and [`Gate::set_declined`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclinedWrite {
+    pub name: String,
+    pub path: PathBuf,
+    pub turns_ago: u8,
 }
 
 const FILE_TOOLS: [&str; 7] = [
@@ -1255,7 +1257,7 @@ impl Gate {
             return;
         }
         if let Some(name) = real.file_name().map(|n| n.to_string_lossy().into_owned()) {
-            self.declined_writes.push(Declined {
+            self.declined_writes.push(DeclinedWrite {
                 name,
                 path: real.to_path_buf(),
                 turns_ago: 0,
@@ -1266,6 +1268,18 @@ impl Gate {
     /// The user allowed a write at this path: nothing is left to substitute for.
     fn forget_declined(&mut self, real: &Path) {
         self.declined_writes.retain(|d| d.path != real);
+    }
+
+    /// The declined writes, taken out: the one piece of gate state that outlives a turn
+    /// (bead boubou-vj3). `allow_all` is "for the rest of this turn" by the dialog's own
+    /// words, the rest is per call.
+    pub fn take_declined(&mut self) -> Vec<DeclinedWrite> {
+        std::mem::take(&mut self.declined_writes)
+    }
+
+    /// Seed the declined writes from an earlier turn's [`Gate::take_declined`].
+    pub fn set_declined(&mut self, declined: Vec<DeclinedWrite>) {
+        self.declined_writes = declined;
     }
 
     /// A write that repeats a declined file name at another path: the refusal text when
