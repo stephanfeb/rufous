@@ -2430,7 +2430,7 @@ nothing false on work that never leaves the project; the only status tag in the 
 report.md has, it said 8 from memory (no read; r0 and r1 said 7 the same way); the file has 7.
 Those files are malformed though every turn passed: qwen created the title without a trailing
 newline and `append_file` appends raw bytes, so line 1 is `# Heron report## Attendance` in all
-three cells (bead boubou-boubou-l3e); gemma writes its own newline. The tracker misses are one
+three cells (bead boubou-l3e); gemma writes its own newline. The tracker misses are one
 class, bead boubou-78s: of the twelve failing turns, eleven put the tasks into the `todo` tool
 instead of tasks.md (t1 create, t3 tick, t4 add), and t2 (say, no write) passed 6/6. Nothing
 drifted into source: gsw 0 everywhere. The script's name says drift; what it measures today is
@@ -2620,7 +2620,7 @@ twice); permission 0.83 and 0.67, the turn-2 "still cannot" shape in three cells
 this change (gemma's turn 2 over the last five runs: 2, 3, 2, 3, 1 of 3). qwen tracker r2 1/4
 is a new shape: after the hold the model ran `mkdir -p openspec` and created
 `openspec/tasks.md`, next to the other path in the sentence, while `./tasks.md` was the file;
-gate 3c's basename rule accepted it, turns 3 and 4 edited the wrong file (bead boubou-boubou-di6: when
+gate 3c's basename rule accepted it, turns 3 and 4 edited the wrong file (bead boubou-di6: when
 one file of that bare name exists, the write has to reach it). Tags: six boundary refusals,
 nothing else.
 
@@ -2652,7 +2652,7 @@ once, then a text claim "I have marked Task 1 as done", the once-only limit); lo
 both; permission qwen 0.67, gemma 0.50. Ten gate 3c holds, nine converted to a write.
 
 Two misreads of gate 3c's admission rule, each confirmed by running the live reply through
-`admits_failure_about` (bead boubou-boubou-e9i): qwen tracker r1 t1 put the tasks in the todo tool and
+`admits_failure_about` (bead boubou-e9i): qwen tracker r1 t1 put the tasks in the todo tool and
 replied "Done. I've broken the spec into 6 small tasks in tasks.md … currency conversion with
 error handling …"; the clause naming the file has "error" sixteen words on, read as an
 admission, no hold, turn lost. gemma permission r2 t1 replied "I cannot write files to the
@@ -2661,7 +2661,7 @@ admission names the directory, the offer names the file, read as a claim, held, 
 then tried the bare name in the workdir (refused by the substitute rule, correctly).
 
 Permission turn 2, the residual since v7, is now the largest one and has a shape (bead
-boubou-boubou-alj). Thirty cells over five runs, turn 2 passed:
+boubou-alj). Thirty cells over five runs, turn 2 passed:
 
 | turn 1 shape | cells | turn 2 passed |
 |---|---|---|
@@ -2707,14 +2707,14 @@ to fix.
 Misses, each read from the cell:
 - gemma tracker r1 t3: todo update on an empty plan, then "I encountered an internal system
   error … cannot proceed with the update"; the reply names no file, so the 18l path excused
-  tasks.md and no hold fired (bead boubou-boubou-kxz).
+  tasks.md and no hold fired (bead boubou-kxz).
 - qwen tracker r1 t3: todo tick, held once, then "Done. Task 1 is marked complete" with no
-  write. Second cell of this shape in two runs (bead boubou-boubou-7om: the todo result itself says the
+  write. Second cell of this shape in two runs (bead boubou-7om: the todo result itself says the
   file is unchanged).
 - gemma longform r2 t10: answered 8 for a file with `## Owners` twice. The model appended,
   hit the duplicate-call block on an identical retry, read the file and appended a "revised"
   version. Same shape as 4b_scope_v1 r1's `## Decisions`: append used to revise (bead
-  boubou-boubou-jn2).
+  boubou-jn2).
 - qwen longform r1 t10: `search_files` on `/` refused, then the turn ended on "Let me do that
   to count the section headings" with no call. One cell, not filed.
 
@@ -2871,3 +2871,44 @@ To measure: constraints at n=3 per model. Read the turn pass rate, the share of 
 finish (qwen 14/30 over the two baselines) and calls per turn. A model that stops calling finish
 must still end its turn, so the text-ends-turn path and the empty-reply ladder need watching.
 Tracker and permission need a rerun too, because they finish through gate 3c.
+
+## twe measured: constraints, tracker and permission on the 03:07 release, n=3 per model (2026-11-02)
+
+`bench/results/convo/4b_twe_v1`, compared with `4b_cf_base_v1` (constraints) and `4b_kxz_v1`
+(tracker, permission).
+
+| script | qwen3.5:4b | gemma4:e4b |
+|---|---|---|
+| constraints | 0.73 (0.67) | 1.00 (0.87) |
+| tracker_drift | 1.00 (1.00) | 0.83 (0.83) |
+| permission | 1.00 (1.00) | 0.67 (0.83) |
+
+Constraints:
+- No turn ended in finish, against 4/15 qwen turns in the baseline and 10/15 on 10-31.
+- No empty-reply or stall lines; every turn ended in text.
+- qwen by turn: t1 3/3, t2 0/3, t3 3/3, t4 3/3, t5 2/3. The two finish-prone turns (t1, t3)
+  now pass every time.
+- Turn 2 ("names only … nothing else") failed 3/3. It is now 3/9 over the three folders: the
+  turn's own format rule against the standing one, not a channel effect.
+- r0 t5 is the one text-ended miss outside turn 2.
+- 10/15 to 11/15 is not a significant gain at n=3. The mechanism is what moved.
+- gemma's runaway (bead boubou-60j) did not recur.
+
+Tracker and permission without the finish sentences:
+- Finish calls fell from 10 to 3 over the 24 runs' worth of turns.
+- Gate 3c still held 7 times (kxz: 7), and qwen tracker stayed 12/12. The gate does not need
+  finish summaries to act on.
+
+Misses:
+- gemma tracker r0 t1 and t3: `[x] 1.` with no dash. This is the checkbox-format residual, its
+  third and fourth cells.
+- gemma permission r2 t2: the bead boubou-jjh shape again. The workspace copy was refused in
+  turn 1, created in turn 2, and approved by the rig's "allow" on the cross-turn ask. That is
+  three cells in three runs.
+- gemma permission r0 t2: no call. The model replied "I am unable to write to
+  /tmp/boubou_convo_perm.txt due to system safety restrictions … Would you like me to proceed
+  with that alternative?" after the ledger line had gone out. The reply names the file, so the
+  per-file admission passed it; kxz's attempt rule covers only the no-file reply. It is the first
+  no-call turn 2 since re-attribution (23/24 made a call). Bead boubou-c7q.
+
+Bead boubou-twe is closed.
