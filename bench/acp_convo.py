@@ -138,7 +138,18 @@ class AcpClient:
 
 # ---------------------------------------------------------------- one turn
 
-def run_turn(client, session_id, say, permission, timeout):
+def answer_for(title, answers, default):
+    """The rig's answer to one permission ask: the first of the turn's `answers` whose
+    `title_regex` matches the ask's title, else the turn's `permission` default (bead
+    boubou-jjh: in permission turn 2 a user who has just asked for /tmp again denies a
+    workspace copy of the declined name, and allows the /tmp write)."""
+    for a in answers or []:
+        if re.search(a["title_regex"], title or ""):
+            return a["answer"]
+    return default
+
+
+def run_turn(client, session_id, say, permission, timeout, answers=None):
     """Returns the turn record: text, asks, updates count, stop reason, wall seconds."""
     text = []
     asks = []
@@ -162,10 +173,11 @@ def run_turn(client, session_id, say, permission, timeout):
         if method == "session/request_permission":
             p = msg.get("params") or {}
             tc = p.get("toolCall") or {}
+            answer = answer_for(tc.get("title"), answers, permission)
             asks.append({"title": tc.get("title"), "rawInput": tc.get("rawInput"),
-                         "answer": permission})
+                         "answer": answer})
             options = {o.get("optionId") for o in p.get("options") or []}
-            option = permission if permission in options else ("deny" if "deny" in options else next(iter(options), "deny"))
+            option = answer if answer in options else ("deny" if "deny" in options else next(iter(options), "deny"))
             return {"outcome": {"outcome": "selected", "optionId": option}}
         return None
 
@@ -419,7 +431,8 @@ def run_cell(binary, model, ctx, script, cell_dir, turn_timeout, user_home):
         sid = ns["sessionId"]
         passed = set()
         for i, t in enumerate(script["turns"]):
-            rec = run_turn(client, sid, t["say"], t.get("permission", "deny"), turn_timeout)
+            rec = run_turn(client, sid, t["say"], t.get("permission", "deny"), turn_timeout,
+                           t.get("answers"))
             # Checked now, not at the end: a later turn may create or change the files this
             # turn's expectations are about.
             lts = session_log_turns(home)

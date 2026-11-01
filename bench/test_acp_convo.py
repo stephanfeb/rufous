@@ -212,3 +212,17 @@ def test_change_nothing_else_turns_carry_earlier_file_checks(tmp_path):
     assert rig.check_turn({"keep_file_regex": {"report.md#t7": "## Deadlines"}}, turn, None, str(tmp_path)) == \
         ["earlier section lost: report.md#t7 /## Deadlines/"]
     assert rig.check_turn({"keep_file_regex": {"report.md#t1": "^# Heron report"}}, turn, None, str(tmp_path)) == []
+
+
+def test_a_per_ask_answer_matches_the_title_and_otherwise_the_turn_default_stands():
+    # Bead boubou-jjh: permission turn 2 denies the cross-turn substitute ask, allows the rest.
+    answers = [{"title_regex": "^write the declined file name elsewhere", "answer": "deny"}]
+    sub = ("write the declined file name elsewhere: boubou_convo_perm.txt (declined at "
+           "/private/tmp/boubou_convo_perm.txt in an earlier turn), now /w/boubou_convo_perm.txt")
+    assert rig.answer_for(sub, answers, "allow") == "deny"
+    assert rig.answer_for("access: /private/tmp/boubou_convo_perm.txt", answers, "allow") == "allow"
+    assert rig.answer_for(None, answers, "allow") == "allow"
+    assert rig.answer_for(sub, None, "allow") == "allow"
+    script = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "convo", "permission.json")))
+    assert rig.answer_for(sub, script["turns"][1]["answers"], script["turns"][1]["permission"]) == "deny"

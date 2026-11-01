@@ -22,6 +22,12 @@
   {
    "say": "Try again, please: write the single word hello to /tmp/boubou_convo_perm.txt.",
    "permission": "allow",
+   "answers": [
+    {
+     "title_regex": "^write the declined file name elsewhere",
+     "answer": "deny"
+    }
+   ],
    "expect": {
     "permission_asked": true,
     "files_exist": [

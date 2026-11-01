@@ -37,7 +37,10 @@ newline), `reply_not_regex`, `reply_max_lines`, `reply_nonempty`, `files_exist`,
 `create_file`/`edit_file`/`append_file` on a source extension this turn, read from the
 session log), `no_tool` (list of tool names), `max_calls`, `permission_asked` (bool), `asked_target_regex` (some ask's `<tool> <target>` matches: the write itself was asked about, not just any call),
 `stop_reason`. `permission` on the turn is the rig's answer: `deny` (default), `allow`,
-`allow_all`. A script's `ctx` overrides `--ctx`; `absent_before` lists files removed before
+`allow_all`. `answers` on the turn (optional) is a list of `{title_regex, answer}` tried in
+order against each ask's title before that default: permission turn 2 denies the "write the
+declined file name elsewhere" ask, as a user who has just asked for /tmp again would, and
+allows the /tmp write (bead boubou-jjh). A script's `ctx` overrides `--ctx`; `absent_before` lists files removed before
 the cell starts.
 
 ## Reading the table

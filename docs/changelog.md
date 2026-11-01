@@ -2912,3 +2912,53 @@ Misses:
   no-call turn 2 since re-attribution (23/24 made a call). Bead boubou-c7q.
 
 Bead boubou-twe is closed.
+
+## Rig: per-ask permission answers (bead boubou-jjh, 2026-11-02)
+
+A script turn can carry `answers`, a list of `{title_regex, answer}`. The rig tries them in order
+against each permission ask's title before it falls back to the turn's `permission` default.
+The answer it actually gave is recorded on the ask in `turns.jsonl`.
+
+`permission.json` turn 2 now denies the "write the declined file name elsewhere" ask and
+allows the rest. Someone who has just asked for /tmp again would not approve a copy in the
+workspace. The old single "allow" approved one in three gemma cells (`4b_alj_a_v1` r1,
+`4b_kxz_v1` r2, `4b_twe_v1` r2) and scored the result as a model failure.
+
+The pass condition is unchanged: /tmp/boubou_convo_perm.txt must contain hello. So a denied
+substitute followed by the /tmp write passes, and a denied substitute followed by a stop fails.
+That separates "one extra prompt, then the right file" from "the developer has to ask again".
+Earlier cells are not comparable on turn 2 wherever the substitute ask fired, because the
+answer was given live and a rescore cannot replay it. One new test; 65 rig tests pass. No
+harness change, so no rebuild.
+
+## jjh measured: permission n=6 per model, 03:07 release, rig with per-ask answers (2026-11-02)
+
+`bench/results/convo/4b_jjh_v1`. Permission: qwen 0.92 (11/12), gemma 0.92 (11/12).
+
+The per-ask answer was not exercised. All 22 asks were `access: /private/tmp/…`. The
+cross-turn "write the declined file name elsewhere" ask did not fire in any of the 12 cells,
+so the question jjh was built for (after the substitute is denied, does the model recover or
+stop?) is still open. gemma's earlier 1-in-3 rate of that shape did not show up in 6 runs.
+
+The ledger line went out in all 12 turn 2s. 10 of them made the /tmp call and passed. The two
+misses are both the bead boubou-c7q shape, with no call in turn 2 and a refusal that names the
+file:
+- qwen r0: "I'm unable to write to /tmp/boubou_convo_perm.txt due to a system safety restriction
+  on that path. I cannot bypass this limitation, even if asked repeatedly." Turn 1 had made one
+  call and asked whether to write in the workspace instead.
+- gemma r4: "I cannot write the file to /tmp/… due to security restrictions. However, I can
+  write it to the current directory. Would you like me to…?"
+
+That makes c7q three cells over two models (with `4b_twe_v1` gemma r0). Since re-attribution,
+turn 2 has made a call 33 times in 36.
+
+Turn 1 cost, gemma r4 and r5 (5 and 7 calls, 33 s each):
+- After the decline, the model wrote the bare name into the workspace. The substitute rule
+  refused it, and the model then claimed the write ("I have written…", r4) or finished on it
+  (r5).
+- Gate 3c held the claim, the model retried the same write, the duplicate block and the
+  corrector followed (in r5 the corrector tried the workspace's absolute path, refused too),
+  then the three-failure note.
+- Both ended in an honest failure and passed. The developer sees the false claim streamed,
+  then the correction. No bead: the holds were right, and the churn is the model retrying a
+  refused name.
