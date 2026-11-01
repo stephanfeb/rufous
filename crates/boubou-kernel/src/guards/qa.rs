@@ -15,8 +15,9 @@ pub const DISPATCH_NOTE_MARK: &str = "[parallel-dispatch]";
 /// Every user-role message the harness injects starts with one of these, so routing,
 /// Q&A detection and task re-injection can skip them. Invariant: any new injected
 /// message must start with a prefix from this list.
-pub const HARNESS_NOTE_PREFIXES: [&str; 10] = [
+pub const HARNESS_NOTE_PREFIXES: [&str; 11] = [
     "⚠️",
+    LEDGER_MARK,
     "Continue:",
     "[blocked:",
     "Your answer is already sufficient",
@@ -36,6 +37,10 @@ pub const FOLLOW_UP_DONE_NOTE: &str =
 /// Follow-up turn, acted on and reported: the turn ends here.
 pub const FOLLOW_UP_REPORT_NOTE: &str =
     "Your reply reports the follow-up; the turn ends here. Do not repeat the output.";
+
+/// Opening of a ledger line the harness puts in place of an earlier turn's refusal reply
+/// (`history::reattribute_declined`, bead boubou-alj).
+pub const LEDGER_MARK: &str = "[ledger]";
 
 /// Marker of a compaction summary message (`history.rs`).
 pub const CONTEXT_SUMMARY_MARK: &str = "[Earlier context summary]";

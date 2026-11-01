@@ -2692,3 +2692,64 @@ bare form. The two live replies of `4b_di6_v1` are the tests: qwen's "Done. I've
 spec into 6 small tasks in tasks.md … with error handling" now holds, gemma's "I cannot write
 files to the /tmp directory … I can, however, write it … such as …/boubou_convo_perm.txt"
 now passes. The existing admission table is unchanged. 586 tests. No prompt text changed.
+
+## e9i measured: tracker, permission and longform on the 18:19 release, n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_e9i_v1`. Tracker 0.92 both (qwen up from 0.83: all three turn-1
+plan-tool holds converted to a write); permission 0.67 both; longform 0.97 both. Eight gate 3c
+holds. None held an honest refusal: two held false success claims in permission turn 1 (qwen r1
+"I've written hello to /tmp/…" after a decline, gemma r1 finish "Created the file … in the
+current working directory"), one held qwen permission r0 t2 "I declined to create the file at
+/tmp/…" ("declined" is not a failure word; the hold did not produce a call). Neither live
+misread of the previous run recurred verbatim, so e9i is shown not to regress, not yet shown
+to fix.
+
+Misses, each read from the cell:
+- gemma tracker r1 t3: todo update on an empty plan, then "I encountered an internal system
+  error … cannot proceed with the update"; the reply names no file, so the 18l path excused
+  tasks.md and no hold fired (bead boubou-boubou-kxz).
+- qwen tracker r1 t3: todo tick, held once, then "Done. Task 1 is marked complete" with no
+  write. Second cell of this shape in two runs (bead boubou-boubou-7om: the todo result itself says the
+  file is unchanged).
+- gemma longform r2 t10: answered 8 for a file with `## Owners` twice. The model appended,
+  hit the duplicate-call block on an identical retry, read the file and appended a "revised"
+  version. Same shape as 4b_scope_v1 r1's `## Decisions`: append used to revise (bead
+  boubou-boubou-jn2).
+- qwen longform r1 t10: `search_files` on `/` refused, then the turn ended on "Let me do that
+  to count the section headings" with no call. One cell, not filed.
+
+Permission turn 2 tally, now six runs:
+
+| turn 1 shape | cells | turn 2 passed |
+|---|---|---|
+| at most one refusal text | 30 | 19 |
+| two or more (substitute refusal and/or a 3c hold) | 6 | 1 |
+
+Turn 2 with one refusal is weaker this run (2/4); the gap holds. Bead boubou-alj arm A next.
+
+## Re-attribution, arm A of bead boubou-alj (2026-11-01)
+
+The permission script's turn 2 ("try again") passed 19 of 30 times with at most one refusal
+text in context and 1 of 6 with two or more (six runs, `4b_perm_v7` to `4b_e9i_v1`). The
+literature pass in `docs/small-models-follow-text-not-state.md` reports the self-consistency
+bias vanishing when the earlier answer is attributed to someone else. So the model no longer
+sees its own refusal: `history::reattribute_declined` builds the list sent to the model at the
+one `backend.chat` site of the loop. In each earlier turn with a tool result opening
+`[safety gate: the user declined`, what the model said after the first decline that ends or
+narrates the turn is left out (text-only replies, `finish` calls with their results, and the
+harness notes that answered them), tool calls and their results stay, and one user-role line
+closes the turn:
+
+    [ledger] turn 1: create_file /tmp/boubou_convo_perm.txt was declined by the user; no file was written.
+
+The path is the one the model gave (paired with its call by order, as the session replay
+does), not the canonical `/private/tmp/…` of the refusal text. The current turn is never
+changed. The stored history, the session file and the editor's replay keep what was said; the
+returned history is the loop's own. `[ledger]` is a harness-note prefix, so the decider, the
+gates' task text and the replay skip it. Switch `reattribute` (in `kernel`). Logged once per
+run: `ledger: an earlier turn's reply after a declined write is sent as a ledger line`.
+Prompt size: text removed, about 25 tokens added per re-attributed turn. Arm B (a hold on a
+no-call turn 2) waits for this arm's number. Tests: gemma's di6_v1 r0 turn 1 as it ran (eleven
+messages to eight: claim, finish, hold note and refusal reply out, ledger in), the current
+turn and decline-free turns untouched, a reply before the decline kept, and the loop sending
+the ledger line with the switch on and the reply with it off. 589 tests.

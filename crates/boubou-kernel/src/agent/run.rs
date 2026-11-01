@@ -809,6 +809,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut ledger = CorrectorLedger::default();
         let mut named_gate_warns = 0;
         let mut named_writes_warns = 0;
+        let mut reattributed_logged = false;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
         let mut text_ladder = TextLadder::default();
@@ -1035,7 +1036,19 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 log!("[{i}] 🖼 attached {n_img} image(s) (multimodal input)");
             }
 
-            let r = match backend.chat(model, &messages, &ct, &mut |p| match p {
+            // Bead boubou-alj arm A: an earlier turn's own refusal reply goes to the model as
+            // a ledger line; the history kept and replayed is unchanged.
+            let view = if params.ablated(ablation::REATTRIBUTE) {
+                None
+            } else {
+                super::history::reattribute_declined(&messages)
+            };
+            if view.is_some() && !reattributed_logged {
+                reattributed_logged = true;
+                log!("[{i}] ledger: an earlier turn's reply after a declined write is sent as a ledger line");
+            }
+            let sent: &[Message] = view.as_deref().unwrap_or(&messages);
+            let r = match backend.chat(model, sent, &ct, &mut |p| match p {
                 StreamPiece::Token(t) => sink(AgentEvent::Text(t.to_string())),
                 StreamPiece::Think(t) => sink(AgentEvent::Thinking(t.to_string())),
             }) {

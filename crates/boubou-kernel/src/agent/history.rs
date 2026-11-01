@@ -560,3 +560,114 @@ pub fn attach_pending_images(messages: &mut [Message], workdir: &Path) -> usize 
     let _ = std::fs::write(&path, "[]");
     attached
 }
+
+/// Opening of the tool result for a write the user declined at the boundary ask
+/// ([`crate::safety`]); the substitute refusal opens the same way.
+const DECLINED_OPENING: &str = "[safety gate: the user declined";
+
+/// The messages to send the model in place of `messages`, or `None` when nothing changes
+/// (bead boubou-alj, arm A). A small model obeys its own earlier refusal as policy: turn 2
+/// of the permission script ("try again") passed 19 of 30 times after one refusal text in
+/// context and 1 of 6 after two or more, and the self-consistency bias is reported to vanish
+/// when the earlier answer is not the model's own. So in each *earlier* turn with a declined
+/// write, what the model said after the first decline that ends or narrates the turn is left
+/// out: text-only replies, `finish` calls with their results, and the harness notes that
+/// answered them. Tool calls and their results stay. One ledger line in the user role closes
+/// the turn: `[ledger] turn N: create_file /tmp/x was declined by the user; no file was
+/// written.` Turns are delimited by user messages that are not harness notes; the current
+/// (last) turn is never changed. A view: the stored history is untouched.
+pub fn reattribute_declined(messages: &[Message]) -> Option<Vec<Message>> {
+    let starts: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.role == Role::User && {
+                let t = m.content.trim();
+                !t.is_empty() && !crate::guards::qa::is_harness_note(t) && !t.starts_with("[tool")
+            }
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if starts.len() < 2 {
+        return None;
+    }
+    let mut out: Vec<Message> = messages[..starts[0]].to_vec();
+    let mut changed = false;
+    for (k, w) in starts.windows(2).enumerate() {
+        let seg = &messages[w[0]..w[1]];
+        match reattribute_turn(seg, k + 1) {
+            Some(v) => {
+                out.extend(v);
+                changed = true;
+            }
+            None => out.extend_from_slice(seg),
+        }
+    }
+    out.extend_from_slice(&messages[starts[starts.len() - 1]..]);
+    changed.then_some(out)
+}
+
+/// One earlier turn (its user message first), re-attributed, or `None` without a decline.
+fn reattribute_turn(seg: &[Message], turn: usize) -> Option<Vec<Message>> {
+    let first = seg.iter().position(|m| {
+        m.role == Role::Tool && m.content.trim_start().starts_with(DECLINED_OPENING)
+    })?;
+    // Pair each tool result with its call by order, as the session replay does.
+    let mut pending: std::collections::VecDeque<(String, Value)> = Default::default();
+    let mut declined: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    let mut drop_result = 0usize;
+    for (i, m) in seg.iter().enumerate() {
+        match m.role {
+            Role::Assistant => {
+                for tc in &m.tool_calls {
+                    pending.push_back((tc.function.name.clone(), tc.function.arguments.clone()));
+                }
+                if i > first {
+                    let only_finish = !m.tool_calls.is_empty()
+                        && m.tool_calls.iter().all(|t| t.function.name == "finish");
+                    if m.tool_calls.is_empty() || only_finish {
+                        drop_result += m.tool_calls.len();
+                        continue;
+                    }
+                }
+                out.push(m.clone());
+            }
+            Role::Tool => {
+                let call = pending.pop_front();
+                let opening = m.content.trim_start();
+                if opening.starts_with(DECLINED_OPENING)
+                    && opening.starts_with("[safety gate: the user declined this call")
+                {
+                    if let Some((name, args)) = &call {
+                        let target = ["path", "command", "url"]
+                            .iter()
+                            .find_map(|k| args.get(*k).and_then(Value::as_str))
+                            .unwrap_or("");
+                        let line = format!("{name} {target}").trim().to_string();
+                        if !declined.contains(&line) {
+                            declined.push(line);
+                        }
+                    }
+                }
+                if drop_result > 0 && call.as_ref().is_some_and(|(n, _)| n == "finish") {
+                    drop_result -= 1;
+                    continue;
+                }
+                out.push(m.clone());
+            }
+            Role::User if i > first => {}
+            _ => out.push(m.clone()),
+        }
+    }
+    let what = if declined.is_empty() {
+        "a write".to_string()
+    } else {
+        declined.join(", then ")
+    };
+    out.push(Message::user(format!(
+        "{} turn {turn}: {what} was declined by the user; no file was written.",
+        crate::guards::qa::LEDGER_MARK
+    )));
+    Some(out)
+}

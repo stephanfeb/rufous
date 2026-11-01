@@ -31,7 +31,9 @@ AGENT_ABLATION=kernel python3 bench/lrab_h2h.py --arms boubou --task-root bench/
 ```
 
 The transcript's `[ablation] off: …` line says what was off; a misspelt switch is named
-there and turns nothing off. Rebuild `target/release/boubou` first. `scope_gate` (2026-10-31)
+there and turns nothing off. Rebuild `target/release/boubou` first. `reattribute` (2026-11-01, bead boubou-alj) is in the
+list: off, an earlier turn's own refusal reply is sent to the model as it was said instead of
+as a `[ledger]` line. `scope_gate` (2026-10-31)
 is in the list: on, an unattended cell whose prompt reads as tracker or docs work refuses the
 first source-file write with `[scope gate: …]`; a unit test keeps every bench prompt's class
 and deliverables clear of that, so a cell loss with that line in its log is a bug, not a

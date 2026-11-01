@@ -50,6 +50,9 @@ pub const ENV_BLOCK: &str = "env_block";
 /// The scope gate ([`crate::scope`], bead boubou-6x3): off, a tracker or docs instruction
 /// is never asked about when the model starts writing code.
 pub const SCOPE_GATE: &str = "scope_gate";
+/// Re-attribution (bead boubou-alj): an earlier turn's reply after a write the user
+/// declined is sent to the model as a harness ledger line instead of its own words.
+pub const REATTRIBUTE: &str = "reattribute";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -66,6 +69,7 @@ pub const KERNEL: &[&str] = &[
     EDIT_MATCH,
     ENV_BLOCK,
     SCOPE_GATE,
+    REATTRIBUTE,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

@@ -3235,3 +3235,56 @@ fn a_reply_that_asks_for_no_write_or_reports_the_failure_is_not_held() {
         "{msgs:#?}"
     );
 }
+
+// Bead boubou-alj arm A: the model is sent the ledger line, the history kept is not changed,
+// and the ablation switch sends the history as it is.
+#[test]
+fn an_earlier_refusal_reply_is_sent_as_a_ledger_line_and_kept_as_said() {
+    let decline = "[safety gate: the user declined this call: create_file on /tmp/perm.txt. Do not do it another way or write it somewhere else; say what you could not do. If the user asks for it again, make the same call again: they are asked each time and may allow it.]";
+    let history = || {
+        vec![
+            Message::system("sys"),
+            Message::user("Write the single word hello to /tmp/perm.txt."),
+            Message::assistant_call(
+                "create_file",
+                json!({"path": "/tmp/perm.txt", "content": "hello"}),
+            ),
+            Message::tool_output(decline),
+            Message::assistant("I cannot write to /tmp due to security restrictions."),
+            Message::user("Try again, please: write the single word hello to /tmp/perm.txt."),
+        ]
+    };
+    for ablated in [false, true] {
+        let d = tempfile::tempdir().expect("tmp");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut params = RunParams::plain("gemma4:12b", d.path());
+        if ablated {
+            params.ablation = vec!["reattribute".to_string()];
+        }
+        let mut a = Agent::new(
+            params,
+            Lens {
+                n: 0,
+                f: |_| ChatResponse::text("Done."),
+                seen: seen.clone(),
+            },
+            ScriptedTools {
+                calls: Vec::new(),
+                repeat: Vec::new(),
+                served: Vec::new(),
+            },
+        );
+        a.sessions_dir = d.path().join("sessions");
+        let out = a.run(history(), None, None).expect("loop");
+        let first = seen.lock().expect("lock")[0].1.clone();
+        assert_eq!(
+            first.contains("[ledger] turn 1: create_file /tmp/perm.txt was declined by the user"),
+            !ablated
+        );
+        assert_eq!(first.contains("security restrictions"), ablated);
+        assert!(out
+            .iter()
+            .any(|m| m.content == "I cannot write to /tmp due to security restrictions."));
+        assert!(!out.iter().any(|m| m.content.starts_with("[ledger]")));
+    }
+}
