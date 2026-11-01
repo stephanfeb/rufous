@@ -1,5 +1,6 @@
 //! The general-purpose harness's own things: its preset is the kernel's conversation under its name and
-//! its prompt, its prompt is still the kernel's task prefill, and its skills parse.
+//! its prompt, its prompt is the kernel's task prefill less the
+//! two finish sentences (bead boubou-twe), and its skills parse.
 
 use boubou_general::harness;
 use boubou_kernel::agent::prompt::TASK_BASE;
@@ -22,9 +23,18 @@ fn the_preset_is_the_kernel_conversation_under_this_name_and_prompt() {
 }
 
 #[test]
-fn the_prompt_is_the_kernel_task_prefill_until_measurement_says_otherwise() {
-    // Refactor step 10 replaces this test with one stating the difference and why.
-    assert_eq!(harness::TASK_PROMPT, TASK_BASE);
+fn the_prompt_is_the_kernel_task_prefill_less_its_two_finish_sentences() {
+    // Bead boubou-twe: in a conversation text ends the turn, so the prefill does not ask
+    // for finish. qwen3.5:4b's finish summaries read as status reports and dropped a
+    // standing reply rule (2/14 kept it against 13/16 for text endings). The unattended
+    // kernel prefill keeps both sentences; finish carries its gates there.
+    assert_eq!(
+        TASK_BASE
+            .replace(" Then call finish.", "")
+            .replace(" Call finish only when answered or fully verified done.", ""),
+        harness::TASK_PROMPT
+    );
+    assert!(!harness::TASK_PROMPT.contains("finish"));
 }
 
 #[test]

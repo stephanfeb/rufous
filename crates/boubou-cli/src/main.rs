@@ -840,7 +840,7 @@ mod tests {
     fn the_two_product_presets_differ_in_name_prompt_and_the_coding_gate() {
         // The CLI is the one crate that sees both products. Both presets are the kernel's
         // conversation under their own name and their own copy of the task prefill (the
-        // same text); since bead boubou-78s the coding preset alone holds a turn once when
+        // same text, without the finish sentences since bead boubou-twe); since bead boubou-78s the coding preset alone holds a turn once when
         // a file the instruction asks to write got no write (the plan tool stood in for
         // tasks.md in the editor's tracker turns). General is not measured on that yet.
         let g = boubou_general::harness::policy();

@@ -86,11 +86,12 @@ Presets and who sets them:
 | `coding` (`boubou-coding::harness`) | on | none | off | off | the ACP server (`boubou acp`, Zed) |
 
 `general` and `coding` are each `TurnPolicy { name, prompt, ..conversation() }` in their
-product crate, with their own copy of the task prefill. The copies equal the kernel's
-`TASK_BASE` today, and the presets differ in name and prompt only: a test in each product
-crate pins its prompt to the kernel's, and one in `boubou-cli`, the crate that sees both,
-pins the presets to each other, so that the first divergence is a deliberate, documented
-change (step 10 below) and not drift.
+product crate, with their own copy of the task prefill. The copies are the kernel's
+`TASK_BASE` less its two sentences asking for finish (bead boubou-twe, 2026-11-02: in a
+conversation text ends the turn, and a finish summary taken as the reply dropped the standing
+instructions). A test in each product crate states that difference, and one in `boubou-cli`,
+the crate that sees both, pins the presets to each other, so that each divergence is a
+deliberate, documented change (step 10 below) and not drift.
 
 ## What is still entangled
 

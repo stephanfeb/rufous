@@ -2853,3 +2853,21 @@ gemma constraints r1 had a different failure in turn 2, a runaway generation:
 
 This is the first runaway of its kind in the convo rig. It is filed as bead boubou-60j (cut a
 salvaged text call's content at the end of the call).
+
+## Conversation prefill without the finish sentences (bead boubou-twe, 2026-11-02)
+
+The `general` and `coding` TASK_PROMPTs lose " Then call finish." (small talk) and " Call
+finish only when answered or fully verified done." (rules). The kernel's `TASK_BASE` keeps
+both for unattended runs, where finish carries the gates. The finish tool stays available, and
+the bridge still turns a summary into the closing message when a model uses it.
+
+Prompt size: 1298 to 1225 characters, 215 to 203 words. That is about 18 tokens fewer, and
+nothing is added.
+
+The test in each product crate that pinned its prompt to `TASK_BASE` now states the
+difference. `boubou-cli` still pins the two products to each other. 589 tests pass.
+
+To measure: constraints at n=3 per model. Read the turn pass rate, the share of turns ending in
+finish (qwen 14/30 over the two baselines) and calls per turn. A model that stops calling finish
+must still end its turn, so the text-ends-turn path and the empty-reply ladder need watching.
+Tracker and permission need a rerun too, because they finish through gate 3c.
