@@ -23,7 +23,7 @@ use crate::state::AppState;
 
 /// The single-page frontend (Mingbird's page, rebranded).
 pub const INDEX_HTML: &str = include_str!("../static/index.html");
-/// The brand mark (128 px, from `docs/rufous_logo.png`), served at `/logo.png`.
+/// The brand mark (128 px, from the site's `assets/img/rufous-icon-512.png`), served at `/logo.png`.
 pub const LOGO_PNG: &[u8] = include_bytes!("../static/logo.png");
 
 type St = State<Arc<AppState>>;

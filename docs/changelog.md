@@ -3072,3 +3072,9 @@ from, so it would otherwise hide a new server for up to five minutes.
 
 Tests: 8 kernel tests (`tests/mcp_edit.rs`) and one end-to-end CLI round trip.
 
+## Web UI logo (2026-11-02)
+
+The web UI's mark (`/logo.png`, which also serves as the favicon) was still the boubou. It is now the
+rufous hummingbird from the site's `assets/img/rufous-icon-512.png`, scaled to 128 px. The corners are
+now transparent rather than white, so the rounded square sits cleanly on the dark theme. The UI palette
+is unchanged: it was drawn from the boubou logo.
