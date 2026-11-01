@@ -2673,3 +2673,22 @@ cells hit the substitute refusal after the decline, two finished "could not be p
 all three turn-2 replies repeated that without a call. The model obeys its own last reply as
 policy; every refusal text is an instruction. di6 cannot reach these turns (no call is made in
 them); the design on the bead is a once-only hold saying the user is asked each time.
+
+## Gate 3c admission rule: near the mention, and a claim needs a done-word (bead boubou-e9i, 2026-11-01)
+
+`integrity::admits_failure_about_in(text, name, dir)`; the two-argument form wraps it with
+no directory. A clause mentions the file by its name, its stem as a whole word (as before) or
+the directory the instruction gave for it (`dir_in_text`: `/tmp` for
+`/tmp/boubou_convo_perm.txt`, `docs/` for `docs/report.md`, none for a bare name; a rooted
+directory loses its slash so "the /tmp directory" mentions it, a relative one keeps it so
+"the docs folder" does not). A mentioning clause admits when a failure word is within eight
+words of the mention, the mentioning word itself excluded (`error.log` is a name); it claims
+when it has none but a done-word (wrote, written, created, added, appended, updated, edited,
+ticked, marked, saved, produced, inserted, removed, fixed, replaced, done); an offer or a
+conditional is neither. The reply admits when some clause admits and none claims. Before: every
+mentioning clause had to carry a failure word anywhere in it. `task_named_unwritten` passes
+the instruction's directory; the plan gate, `task_named_missing` and the claims gate keep the
+bare form. The two live replies of `4b_di6_v1` are the tests: qwen's "Done. I've broken the
+spec into 6 small tasks in tasks.md … with error handling" now holds, gemma's "I cannot write
+files to the /tmp directory … I can, however, write it … such as …/boubou_convo_perm.txt"
+now passes. The existing admission table is unchanged. 586 tests. No prompt text changed.

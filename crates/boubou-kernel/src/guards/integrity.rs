@@ -549,18 +549,102 @@ fn has_failure_word(clause_lower: &str) -> bool {
     FAILURE_WORDS.iter().any(|w| clause_lower.contains(w))
 }
 
-/// Does `text` report failure about `name`? Every clause that mentions `name` must carry a
-/// failure word; with an empty `name`, any clause will do. "Download of dataset.csv failed"
-/// is a report, not a claim; "created dataset.csv" is a claim. A clause also mentions the
-/// file by its stem as a whole word ("the dataset download failed" for dataset.csv), since
-/// models rarely repeat the extension; stems under four characters are too common to count.
-pub fn admits_failure_about(text: &str, name: &str) -> bool {
+/// Words of a reply clause on either side of a mention that an admission must fall within
+/// (bead boubou-e9i): "currency conversion with error handling" sixteen words after
+/// `tasks.md` is not an admission about it.
+const ADMISSION_WINDOW: usize = 8;
+
+/// Verbs that make a clause naming the file a claim of having done it.
+static DONE_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(wrote|written|created|added|appended|updated|edited|ticked|marked|saved|produced|inserted|removed|fixed|replaced|done)\b",
+    )
+    .expect("regex")
+});
+
+/// The directory the instruction gave for `base` (`/tmp` for `/tmp/boubou_convo_perm.txt`,
+/// `docs/` for `docs/report.md`), `None` when the name is bare. A rooted directory loses
+/// its trailing slash so "the /tmp directory" mentions it; a relative one keeps it so
+/// "the docs folder" does not.
+pub fn dir_in_text(task_low: &str, base_low: &str) -> Option<String> {
+    let is_path_char = |c: char| c.is_ascii_alphanumeric() || "_./~-".contains(c);
+    for (pos, _) in task_low.match_indices(base_low) {
+        let head = &task_low[..pos];
+        let from = head
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_path_char(*c))
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(pos);
+        let dir = &head[from..];
+        if !dir.ends_with('/') || dir == "/" || dir == "./" {
+            continue;
+        }
+        return Some(if dir.starts_with(['/', '~']) {
+            dir.trim_end_matches('/').to_string()
+        } else {
+            dir.to_string()
+        });
+    }
+    None
+}
+
+/// Byte spans of the whitespace-separated words of `s`.
+fn word_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (i, c) in s.char_indices() {
+        match (c.is_whitespace(), start) {
+            (false, None) => start = Some(i),
+            (true, Some(b)) => {
+                spans.push((b, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(b) = start {
+        spans.push((b, s.len()));
+    }
+    spans
+}
+
+/// Is there a failure word within [`ADMISSION_WINDOW`] words of the mention at byte `at`,
+/// not counting the mentioning word itself (`error.log` is a name, not an admission)?
+fn failure_near(low: &str, at: usize) -> bool {
+    let spans = word_spans(low);
+    let Some(idx) = spans.iter().rposition(|(b, _)| *b <= at) else {
+        return false;
+    };
+    let lo = idx.saturating_sub(ADMISSION_WINDOW);
+    let hi = (idx + ADMISSION_WINDOW).min(spans.len().saturating_sub(1));
+    let around: Vec<&str> = (lo..=hi)
+        .filter(|i| *i != idx)
+        .map(|i| &low[spans[i].0..spans[i].1])
+        .collect();
+    has_failure_word(&around.join(" "))
+}
+
+/// Does `text` report failure about `name`? With an empty `name`, any clause with a failure
+/// word will do. Otherwise a clause mentions the file by its name, by its stem as a whole
+/// word ("the dataset download failed" for dataset.csv; stems under four characters are
+/// too common), or by the directory the instruction gave for it (`dir`, "cannot write
+/// files to the /tmp directory"). A mentioning clause admits when a failure word is within
+/// [`ADMISSION_WINDOW`] words of the mention; it claims when it has none but carries a
+/// done-word ("Done, tasks.md updated"); an offer or a conditional ("I can, however, write
+/// it to … such as X") is neither. The reply admits when some clause admits and none claims
+/// (bead boubou-e9i: "Done. I've broken the spec into tasks in tasks.md … with error
+/// handling" used to admit, and "I cannot write to the /tmp directory. I can, however,
+/// write it … such as …/boubou_convo_perm.txt" used to claim).
+pub fn admits_failure_about_in(text: &str, name: &str, dir: Option<&str>) -> bool {
     let name = name.to_lowercase();
     let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&name);
     let stem_re = (stem.len() >= 4 && stem != name)
         .then(|| Regex::new(&format!(r"\b{}\b", regex::escape(stem))).ok())
         .flatten();
-    let mut seen = false;
+    let dir = dir.map(str::to_lowercase).filter(|d| d.len() >= 3);
+    let mut admitted = false;
     for c in clauses(text) {
         let low = c.to_lowercase();
         if name.is_empty() {
@@ -569,14 +653,29 @@ pub fn admits_failure_about(text: &str, name: &str) -> bool {
             }
             continue;
         }
-        if low.contains(&name) || stem_re.as_ref().is_some_and(|r| r.is_match(&low)) {
-            seen = true;
-            if !has_failure_word(&low) {
-                return false;
-            }
+        let mut mentions: Vec<usize> = low.match_indices(name.as_str()).map(|(i, _)| i).collect();
+        if let Some(re) = &stem_re {
+            mentions.extend(re.find_iter(&low).map(|m| m.start()));
+        }
+        if let Some(d) = &dir {
+            mentions.extend(low.match_indices(d.as_str()).map(|(i, _)| i));
+        }
+        if mentions.is_empty() {
+            continue;
+        }
+        if mentions.iter().any(|&at| failure_near(&low, at)) {
+            admitted = true;
+        } else if DONE_WORD.is_match(&low) {
+            return false;
         }
     }
-    seen
+    admitted
+}
+
+/// [`admits_failure_about_in`] for a bare name: the finish gates' summaries name files
+/// without a directory of the instruction's to go by.
+pub fn admits_failure_about(text: &str, name: &str) -> bool {
+    admits_failure_about_in(text, name, None)
 }
 
 /// Words that introduce a file the task hands the agent: something to read, convert or edit.
@@ -800,10 +899,11 @@ pub fn task_named_unwritten(
         .filter_map(|f| {
             let low = f.to_lowercase();
             let base = base_of(&low);
+            let dir = dir_in_text(&task_low, &base);
             if NOT_DELIVERABLE.contains(&base.as_str())
                 || !names_as_write_target(&task_low, &low)
                 || general_failure
-                || admits_failure_about(reply, &base)
+                || admits_failure_about_in(reply, &base, dir.as_deref())
             {
                 return None;
             }
@@ -1045,6 +1145,79 @@ mod tests {
             "Successfully simulated the download of dataset.csv",
             ""
         ));
+    }
+
+    // Bead boubou-e9i: the two live replies of 4b_di6_v1 that the clause rule misread.
+    #[test]
+    fn an_admission_is_near_the_mention_and_a_claim_needs_a_done_word() {
+        let qwen = "Done. I've broken the spec into 6 small tasks in `tasks.md`, each focusing on a single concern: CLI parsing, CSV validation with line numbers, currency conversion with error handling, monthly grouping, markdown output generation, and year filtering.";
+        assert!(
+            !admits_failure_about(qwen, "tasks.md"),
+            "error handling, far away"
+        );
+        assert!(admits_failure_about(
+            "tasks.md: error, not written.",
+            "tasks.md"
+        ));
+        let gemma = "I cannot write files to the `/tmp` directory due to security restrictions. I can, however, write \"hello\" to a file within the current working directory, such as `/Users/x/work/boubou_convo_perm.txt`.";
+        assert!(
+            !admits_failure_about(gemma, "boubou_convo_perm.txt"),
+            "bare: the directory is unknown"
+        );
+        assert!(admits_failure_about_in(
+            gemma,
+            "boubou_convo_perm.txt",
+            Some("/tmp")
+        ));
+        // A claim beside an admission is still a claim.
+        assert!(!admits_failure_about_in(
+            "I cannot write to /tmp. I created boubou_convo_perm.txt in the workspace instead.",
+            "boubou_convo_perm.txt",
+            Some("/tmp")
+        ));
+        // The mentioning word is not its own admission.
+        assert!(!admits_failure_about(
+            "Wrote error.log with the trace.",
+            "error.log"
+        ));
+        assert!(admits_failure_about(
+            "Could not write error.log.",
+            "error.log"
+        ));
+        // The instruction's directory.
+        let low = |s: &str| s.to_lowercase();
+        assert_eq!(
+            dir_in_text(
+                &low("Write hello to /tmp/boubou_convo_perm.txt."),
+                "boubou_convo_perm.txt"
+            )
+            .as_deref(),
+            Some("/tmp")
+        );
+        assert_eq!(
+            dir_in_text(&low("Update docs/report.md."), "report.md").as_deref(),
+            Some("docs/")
+        );
+        assert_eq!(dir_in_text(&low("Update ./report.md."), "report.md"), None);
+        assert_eq!(dir_in_text(&low("Update tasks.md."), "tasks.md"), None);
+        // Through gate 3c with the live instructions.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wd = dir.path();
+        let t1 = "Break the spec in openspec/spec.md into small tasks in tasks.md, one `- [ ]` line each.";
+        assert_eq!(
+            task_named_unwritten(t1, qwen, &[], wd)
+                .into_iter()
+                .map(|u| u.name)
+                .collect::<Vec<_>>(),
+            ["tasks.md"]
+        );
+        let perm = "Write the single word hello to /tmp/boubou_convo_perm.txt.";
+        let declined = vec![CommandRecord::file_write(
+            "create_file",
+            "/tmp/boubou_convo_perm.txt",
+            false,
+        )];
+        assert!(task_named_unwritten(perm, gemma, &declined, wd).is_empty());
     }
 
     #[test]
