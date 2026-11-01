@@ -2753,3 +2753,33 @@ no-call turn 2) waits for this arm's number. Tests: gemma's di6_v1 r0 turn 1 as 
 messages to eight: claim, finish, hold note and refusal reply out, ledger in), the current
 turn and decline-free turns untouched, a reply before the decline kept, and the loop sending
 the ledger line with the switch on and the reply with it off. 589 tests.
+
+## Re-attribution measured: permission, release of 18:56, n=6 per model (2026-11-01)
+
+`bench/results/convo/4b_alj_a_v1`. Permission qwen3.5:4b 1.00 (12/12 turns), gemma4:e4b 0.92
+(11/12). The ledger line was sent in all twelve turn 2s. Turn 2 against the six runs before:
+
+| turn 1 shape | before (six runs) | arm A |
+|---|---|---|
+| at most one refusal text | 19/30 | 8/9 |
+| two or more refusal texts | 1/6 | 3/3 |
+| all | 20/36 | 11/12 |
+
+One-sided Fisher exact: all turn 2s p≈0.02; two-or-more p≈0.05; one refusal p≈0.15. n=6 per
+model is one run's worth; the direction and the two-or-more row are the reading, not the
+size. No turn 2 ended without a call (before: every miss was a no-call turn), so arm B (the
+hold) is not needed and is not built.
+
+The one miss is a new shape and the first live exercise of the cross-turn declined list (beads
+dml, vj3): gemma r1 turn 1 replied "I cannot write to /tmp … I can create the file in the
+current working directory. Would you like me to?"; turn 2, with that reply replaced by the
+ledger line, called `create_file boubou_convo_perm.txt` in the workspace. The gate asked
+`write the declined file name elsewhere: boubou_convo_perm.txt (declined at
+/private/tmp/boubou_convo_perm.txt in an earlier turn), now …/work/boubou_convo_perm.txt`, the
+rig's turn-2 policy allows every ask, and the file landed in the workspace. The harness did
+what it was built to do; the model wrote the wrong path. The rig answering "allow" to a
+substitute ask is generous to the model, not to the score: declining it would still miss
+`/tmp`.
+
+Tracker and longform have no declined write, so the view returns nothing there (unit-tested);
+they were not rerun.
