@@ -3005,7 +3005,7 @@ The repository folder is still `agentic/boubou`; renaming it is left to the user
 
 `.github/workflows/release.yml`: a pushed `v*` tag builds `rufous-cli` (default features, so no
 voice and no Tauri app) on GitHub's own runners for five targets:
-- `aarch64-apple-darwin`, and `x86_64-apple-darwin` cross-built on the same macos-14 runner;
+- `aarch64-apple-darwin`, and `x86_64-apple-darwin` cross-built on the same macos-15 runner;
 - `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` on ubuntu-22.04 (glibc 2.35);
 - `x86_64-pc-windows-msvc`.
 
@@ -3029,3 +3029,5 @@ The site's hero and download section now offer the install command and the five 
 "Build from source" is gone from the page. The README gains an Install section.
 
 The first release is v0.3.0: v0.2.0 is already a published checkpoint (2026-10-28), so the workspace version moved to 0.3.0 rather than moving that tag.
+
+The first v0.3.0 run lost both macOS jobs to GitHub's macos-14 retirement brownout (the image retires 2026-11-02); the workflow now builds them on macos-15.
