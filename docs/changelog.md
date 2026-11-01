@@ -2641,3 +2641,35 @@ create_file, edit_file under openspec/, a shell `>>` there), the file itself by 
 spellings including `openspec/../tasks.md` and the absolute path, nothing written at all
 (plain line as before), and an empty workdir (any directory accepted). The hold note's text
 is otherwise unchanged. 585 tests.
+
+## di6 measured: tracker, longform and permission on the 17:14 release, n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_di6_v1`. The wrong-directory write did not recur: six tracker cells,
+every write under `./tasks.md`, and the new hold bracket ("the write went to …") never
+appeared, so the resolution rule is live but unexercised. Scores: tracker qwen 0.83 (r0 t3
+`[✓] 1.`, r1 t1 see below, r2 4/4), gemma 0.92 (r1 t3: two todo calls on an empty plan, held
+once, then a text claim "I have marked Task 1 as done", the once-only limit); longform 1.00
+both; permission qwen 0.67, gemma 0.50. Ten gate 3c holds, nine converted to a write.
+
+Two misreads of gate 3c's admission rule, each confirmed by running the live reply through
+`admits_failure_about` (bead boubou-boubou-e9i): qwen tracker r1 t1 put the tasks in the todo tool and
+replied "Done. I've broken the spec into 6 small tasks in tasks.md … currency conversion with
+error handling …"; the clause naming the file has "error" sixteen words on, read as an
+admission, no hold, turn lost. gemma permission r2 t1 replied "I cannot write files to the
+/tmp directory … I can, however, write hello to … such as …/work/boubou_convo_perm.txt"; the
+admission names the directory, the offer names the file, read as a claim, held, and the model
+then tried the bare name in the workdir (refused by the substitute rule, correctly).
+
+Permission turn 2, the residual since v7, is now the largest one and has a shape (bead
+boubou-boubou-alj). Thirty cells over five runs, turn 2 passed:
+
+| turn 1 shape | cells | turn 2 passed |
+|---|---|---|
+| one declined call, text reply | 23 | 19 |
+| two or more refusal texts (substitute refusal and/or a 3c hold) | 7 | 1 |
+
+gemma's turn 2 over the five runs: 3/3, 2/3, 3/3, 1/3, 0/3. In di6_v1 all three gemma turn-1
+cells hit the substitute refusal after the decline, two finished "could not be produced", and
+all three turn-2 replies repeated that without a call. The model obeys its own last reply as
+policy; every refusal text is an instruction. di6 cannot reach these turns (no call is made in
+them); the design on the bead is a once-only hold saying the user is asked each time.
