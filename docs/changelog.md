@@ -2510,3 +2510,31 @@ failure report, or a second time), the three preset tests restated. Known cost: 
 "changes" as a noun matches the verb list. To measure: tracker_drift n=3 (t1/t3/t4 and the
 hold count in the log), permission (no false hold after a declined write), longform (no hold
 on the read-only turns).
+
+## Gate 3c measured: tracker, permission and longform on the 09:40 release, n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_gate_v1`. tracker_drift qwen3.5:4b 0.25 → 0.92, gemma4:e4b 0.58 →
+0.83 (4b_lt_v1 → here). The gate held eight turns in the whole run. Seven in tracker: every
+cell's turn 1 (the plan tool again took the tasks, `todo create` then a text reply or a finish
+saying tasks.md was done) and gemma r0's turn 3 (`todo update` for the tick); every hold was
+followed by a write to tasks.md (`create_file` ×5, `append_file`, a read then `edit_file`) and
+the turn then passed. The plan-tool class did not reach a score once. The remaining three
+tracker misses are a format class: `1. [x] …` (qwen r0 t3) and `[ ] 1. …` (gemma r1 t1, t3)
+without the `- ` the instruction spelt out, so the file's checkbox lines do not match
+`- \[ \]`; content right, dash gone when the model numbers the lines. One hold in permission
+was right: gemma r1 finished turn 1 with "Wrote hello to boubou_convo_perm.txt" after two
+substitute refusals, the hold bounced it, the model tried the substitute twice more (refused),
+then claimed it again in text and the turn ended with nothing landed. One hold was false: qwen
+r1 turn 2 reported "cannot write files outside workspace path" without naming the file, which
+`admits_failure_about` needs; one extra finish, same outcome (bead boubou-18l). Longform: 0
+holds on 60 turns, scores 10/10 ×6; permission 0.83 both, the turn-2 "still cannot" shape as
+before (qwen r1, gemma r2). Status tags: 6 boundary, 3 substitute, 1 error (gemma's
+`search_files` with a bad regex), 1 nochange, every ⚙ line one line now.
+
+The run also showed bead boubou-dml never took effect live: gemma r1 turn 2 wrote
+`boubou_convo_perm.txt` into the project with no dialog, because the ACP server builds a new
+Agent and `Gate::new` for every prompt (runner.rs `StandardFactory::new_turn`), so the declined
+list is empty at each editor turn's start; the kernel tests pass on one gate across `set_scope`
+calls, the CLI chat loop keeps one agent. Bead boubou-vj3: seed the gate's declined list from
+the ACP session and write it back at turn end. The v7 reading's "the later-turn ask did not
+fire" was right for the wrong reason.
