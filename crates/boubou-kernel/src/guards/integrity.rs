@@ -795,6 +795,17 @@ pub fn names_as_write_target(task_low: &str, file_low: &str) -> bool {
     seen && MUTATION_VERB.is_match(task_low)
 }
 
+/// Did this turn try a write that did not land: a file tool the executor refused or
+/// failed, or a shell command with a write target that exited non-zero or was refused?
+fn refused_write_attempt(cmds: &[CommandRecord]) -> bool {
+    cmds.iter()
+        .filter(|c| !c.succeeded())
+        .any(|c| match c.kind {
+            ActionKind::FileWrite => true,
+            ActionKind::Shell => !crate::safety::write_targets(&c.command).is_empty(),
+        })
+}
+
 /// The paths of this turn's landed writes: file tools that landed, and the write targets
 /// of shell commands that exited 0.
 fn landed_write_paths(cmds: &[CommandRecord]) -> Vec<String> {
@@ -890,9 +901,13 @@ pub fn task_named_unwritten(
     let task_low = task.to_lowercase();
     // A refusal phrased without the path ("cannot write files outside the workspace",
     // qwen3.5:4b, bead boubou-18l) admits failure about every named file: the hold is
-    // for claims and silence. A reply that names some file keeps the per-file rule.
-    let general_failure =
-        artifacts::files_in_text(reply).is_empty() && admits_failure_about(reply, "");
+    // for claims and silence. A reply that names some file keeps the per-file rule. It
+    // counts only when a write was tried this turn and did not land (bead boubou-kxz:
+    // gemma4:e4b, its todo call refused on an empty plan, replied "I encountered an
+    // internal system error … cannot proceed" and tasks.md was never touched).
+    let general_failure = artifacts::files_in_text(reply).is_empty()
+        && admits_failure_about(reply, "")
+        && refused_write_attempt(cmds);
     let written = landed_write_paths(cmds);
     artifacts::files_in_text(task)
         .into_iter()
@@ -1488,13 +1503,41 @@ mod tests {
         )
         .is_empty());
         // Bead boubou-18l: a failure report that names no file admits it for every file;
-        // one that names another file does not.
-        assert!(task_named_unwritten(
-            perm,
-            "Responded directly to user's request - cannot write files outside workspace path due to security restrictions",
-            &none
-        , wd)
-        .is_empty());
+        // one that names another file does not. Bead boubou-kxz: only after a write was
+        // tried this turn and did not land; without an attempt it is held.
+        let general = "Responded directly to user's request - cannot write files outside workspace path due to security restrictions";
+        let declined = vec![CommandRecord::file_write(
+            "create_file",
+            "/tmp/boubou_convo_perm.txt",
+            false,
+        )];
+        assert!(task_named_unwritten(perm, general, &declined, wd).is_empty());
+        assert_eq!(
+            names(task_named_unwritten(perm, general, &none, wd)),
+            ["boubou_convo_perm.txt"]
+        );
+        // gemma4:e4b, 4b_e9i_v1 tracker r1 t3: the failure was the todo tool's.
+        let todo_only: Vec<CommandRecord> = Vec::new();
+        assert_eq!(
+            names(task_named_unwritten(
+                t3,
+                "I encountered an internal system error when trying to mark the task as done, as the task plan does not appear to be registered in the current state of the task tracking system. I cannot proceed with the update using the current tools.",
+                &todo_only,
+                wd
+            )),
+            ["tasks.md"]
+        );
+        // A refused shell write counts as an attempt; a failed read-only command does not.
+        let shell_refused = vec![CommandRecord::from_result(
+            "echo hello > /tmp/boubou_convo_perm.txt",
+            "[exit 1]\nSTDERR:\nPermission denied\n",
+        )];
+        assert!(task_named_unwritten(perm, general, &shell_refused, wd).is_empty());
+        let read_failed = vec![CommandRecord::from_result("cat notes.txt", "[exit 1]\n")];
+        assert_eq!(
+            names(task_named_unwritten(perm, general, &read_failed, wd)),
+            ["boubou_convo_perm.txt"]
+        );
         assert_eq!(
             names(task_named_unwritten(
                 perm,

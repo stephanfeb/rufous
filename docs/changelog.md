@@ -2783,3 +2783,21 @@ substitute ask is generous to the model, not to the score: declining it would st
 
 Tracker and longform have no declined write, so the view returns nothing there (unit-tested);
 they were not rerun.
+
+## Gate 3c: a failure report naming no file needs a refused write this turn (bead boubou-kxz, 2026-11-01)
+
+The general-failure pass of bead 18l (a reply that names no file and has a failure word
+admits failure for every named file) now counts only when the turn's ledger holds a write
+that did not land: a file tool refused or failed, or a shell command with a write target that
+exited non-zero. `4b_e9i_v1` gemma tracker r1 t3 is the case: its only call was `todo update`
+on an empty plan, it replied "I encountered an internal system error … I cannot proceed with
+the update using the current tools", and tasks.md was excused untouched. Now held once.
+
+This reverses 18l's own cell on purpose: qwen permission r1 turn 2 of `4b_gate_v1` finished
+"cannot write files outside workspace path" with no call that turn, and would be held again.
+A refusal with no attempt this turn is the model obeying an earlier turn, which the
+re-attribution measurement showed is the failure; the hold costs one call, and with
+re-attribution live the no-call turn 2s fell from 16/36 to 0/12. A refusal after a refused
+attempt passes as 18l wanted. Tests: the gemma reply (held), the 18l reply with and without a
+declined create_file, a refused shell redirect (an attempt) and a failed `cat` (not one). No
+prompt change. 589 tests.
