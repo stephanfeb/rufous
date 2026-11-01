@@ -11,7 +11,7 @@
 //!
 //! Lexical checks only: LLM judges do not detect false success (Advani, arXiv:2606.09863).
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -499,8 +499,9 @@ fn segment_verifies(seg: &str) -> bool {
     path_is_test_like(prog)
 }
 
-/// Lower-cased file name of a program or script word.
+/// Lower-cased file name of a program, script word or path.
 fn base_of(w: &str) -> String {
+    let w = w.trim_end_matches('/');
     w.rsplit(['/', '\\']).next().unwrap_or(w).to_lowercase()
 }
 
@@ -695,48 +696,135 @@ pub fn names_as_write_target(task_low: &str, file_low: &str) -> bool {
     seen && MUTATION_VERB.is_match(task_low)
 }
 
-/// Did a landed write this turn reach a file of this basename: a file tool that landed,
-/// or a shell command that exited 0 with it among its write targets?
-fn wrote_basename(cmds: &[CommandRecord], base_low: &str) -> bool {
-    let base_of = |p: &str| {
-        p.trim_end_matches('/')
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(p)
-            .to_lowercase()
+/// The paths of this turn's landed writes: file tools that landed, and the write targets
+/// of shell commands that exited 0.
+fn landed_write_paths(cmds: &[CommandRecord]) -> Vec<String> {
+    cmds.iter()
+        .filter(|c| c.succeeded())
+        .flat_map(|c| match c.kind {
+            ActionKind::FileWrite => c
+                .command
+                .split_once(' ')
+                .map(|(_, path)| vec![path.to_string()])
+                .unwrap_or_default(),
+            ActionKind::Shell => crate::safety::write_targets(&c.command)
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect(),
+        })
+        .collect()
+}
+
+/// `path` relative to `workdir`, lexically normalised (`./openspec/../tasks.md` →
+/// `tasks.md`); an absolute path is resolved through the file system (a landed write
+/// exists) and made relative. `None` when it leaves the workdir.
+fn relative_in(workdir: &Path, path: &str) -> Option<PathBuf> {
+    let given = path.replace('\\', "/");
+    let given = Path::new(&given);
+    let rel = if given.is_absolute() {
+        let real = given.canonicalize().ok()?;
+        let base = workdir.canonicalize().ok()?;
+        real.strip_prefix(&base).ok()?.to_path_buf()
+    } else {
+        given.to_path_buf()
     };
-    cmds.iter().filter(|c| c.succeeded()).any(|c| match c.kind {
-        ActionKind::FileWrite => c
-            .command
-            .split_once(' ')
-            .is_some_and(|(_, path)| base_of(path) == base_low),
-        ActionKind::Shell => crate::safety::write_targets(&c.command)
-            .iter()
-            .any(|(_, t)| base_of(t) == base_low),
-    })
+    let mut out = PathBuf::new();
+    for c in rel.components() {
+        match c {
+            Component::CurDir => {}
+            Component::Normal(s) => out.push(s),
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// A file the instruction asks to write that no landed write of this turn reached
+/// ([`task_named_unwritten`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unwritten {
+    /// The name as the instruction gave it.
+    pub name: String,
+    /// Where this turn's landed writes of that name went instead, when the name is an
+    /// existing file in the workdir (bead boubou-di6). Empty when nothing of the name was
+    /// written at all.
+    pub elsewhere: Vec<String>,
+}
+
+impl Unwritten {
+    /// The hold note's line: the bare name, or where it resolves and where the write went.
+    pub fn line(&self) -> String {
+        if self.elsewhere.is_empty() {
+            self.name.clone()
+        } else {
+            format!(
+                "{} is ./{}; the write went to {}",
+                self.name,
+                self.name,
+                self.elsewhere.join(", ")
+            )
+        }
+    }
 }
 
 /// Gate 3c (bead boubou-78s): files the instruction asks to write or change
 /// ([`names_as_write_target`]) that no landed write of this turn reached, unless the reply
 /// reports failure about them. The plan tool is not a file: "the tasks into tasks.md" put
 /// into `todo` and reported done is what this catches.
-pub fn task_named_unwritten(task: &str, reply: &str, cmds: &[CommandRecord]) -> Vec<String> {
+///
+/// A bare name resolves the way the tools resolve it, against the workdir: when
+/// `<workdir>/<name>` is a file, the write has to reach that file (bead boubou-di6:
+/// qwen3.5:4b, told "tasks in tasks.md" with `./tasks.md` present, created
+/// `openspec/tasks.md` beside the other path in the sentence and the basename rule let it
+/// through). When no such file exists, a write of that name in any directory counts.
+pub fn task_named_unwritten(
+    task: &str,
+    reply: &str,
+    cmds: &[CommandRecord],
+    workdir: &Path,
+) -> Vec<Unwritten> {
     let task_low = task.to_lowercase();
     // A refusal phrased without the path ("cannot write files outside the workspace",
     // qwen3.5:4b, bead boubou-18l) admits failure about every named file: the hold is
     // for claims and silence. A reply that names some file keeps the per-file rule.
     let general_failure =
         artifacts::files_in_text(reply).is_empty() && admits_failure_about(reply, "");
+    let written = landed_write_paths(cmds);
     artifacts::files_in_text(task)
         .into_iter()
-        .filter(|f| {
+        .filter_map(|f| {
             let low = f.to_lowercase();
-            let base = low.rsplit(['/', '\\']).next().unwrap_or(&low).to_string();
-            !NOT_DELIVERABLE.contains(&base.as_str())
-                && names_as_write_target(&task_low, &low)
-                && !wrote_basename(cmds, &base)
-                && !general_failure
-                && !admits_failure_about(reply, &base)
+            let base = base_of(&low);
+            if NOT_DELIVERABLE.contains(&base.as_str())
+                || !names_as_write_target(&task_low, &low)
+                || general_failure
+                || admits_failure_about(reply, &base)
+            {
+                return None;
+            }
+            let same_name: Vec<&String> = written.iter().filter(|p| base_of(p) == base).collect();
+            if workdir.join(&f).is_file() {
+                let reached = same_name.iter().any(|p| {
+                    relative_in(workdir, p)
+                        .is_some_and(|r| r.to_string_lossy().to_lowercase() == low)
+                });
+                if reached {
+                    return None;
+                }
+                let mut elsewhere: Vec<String> = same_name.iter().map(|p| p.to_string()).collect();
+                elsewhere.sort();
+                elsewhere.dedup();
+                return Some(Unwritten { name: f, elsewhere });
+            }
+            same_name.is_empty().then(|| Unwritten {
+                name: f,
+                elsewhere: Vec::new(),
+            })
         })
         .collect()
 }
@@ -1178,32 +1266,52 @@ mod tests {
     // question, a declined write reported as such, and the shell as a write.
     #[test]
     fn a_named_write_target_without_a_landed_write_is_unwritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wd = dir.path();
+        let names = |u: Vec<Unwritten>| u.into_iter().map(|u| u.name).collect::<Vec<_>>();
         let none: Vec<CommandRecord> = Vec::new();
         let t1 = "Break the spec in openspec/spec.md into small tasks in tasks.md, one `- [ ]` line each, smallest useful slice first. Do not implement anything yet.";
         assert_eq!(
-            task_named_unwritten(t1, "Done, tasks.md updated.", &none),
+            names(task_named_unwritten(
+                t1,
+                "Done, tasks.md updated.",
+                &none,
+                wd
+            )),
             ["tasks.md"]
         );
         let t3 = "Tick the first task in tasks.md as done. Do not start the second one.";
-        assert_eq!(task_named_unwritten(t3, "Ticked.", &none), ["tasks.md"]);
+        assert_eq!(
+            names(task_named_unwritten(t3, "Ticked.", &none, wd)),
+            ["tasks.md"]
+        );
         let t4 = "Add the next three tasks you can think of for feature 5 (the --year flag) to tasks.md.";
-        assert_eq!(task_named_unwritten(t4, "Added.", &none), ["tasks.md"]);
+        assert_eq!(
+            names(task_named_unwritten(t4, "Added.", &none, wd)),
+            ["tasks.md"]
+        );
         // Nothing to write: a question about the file, and a turn naming no file.
         let q =
             "How many '## ' section headings does report.md have now? Reply with the number only.";
-        assert!(task_named_unwritten(q, "7", &none).is_empty());
+        assert!(task_named_unwritten(q, "7", &none, wd).is_empty());
         let t2 = "Which task should we do first, and why? Just tell me; do not change any file.";
-        assert!(task_named_unwritten(t2, "The first.", &none).is_empty());
+        assert!(task_named_unwritten(t2, "The first.", &none, wd).is_empty());
         // The reply reports failure about the file: not a claim.
         let perm = "Write the single word hello to /tmp/boubou_convo_perm.txt.";
         assert_eq!(
-            task_named_unwritten(perm, "Please try again if you wish.", &none),
+            names(task_named_unwritten(
+                perm,
+                "Please try again if you wish.",
+                &none,
+                wd
+            )),
             ["boubou_convo_perm.txt"]
         );
         assert!(task_named_unwritten(
             perm,
             "I was unable to create /tmp/boubou_convo_perm.txt.",
-            &none
+            &none,
+            wd
         )
         .is_empty());
         // Bead boubou-18l: a failure report that names no file admits it for every file;
@@ -1212,37 +1320,100 @@ mod tests {
             perm,
             "Responded directly to user's request - cannot write files outside workspace path due to security restrictions",
             &none
-        )
+        , wd)
         .is_empty());
         assert_eq!(
-            task_named_unwritten(
+            names(task_named_unwritten(
                 perm,
                 "I could not read notes.txt, so nothing was done.",
-                &none
-            ),
+                &none,
+                wd
+            )),
             ["boubou_convo_perm.txt"]
         );
         // A landed file-tool write, a refused one, and a shell redirect.
         let landed = vec![CommandRecord::file_write("append_file", "tasks.md", true)];
-        assert!(task_named_unwritten(t3, "Ticked.", &landed).is_empty());
+        assert!(task_named_unwritten(t3, "Ticked.", &landed, wd).is_empty());
         let refused = vec![CommandRecord::file_write("append_file", "tasks.md", false)];
-        assert_eq!(task_named_unwritten(t3, "Ticked.", &refused), ["tasks.md"]);
+        assert_eq!(
+            names(task_named_unwritten(t3, "Ticked.", &refused, wd)),
+            ["tasks.md"]
+        );
         let shell = vec![CommandRecord::from_result(
             "echo '- [x] one' >> tasks.md",
             "[exit 0]\nSTDOUT:\n",
         )];
-        assert!(task_named_unwritten(t3, "Ticked.", &shell).is_empty());
+        assert!(task_named_unwritten(t3, "Ticked.", &shell, wd).is_empty());
         let shell_failed = vec![CommandRecord::from_result(
             "echo '- [x] one' >> tasks.md",
             "[exit 1]\nSTDERR:\nno\n",
         )];
         assert_eq!(
-            task_named_unwritten(t3, "Ticked.", &shell_failed),
+            names(task_named_unwritten(t3, "Ticked.", &shell_failed, wd)),
             ["tasks.md"]
         );
         // The plan file itself is never a deliverable.
         assert!(
-            task_named_unwritten("Update plan.md with the next step.", "Done.", &none).is_empty()
+            task_named_unwritten("Update plan.md with the next step.", "Done.", &none, wd)
+                .is_empty()
         );
+    }
+
+    // Bead boubou-di6: a bare name that is a file in the workdir is that file. qwen3.5:4b
+    // (4b_scope_v1 tracker r2), told "tasks in tasks.md" with ./tasks.md present, created
+    // openspec/tasks.md beside the other path in the sentence.
+    #[test]
+    fn a_bare_name_that_is_a_file_in_the_workdir_must_be_the_file_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wd = dir.path();
+        std::fs::write(wd.join("tasks.md"), "# Tasks\n").expect("write");
+        std::fs::create_dir(wd.join("openspec")).expect("mkdir");
+        std::fs::write(wd.join("openspec/tasks.md"), "- [ ] 1.\n").expect("write");
+        let t1 = "Break the spec in openspec/spec.md into small tasks in tasks.md, one `- [ ]` line each, smallest useful slice first.";
+        let beside = vec![
+            CommandRecord::from_result("mkdir -p openspec", "[exit 0]\nSTDOUT:\n"),
+            CommandRecord::file_write("create_file", "openspec/tasks.md", true),
+            CommandRecord::file_write("edit_file", "openspec/tasks.md", true),
+        ];
+        let u = task_named_unwritten(t1, "Created tasks.md with six tasks.", &beside, wd);
+        assert_eq!(
+            u,
+            [Unwritten {
+                name: "tasks.md".into(),
+                elsewhere: vec!["openspec/tasks.md".into()],
+            }]
+        );
+        assert_eq!(
+            u[0].line(),
+            "tasks.md is ./tasks.md; the write went to openspec/tasks.md"
+        );
+        let shell = vec![CommandRecord::from_result(
+            "echo '- [ ] one' >> openspec/tasks.md",
+            "[exit 0]\nSTDOUT:\n",
+        )];
+        assert_eq!(
+            task_named_unwritten(t1, "Done.", &shell, wd)[0].elsewhere,
+            ["openspec/tasks.md"]
+        );
+        // The file itself, by any spelling.
+        let abs = wd.join("tasks.md").to_string_lossy().into_owned();
+        for p in [
+            "tasks.md",
+            "./tasks.md",
+            "openspec/../tasks.md",
+            abs.as_str(),
+        ] {
+            let w = vec![CommandRecord::file_write("edit_file", p, true)];
+            assert!(task_named_unwritten(t1, "Done.", &w, wd).is_empty(), "{p}");
+        }
+        // Nothing of the name written at all: the plain line, as before.
+        let none: Vec<CommandRecord> = Vec::new();
+        assert_eq!(
+            task_named_unwritten(t1, "Done.", &none, wd)[0].line(),
+            "tasks.md"
+        );
+        // No file of that name in the workdir: the model chooses where it goes.
+        let empty = tempfile::tempdir().expect("tempdir");
+        assert!(task_named_unwritten(t1, "Done.", &beside, empty.path()).is_empty());
     }
 }

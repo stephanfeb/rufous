@@ -2607,3 +2607,37 @@ follow_ups 2 and 4 class code. The lrab bench-task guard (no task read as tracke
 source deliverables) and the scope replay corpus still pass; 584 tests. Nothing in the prompt.
 To see: the next tracker_drift run should log `class=tracker guarded` on three turns; the
 arrest itself still needs a session that drifts, and none stored does.
+
+## Scope classifier v2 live, release of 16:27, n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_scope_v1`. The log lines are the result: every tracker turn 1, 3 and 4
+reads `class=tracker guarded` (6/6 each), turn 2 `mixed open`; longform turns 1 and 10
+`docs guarded`, turn 4 `mixed open` on "migration"; permission `mixed open`. No ask titled
+"outside the instruction" (none expected: the scripts write no source file), guarded source
+writes 0. Scores: tracker gemma 1.00 (12/12, first time; four holds, all converted), qwen 0.75;
+longform 1.00 and 0.97 (gemma r1 answered 8 for a file with 8 headings, a section appended
+twice); permission 0.83 and 0.67, the turn-2 "still cannot" shape in three cells, untouched by
+this change (gemma's turn 2 over the last five runs: 2, 3, 2, 3, 1 of 3). qwen tracker r2 1/4
+is a new shape: after the hold the model ran `mkdir -p openspec` and created
+`openspec/tasks.md`, next to the other path in the sentence, while `./tasks.md` was the file;
+gate 3c's basename rule accepted it, turns 3 and 4 edited the wrong file (bead boubou-boubou-di6: when
+one file of that bare name exists, the write has to reach it). Tags: six boundary refusals,
+nothing else.
+
+## Gate 3c: a bare name that is a file in the workdir is that file (bead boubou-di6, 2026-11-01)
+
+`integrity::task_named_unwritten` now takes the workdir and returns `Unwritten { name,
+elsewhere }`. A bare name in the instruction resolves the way the tools resolve it, against
+the workdir: when `<workdir>/<name>` is a file, a landed write counts only if its path
+resolves to that file (lexical normalisation for a relative path, the file system for an
+absolute one); when no such file exists the basename rule stays, the model chooses the
+directory. The hold line for the miss is `tasks.md is ./tasks.md; the write went to
+openspec/tasks.md`, in the note's bullet and in the log line's bracket after "this turn".
+The bead's first design said "exactly one file of that basename under the workdir"; amended
+before code because that is a whole-tree walk at every finish in a Zed project and, at
+finish time, the model's own new file is already in the tree, so "exactly one" would need a
+turn-start snapshot. One stat per named file instead. Tests: the qwen sequence (mkdir,
+create_file, edit_file under openspec/, a shell `>>` there), the file itself by four
+spellings including `openspec/../tasks.md` and the absolute path, nothing written at all
+(plain line as before), and an empty workdir (any directory accepted). The hold note's text
+is otherwise unchanged. 585 tests.

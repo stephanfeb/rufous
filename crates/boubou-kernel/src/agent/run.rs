@@ -1344,11 +1344,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // reply does not say why.
                     if turn.gates.has(Gate::NamedWrites) && named_writes_warns < 1 {
                         let task_text = qa::task_original_text(&messages, 100_000);
-                        let unwritten =
-                            integrity::task_named_unwritten(&task_text, &content, &cmd_records);
+                        let unwritten = integrity::task_named_unwritten(
+                            &task_text,
+                            &content,
+                            &cmd_records,
+                            workdir,
+                        );
                         if !unwritten.is_empty() {
                             named_writes_warns += 1;
-                            log!("[{i}] ⚠️ named-write check: the instruction names {unwritten:?} but nothing was written to them this turn, reply held once");
+                            let (names, went) = named_writes_log(&unwritten);
+                            log!("[{i}] ⚠️ named-write check: the instruction names {names:?} but nothing was written to them this turn{went}, reply held once");
                             messages.push(Message::user(named_writes_note(
                                 "Your reply was held",
                                 &unwritten,
@@ -1821,11 +1826,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // holds a text reply that would end the turn (below).
                     if turn.gates.has(Gate::NamedWrites) && named_writes_warns < 1 {
                         let task_text = qa::task_original_text(&messages, 100_000);
-                        let unwritten =
-                            integrity::task_named_unwritten(&task_text, &summary, &cmd_records);
+                        let unwritten = integrity::task_named_unwritten(
+                            &task_text,
+                            &summary,
+                            &cmd_records,
+                            workdir,
+                        );
                         if !unwritten.is_empty() {
                             named_writes_warns += 1;
-                            log!("[{i}] ⚠️ named-write check: the instruction names {unwritten:?} but nothing was written to them this turn, finish rejected");
+                            let (names, went) = named_writes_log(&unwritten);
+                            log!("[{i}] ⚠️ named-write check: the instruction names {names:?} but nothing was written to them this turn{went}, finish rejected");
                             messages.push(Message::user(named_writes_note(
                                 "Your finish was rejected",
                                 &unwritten,
@@ -2324,12 +2334,30 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
 /// Gate 3c's note (bead boubou-78s): the plan tool is named as what it is, since both 4B
 /// models put the file's content there and called the file done.
-fn named_writes_note(opening: &str, files: &[String], workdir: &Path) -> String {
+fn named_writes_note(opening: &str, files: &[integrity::Unwritten], workdir: &Path) -> String {
+    let lines: Vec<String> = files.iter().map(integrity::Unwritten::line).collect();
     format!(
         "⚠️ {opening}: the instruction names these files, but nothing was written to them this turn:\n{}\nThe todo plan is the harness's own list, not a file. Write to the file itself with create_file, edit_file or append_file, then reply again; if it cannot or should not be written, say so and why.{}",
-        bullet(files),
+        bullet(&lines),
         ws_note(workdir)
     )
+}
+
+/// The log line's parts for gate 3c: the names, and ` (name is ./name; the write went to
+/// …)` for the ones written at another path (bead boubou-di6), or nothing.
+fn named_writes_log(files: &[integrity::Unwritten]) -> (Vec<&str>, String) {
+    let names = files.iter().map(|u| u.name.as_str()).collect();
+    let went: Vec<String> = files
+        .iter()
+        .filter(|u| !u.elsewhere.is_empty())
+        .map(integrity::Unwritten::line)
+        .collect();
+    let went = if went.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", went.join("; "))
+    };
+    (names, went)
 }
 
 fn bullet(items: &[String]) -> String {
