@@ -3106,3 +3106,10 @@ v0.3.1 adds the following since v0.3.0:
 - `rufous mcp add/list/get/remove`.
 - The rufous logo in the web UI.
 - The Windows test fixes.
+
+## Desktop app icon (2026-11-02)
+
+`crates/rufous-app/icons/icon.png` was a placeholder silhouette. It is now the rufous hummingbird,
+256 px, from the same `rufous-icon-512.png` as the web UI's mark. The rounded square fills about 80%
+of the canvas, the margin macOS icons use, and the rest is transparent. Bundling is still off in
+`tauri.conf.json`, so this is the window and dock icon only.
