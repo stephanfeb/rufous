@@ -3078,3 +3078,15 @@ The web UI's mark (`/logo.png`, which also serves as the favicon) was still the 
 rufous hummingbird from the site's `assets/img/rufous-icon-512.png`, scaled to 128 px. The corners are
 now transparent rather than white, so the rounded square sits cleanly on the dark theme. The UI palette
 is unchanged: it was drawn from the boubou logo.
+
+## CI on Windows: the replay corpus is unix-only (beads boubou-tfr, boubou-9ox, 2026-11-02)
+
+With the stop test fixed, Windows CI (run 41357337614) reached `tests/replay.rs` for the first time,
+and 40 of its 68 entries were refused. The corpus is POSIX commands recorded on macOS. On Windows,
+`{workdir}` becomes `C:\Users\…`, and the gate's drive-path escape patterns (`BASH_ESCAPE_PATTERNS`)
+match any absolute drive path after `cat`, `cd`, `rm` and the like, whether or not the path is inside
+the working directory. The test is unattended, so each of those commands is refused.
+
+On Windows, then, rufous asks before a command that names its own working directory by an absolute
+path. That is over-cautious rather than a hole. The fix is a gate change, so it waits for a design in
+bead boubou-9ox; until then `tests/replay.rs` is `#![cfg(unix)]`.
