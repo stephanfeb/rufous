@@ -23,6 +23,26 @@ from Mexico to Alaska and back every year. Small does not have to mean limited, 
 this harness makes on small models. *Rufous* means rust-coloured; it is written in Rust. (Until
 the alpha the project was called boubou, after the Southern boubou, a bush-shrike.)
 
+## Install
+
+```sh
+curl -fsSL https://rufous.chat/install.sh | sh
+```
+
+The script downloads the release archive for your machine from this repository's GitHub
+releases, checks its SHA-256 and puts `rufous` in `~/.local/bin` (no sudo). `RUFOUS_VERSION=v0.2.0`
+pins a release; `RUFOUS_INSTALL_DIR` picks another directory. Builds exist for macOS (Apple
+silicon, Intel), Linux (x86_64, arm64; glibc 2.35 or newer) and Windows (a zip on the releases
+page). Then run a model under [Ollama](https://ollama.com) and check the setup:
+
+```sh
+ollama pull qwen3.5:4b
+rufous doctor
+```
+
+A release is cut by pushing a `v*` tag: `.github/workflows/release.yml` builds each target and
+publishes the archives the script fetches.
+
 ## Status
 
 Core in progress. Typed protocol, config, skills, Ollama client, the five-ring safety gate,

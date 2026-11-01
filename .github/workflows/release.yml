@@ -1,0 +1,72 @@
+name: release
+# A pushed tag v* builds the `rufous` CLI for each target on GitHub's own runners and publishes
+# a GitHub release with one archive and one .sha256 per target (bead boubou-7y7). The asset
+# names are what https://rufous.chat/install.sh downloads; change them together.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked -p rufous-cli --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          name=rufous-${{ matrix.target }}
+          mkdir -p dist/$name
+          cp target/${{ matrix.target }}/release/rufous LICENSE README.md dist/$name/
+          tar -C dist -czf dist/$name.tar.gz $name
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum $name.tar.gz > $name.tar.gz.sha256
+          else shasum -a 256 $name.tar.gz > $name.tar.gz.sha256; fi
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "rufous-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rufous.exe", LICENSE, README.md "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          $h = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$h  $name.zip" | Out-File -Encoding ascii -NoNewline "dist/$name.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rufous-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: rufous ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          # Not a prerelease: install.sh resolves releases/latest/download/<asset>, which
+          # skips prereleases.
+          prerelease: false

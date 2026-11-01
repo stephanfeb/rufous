@@ -3000,3 +3000,30 @@ real Southern boubou.
 589 Rust tests, 66 bench tests and clippy (as CI runs it) pass. Two kernel `ollama_proc` tests
 failed once each on a port already in use, with Ollama live on 11434, and passed on the rerun.
 The repository folder is still `agentic/boubou`; renaming it is left to the user.
+
+## Release binaries and a one-line installer (bead boubou-7y7, 2026-11-02)
+
+`.github/workflows/release.yml`: a pushed `v*` tag builds `rufous-cli` (default features, so no
+voice and no Tauri app) on GitHub's own runners for five targets:
+- `aarch64-apple-darwin`, and `x86_64-apple-darwin` cross-built on the same macos-14 runner;
+- `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` on ubuntu-22.04 (glibc 2.35);
+- `x86_64-pc-windows-msvc`.
+
+It then publishes one archive per target (`rufous-<target>.tar.gz`, a `.zip` for Windows) with a
+`.sha256` beside each. The release is not marked prerelease, so that `releases/latest/download`
+resolves.
+
+`install.sh` lives in the rufous.chat repository and is served at
+https://rufous.chat/install.sh. It maps `uname` to a target, downloads the archive and its
+checksum, verifies it and installs to `~/.local/bin` without sudo. `RUFOUS_VERSION` pins a tag
+and `RUFOUS_INSTALL_DIR` picks another directory.
+
+Tested here:
+- an end-to-end install against a local stand-in release;
+- a tampered checksum, which stops the install with exit 1;
+- a local `--locked` build and the Intel macOS cross-build.
+
+The workflow itself runs for the first time on the first tag.
+
+The site's hero and download section now offer the install command and the five archives;
+"Build from source" is gone from the page. The README gains an Install section.
