@@ -3095,3 +3095,14 @@ With `--no-fail-fast`, run 41358388784 listed the rest: three tests that assumed
 separator. The safety test now normalises `\` before matching the refused target, which Windows
 resolves to `C:\tmp\…`. The skill-folder tests now compare `Path`s instead of display strings.
 Nothing outside the tests changed.
+
+## v0.3.1 (2026-11-02)
+
+CI run 41359077125 on 44cccb9 is green on all three systems, the first fully green run since 2026-10-31.
+
+v0.3.1 adds the following since v0.3.0:
+- On Linux, killpg(2) now kills a timed-out or stopped command's child processes. Under v0.3.0 they
+  could outlive the kill.
+- `rufous mcp add/list/get/remove`.
+- The rufous logo in the web UI.
+- The Windows test fixes.

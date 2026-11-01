@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "rufous-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rufous-general",
  "rufous-kernel",
@@ -3610,7 +3610,7 @@ dependencies = [
 
 [[package]]
 name = "rufous-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "rufous-coding"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-client-protocol",
  "chrono",
@@ -3641,7 +3641,7 @@ dependencies = [
 
 [[package]]
 name = "rufous-general"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3660,7 +3660,7 @@ dependencies = [
 
 [[package]]
 name = "rufous-kernel"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -3685,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "rufous-voice"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "reqwest",
  "rufous-kernel",
