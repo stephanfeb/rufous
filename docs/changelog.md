@@ -2801,3 +2801,23 @@ re-attribution live the no-call turn 2s fell from 16/36 to 0/12. A refusal after
 attempt passes as 18l wanted. Tests: the gemma reply (held), the 18l reply with and without a
 declined create_file, a refused shell redirect (an attempt) and a failed `cat` (not one). No
 prompt change. 589 tests.
+
+## kxz measured: tracker and permission on the 19:13 release, n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_kxz_v1`. Tracker qwen 1.00 (12/12, first full score), gemma 0.83;
+permission qwen 1.00, gemma 0.83. The ledger line went out in all six turn 2s; every turn 2
+made a call. Seven gate 3c holds, all on claims or plan-tool turns, all followed by a write.
+kxz's own shape (a no-file failure reply after only a todo call) did not occur, so it is live
+but unexercised; gemma r2 t3's hold answered "Task 1 has been marked as complete in tasks.md"
+after a todo call, a claim the per-file rule holds anyway, and the edit followed.
+
+Misses:
+- gemma tracker r1 t1 and t3: `[ ] 1. [ ] Define …` with no dash, ticked as `[x] 1. [x]`; the
+  checkbox-format residual, the file was written both times.
+- gemma permission r2 t2: turn 1 tried the bare name in the workspace and the substitute rule
+  refused it; turn 2, with the ledger line in place of the reply, created the workspace copy
+  again, the cross-turn ask fired under the declined name, the rig's turn-2 "allow" approved
+  it. Second gemma cell of this shape in two runs. The rig answers that ask as no user would
+  (bead boubou-boubou-jjh: per-ask answers, deny the substitute in turn 2).
+
+Permission turn 2 since re-attribution: 16/18 made the right call, 18/18 made a call.
