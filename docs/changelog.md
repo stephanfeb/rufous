@@ -2556,3 +2556,27 @@ names no file and carries a failure word as admitting failure about every named 
 rule. To measure: permission n=3 both models, gemma's turn-2 project write should become a
 dialog and the rig (which allows in turn 2) will let it land, so turn 2 may fail on
 `files_absent` by the right route; qwen's turn-2 hold count should be 0.
+
+## Release of 15:25 (declined list across editor turns, failure reports without the path), n=3 per model (2026-11-01)
+
+`bench/results/convo/4b_gate_v2`. Permission: gemma 1.00 (first time), qwen 0.83 (r1 turn 2 the
+"unable … safety restrictions" shape, no call). No model tried the substitute path in any of the
+six cells, so bead boubou-vj3's cross-turn dialog is covered by its ACP test only; no
+substitute tag in the run. Gate 3c holds: seven, all in tracker turn 1 and qwen r2's turn 3;
+zero in permission (bead boubou-18l: qwen's turn-2 refusal was not held) and zero in longform.
+Tracker: qwen 0.67 (from 0.92), gemma 0.92 (from 0.83); the holds converted in five of six
+turn 1s (qwen r2 stayed in the plan tool for six more calls after the hold and ended in text
+without writing; held once, as designed). The misses are the checkbox format again (qwen r0
+wrote a numbered list with no boxes, then `1. [x]`; qwen r2 ticked nothing), and gemma r2
+turn 3 lost to a quirk: after the hold it read the file and called `edit_file` with
+`\`expenses.csv\`` backslash-escaped in the old text while the file has plain backticks, twice
+`edit failed`, then an honest finish summary (bead boubou-5jr, measure the shape in the edit
+corpus first). Longform: qwen 10/10 ×3; gemma r0 and r2 10/10, r1 5/10 as scored, 7/10 by
+the rule after bead boubou-f1x: turns 5 and 8 the model searched the notes for the literal
+words "risk" and "open question|TBD", found none, said so and wrote nothing (gate 3c passed
+the honest report, rightly), turn 10 said 6 for a file with 6 headings (Postgres migration
+appended twice in turn 4); turns 6, 7 and 8 were charged "earlier section lost" for a section
+never written. Fixed in the rig: carried checks come only from pairs that passed at their own
+turn (`passed_file_checks`, `--rescore` reads turns.jsonl); rescore of 4b_gate_v2 reports no
+lost section, 4b_lt_v2's real case still shows. Three `⟂error` tags (gemma's two escaped-
+backtick edits, one qwen edit on old text that was not there), six boundary refusals.

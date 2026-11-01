@@ -201,6 +201,11 @@ def test_change_nothing_else_turns_carry_earlier_file_checks(tmp_path):
     assert rig.carried_checks(turns, 1) == {}
     assert rig.carried_checks(turns, 2) == {"report.md#t1": "^# Heron report", "report.md#t2": "## Deadlines"}
     assert rig.carried_checks(turns, 3) == {}
+    # Bead boubou-f1x: a check that failed at its own turn is not carried (nothing was lost).
+    passed = rig.passed_file_checks(turns[0], []) | rig.passed_file_checks(
+        turns[1], ["report.md does not match /## Deadlines/"])
+    assert passed == {("report.md", "^# Heron report")}
+    assert rig.carried_checks(turns, 2, passed) == {"report.md#t1": "^# Heron report"}
     # A keep check reads the file and names the lost section.
     (tmp_path / "report.md").write_text("# Heron report\n## Owners\n## Open questions\n", encoding="utf-8")
     turn = {"reply": "", "asks": [], "stop": None, "error": None}

@@ -269,13 +269,23 @@ def source_writes(calls):
 KEEP_WORDS = "Change nothing else"
 
 
-def carried_checks(turns, i):
+def passed_file_checks(turn, fails):
+    """The (file, regex) pairs of this turn's `file_regex` that its `fails` do not name."""
+    out = set()
+    for key, rx in ((turn.get("expect") or {}).get("file_regex") or {}).items():
+        if f"{key} does not match /{rx}/" not in fails:
+            out.add((key.split("#", 1)[0], rx))
+    return out
+
+
+def carried_checks(turns, i, passed=None):
     """The `file_regex` pairs of turns before `i` that turn `i` must keep satisfied, or `{}`.
 
     Only for a turn whose `say` has KEEP_WORDS. Keyed `<file>#t<n>` (n = the turn that set the
     check; `body_of` reads the file before `#`), since every section check of one file shares
     the plain key. A (file, regex) pair the turn checks itself is left to it; a pair several
-    turns set (the title) is carried once."""
+    turns set (the title) is carried once. `passed` is the set of pairs that held at their own
+    turn: a section never written is not "lost" later (bead boubou-f1x); `None` carries all."""
     say = turns[i].get("say", "")
     if KEEP_WORDS.lower() not in say.lower():
         return {}
@@ -285,7 +295,7 @@ def carried_checks(turns, i):
     for n, t in enumerate(turns[:i], 1):
         for key, rx in ((t.get("expect") or {}).get("file_regex") or {}).items():
             pair = (key.split("#", 1)[0], rx)
-            if pair in own or pair in seen:
+            if pair in own or pair in seen or (passed is not None and pair not in passed):
                 continue
             seen.add(pair)
             keep[f"{pair[0]}#t{n}"] = rx
@@ -407,6 +417,7 @@ def run_cell(binary, model, ctx, script, cell_dir, turn_timeout, user_home):
         ns = client.request("session/new", {"cwd": os.path.abspath(work), "mcpServers": []},
                             lambda m: None, 60)
         sid = ns["sessionId"]
+        passed = set()
         for i, t in enumerate(script["turns"]):
             rec = run_turn(client, sid, t["say"], t.get("permission", "deny"), turn_timeout)
             # Checked now, not at the end: a later turn may create or change the files this
@@ -414,10 +425,11 @@ def run_cell(binary, model, ctx, script, cell_dir, turn_timeout, user_home):
             lts = session_log_turns(home)
             rec["log"] = lts[i] if i < len(lts) else None
             expect = dict(t.get("expect", {}))
-            keep = carried_checks(script["turns"], i)
+            keep = carried_checks(script["turns"], i, passed)
             if keep:
                 expect["keep_file_regex"] = keep
             rec["fails"] = check_turn(expect, rec, rec["log"], work)
+            passed |= passed_file_checks(t, rec["fails"])
             turns.append(rec)
             if rec.get("error") and rec["error"] != "timeout":
                 break
@@ -504,8 +516,17 @@ def rescore(results_dir):
         if not script or not os.path.isdir(work):
             continue
         lost = {}
+        # The per-turn results the cell kept: a check that failed at its turn is not carried.
+        fails_by_turn = {}
+        tj = os.path.join(cell, "turns.jsonl")
+        if os.path.exists(tj):
+            for line in open(tj, encoding="utf-8"):
+                r = json.loads(line)
+                fails_by_turn[r["turn"]] = r.get("fails", [])
+        passed = set()
         for i in range(len(script["turns"])):
-            keep = carried_checks(script["turns"], i)
+            keep = carried_checks(script["turns"], i, passed)
+            passed |= passed_file_checks(script["turns"][i], fails_by_turn.get(i + 1, []))
             if keep:
                 for f in check_turn({"keep_file_regex": keep}, {"reply": "", "asks": [], "stop": None,
                                                                  "error": None}, None, work):
