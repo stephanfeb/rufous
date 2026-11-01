@@ -220,7 +220,6 @@ const CODE: &[&str] = &[
     "exception",
     "stack",
     "regression",
-    "feature",
     "widget",
     "component",
     "service",
@@ -244,18 +243,49 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The class of an instruction. Code signals (code words, a source path) win or neutralise:
-/// with any present the class is [`Class::Code`] (no tracker or docs words) or
+/// A negation within this many words before a code word cancels it ("do not implement
+/// anything yet", bead boubou-gqw). Apostrophes split words, so "don't" is `don`, `t`.
+const NEGATION_WINDOW: usize = 3;
+const NEGATORS: &[&str] = &[
+    "not", "don", "dont", "doesn", "won", "didn", "never", "without", "no",
+];
+/// A snake_case identifier (`strip_accents`, `slug_path`) names code; a file name with an
+/// extension (`boubou_convo_perm.txt`) does not.
+static IDENTIFIER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$").expect("identifier regex"));
+/// A tasks file: `tasks.md`, `todo.md`, `backlog.md`.
+const TASKS_FILES: &[&str] = &["tasks.md", "todo.md", "backlog.md", "todo.txt", "tasks.txt"];
+
+/// A code word that no negation precedes within [`NEGATION_WINDOW`] words.
+fn code_word_at(ws: &[String], i: usize) -> bool {
+    if !CODE.contains(&ws[i].as_str()) {
+        return false;
+    }
+    let from = i.saturating_sub(NEGATION_WINDOW);
+    !ws[from..i].iter().any(|w| NEGATORS.contains(&w.as_str()))
+}
+
+/// The class of an instruction (bead boubou-6x3; the rules of bead boubou-gqw are each
+/// justified by a line of `bench/convo/scope_labels.jsonl`). Code signals, a code word not
+/// negated within three words before it, a snake_case identifier or a source path, win or
+/// neutralise: with any present the class is [`Class::Code`] (no tracker or docs signal) or
 /// [`Class::Mixed`] (both kinds), so a tracker or docs instruction that mentions a bug or a
-/// file is left alone. Without them tracker words make [`Class::Tracker`], docs words
-/// [`Class::Docs`] (tracker wins when both appear: "break the specs into beads" is tracker
-/// work), and neither is [`Class::Mixed`].
+/// file is left alone. Without them tracker signals (a tracker word; `task`/`tasks` when a
+/// tasks file, a `.md` file or another tracker word is named) make [`Class::Tracker`], docs
+/// signals (a docs word, a `.md` file) [`Class::Docs`] (tracker wins when both appear:
+/// "break the specs into beads" is tracker work), and neither is [`Class::Mixed`].
 pub fn classify(text: &str) -> Class {
     let ws = words(text);
     let has = |list: &[&str]| ws.iter().any(|w| list.contains(&w.as_str()));
-    let code = has(CODE) || SOURCE_PATH_RE.is_match(text);
-    let tracker = has(TRACKER);
-    let docs = has(DOCS);
+    let md_file = ws.iter().any(|w| w.ends_with(".md") && w.len() > 3);
+    let tasks_file = ws.iter().any(|w| TASKS_FILES.contains(&w.as_str()));
+    let identifier = ws.iter().any(|w| IDENTIFIER_RE.is_match(w));
+    let code =
+        (0..ws.len()).any(|i| code_word_at(&ws, i)) || identifier || SOURCE_PATH_RE.is_match(text);
+    let tracker_word = has(TRACKER);
+    let task_word = ws.iter().any(|w| w == "task" || w == "tasks");
+    let tracker = tracker_word || (task_word && (tasks_file || md_file));
+    let docs = has(DOCS) || md_file;
     match (code, tracker || docs) {
         (true, true) => Class::Mixed,
         (true, false) => Class::Code,
@@ -406,6 +436,58 @@ mod tests {
             class("I think we already did that one. It can be closed."),
             Class::Tracker
         );
+    }
+
+    /// Every line of `bench/convo/scope_labels.jsonl` (the rig's instructions and the two
+    /// live ones, labelled by hand) classes as labelled; a rule change that moves one must
+    /// change its label and say why.
+    #[test]
+    fn every_labelled_instruction_classes_as_labelled() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../bench/convo/scope_labels.jsonl");
+        let text = std::fs::read_to_string(&path).expect("labels");
+        let mut seen = 0;
+        let mut wrong = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line).expect("label line");
+            let say = v["say"].as_str().expect("say");
+            let want = v["class"].as_str().expect("class");
+            seen += 1;
+            let got = classify(say).name();
+            if got != want {
+                wrong.push(format!(
+                    "{}: got {got}, labelled {want}: {}",
+                    v["id"], v["why"]
+                ));
+            }
+        }
+        assert!(seen >= 25, "{seen} labels");
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn negation_identifiers_and_named_files_decide_the_edge_cases() {
+        // A negated code word is no code signal; an unnegated one further away still is.
+        assert_eq!(
+            class("Do not implement anything yet; list the beads"),
+            Class::Tracker
+        );
+        assert_eq!(class("Don't fix it, file an issue"), Class::Tracker);
+        assert_eq!(class("Fix it, and do not forget the issue"), Class::Mixed);
+        // snake_case names code; a file name with an extension does not.
+        assert_eq!(class("Rename strip_accents everywhere"), Class::Code);
+        assert_eq!(
+            class("Write hello to /tmp/boubou_convo_perm.txt"),
+            Class::Mixed
+        );
+        // task/tasks is tracker only beside a tasks file, a .md file or a tracker word.
+        assert_eq!(class("Tick the first task in tasks.md"), Class::Tracker);
+        assert_eq!(class("Which task first? Just tell me"), Class::Mixed);
+        assert_eq!(class("Add three tasks to the backlog"), Class::Tracker);
+        // A .md file is a docs signal; 'feature' is not a code word.
+        assert_eq!(class("Create report.md with the title line"), Class::Docs);
+        assert_eq!(class("Add tasks for feature 5 to tasks.md"), Class::Tracker);
+        assert_eq!(class("Implement feature 5"), Class::Code);
     }
 
     #[test]

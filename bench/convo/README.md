@@ -48,3 +48,9 @@ or was allowed), `compact` compactions, `peak` prompt tokens, `wall` seconds; th
 turn pass rate per model x script with n. A failed turn's reasons are in the last column and
 in the cell's `turns.jsonl` with the reply text. Three runs before any mean claim, as for the
 tiers; one run reads a mechanism (which turn failed, how) and nothing more.
+
+## Scope labels
+
+`scope_labels.jsonl` is one line per rig instruction (and the two live ones) with the class the
+scope gate should give it and why (bead boubou-gqw). A kernel test asserts every line; a
+classifier change that moves one must change its label and say why.

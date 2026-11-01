@@ -2589,3 +2589,21 @@ three are one gemma4:e4b call issued three times in one cell (4b_gate_v2 tracker
 session logs' eight edit failures contain the same three. Below the bead's threshold, so the
 matcher is unchanged; the one-token form if it recurs is `\`` in the Unescaped tier's
 `unescape`, which already reads `\"` as a quote.
+
+## Scope classifier v2 against the labelled set (bead boubou-gqw, 2026-11-01)
+
+`bench/convo/scope_labels.jsonl`: the 25 rig instructions and the two live ones, each with the
+class the scope gate should give it and why; a kernel test asserts every line, so a rule change
+that moves one must change its label and say why. Rule changes, each justified by a line: a code
+word with a negation within three words before it does not count ("Do not implement anything
+yet"); `task`/`tasks` is a tracker signal when a tasks file, a `.md` file or a tracker word is
+also named ("Tick the first task in tasks.md"); `feature` left the code list (a spec's
+numbering); a `.md` file named in the instruction is a docs signal ("Create report.md"); and,
+beyond the bead's four, a snake_case identifier is a code signal ("Rename strip_accents",
+"docstring to slug_path"), a file name with an extension is not. The tracker script's turns 1,
+3 and 4 now class tracker (turn 2, "Which task should we do first", stays mixed: `task` alone,
+a say-only turn); longform's turn 1 and 10 class docs, turn 4 stays mixed on "migration";
+follow_ups 2 and 4 class code. The lrab bench-task guard (no task read as tracker or docs with
+source deliverables) and the scope replay corpus still pass; 584 tests. Nothing in the prompt.
+To see: the next tracker_drift run should log `class=tracker guarded` on three turns; the
+arrest itself still needs a session that drifts, and none stored does.
