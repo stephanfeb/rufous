@@ -150,15 +150,15 @@ fn the_conventional_directories_follow_the_projects_own_and_precede_the_home() {
     let home = Path::new("/h");
     let install = Path::new("/i");
     let dirs = standard_dirs(work, home, install);
-    let shown: Vec<String> = dirs.iter().map(|p| p.display().to_string()).collect();
-    assert_eq!(shown[0], "/w/skills");
-    assert_eq!(shown[1], "/w/.agents/skills");
-    assert_eq!(shown[2], "/w/.claude/skills");
-    assert_eq!(shown[3], "/h/skills");
-    assert_eq!(shown.last().expect("install"), "/i/skills");
+    // Compared as paths, not strings: on Windows `join` writes `\`.
+    assert_eq!(dirs[0], Path::new("/w/skills"));
+    assert_eq!(dirs[1], Path::new("/w/.agents/skills"));
+    assert_eq!(dirs[2], Path::new("/w/.claude/skills"));
+    assert_eq!(dirs[3], Path::new("/h/skills"));
+    assert_eq!(dirs.last().expect("install"), Path::new("/i/skills"));
     if let Some(user_home) = dirs::home_dir() {
-        assert!(shown.contains(&user_home.join(".agents/skills").display().to_string()));
-        assert!(shown.contains(&user_home.join(".claude/skills").display().to_string()));
+        assert!(dirs.contains(&user_home.join(".agents").join("skills")));
+        assert!(dirs.contains(&user_home.join(".claude").join("skills")));
     }
 
     // Precedence in practice: the project's `skills/` shadows `.agents/skills`, which
@@ -217,7 +217,13 @@ fn the_skills_tool_lists_and_loads_a_folder_skill_from_the_project() {
         loaded.starts_with("### SKILL: release_notes\n# release_notes\n"),
         "{loaded}"
     );
-    let script = d.path().join(".agents/skills/release_notes/scripts/run.sh");
+    let script = d
+        .path()
+        .join(".agents")
+        .join("skills")
+        .join("release_notes")
+        .join("scripts")
+        .join("run.sh");
     assert!(
         loaded.contains(&format!("- {}", script.display())),
         "{loaded}"

@@ -3090,3 +3090,8 @@ the working directory. The test is unattended, so each of those commands is refu
 On Windows, then, rufous asks before a command that names its own working directory by an absolute
 path. That is over-cautious rather than a hole. The fix is a gate change, so it waits for a design in
 bead boubou-9ox; until then `tests/replay.rs` is `#![cfg(unix)]`.
+
+With `--no-fail-fast`, run 41358388784 listed the rest: three tests that assumed `/` as the path
+separator. The safety test now normalises `\` before matching the refused target, which Windows
+resolves to `C:\tmp\…`. The skill-folder tests now compare `Path`s instead of display strings.
+Nothing outside the tests changed.

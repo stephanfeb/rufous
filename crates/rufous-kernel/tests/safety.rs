@@ -542,16 +542,21 @@ fn the_deny_text_says_who_declined_and_forbids_the_workaround() {
         "{msg}"
     );
     // The same words after a declined shell write.
+    // Separators normalised: on Windows the gate resolves `/tmp/…` to `C:\tmp\…`.
     let msg = attended
         .check(&bash("echo hello > /tmp/boubou_convo_perm.txt"), d.path())
-        .expect("declined");
+        .expect("declined")
+        .replace('\\', "/");
     assert!(
         msg.contains("the user declined this call: run_bash on ")
             && msg.contains("/tmp/boubou_convo_perm.txt."),
         "{msg}"
     );
     let mut headless = Gate::headless(SafetyPolicy::default());
-    let msg = headless.check(&write, d.path()).expect("refused");
+    let msg = headless
+        .check(&write, d.path())
+        .expect("refused")
+        .replace('\\', "/");
     // The target is the resolved path (`/private/tmp/…` on macOS), as a file tool's would be.
     assert!(
         msg.starts_with("[safety gate: create_file on ")
