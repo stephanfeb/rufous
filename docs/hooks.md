@@ -1,6 +1,6 @@
 # Hooks
 
-A hook is a command of yours that Boubou runs at an event of the loop: when a session starts,
+A hook is a command of yours that rufous runs at an event of the loop: when a session starts,
 before and after a tool call, and when the model wants to end the turn. Hooks let a project
 feed its own context in (a task tracker's state, house rules) and keep the model honest
 (block a tool call, ask for more before the end) without a word in the prompt. They cost no
@@ -15,7 +15,7 @@ The file shape and the protocol are the ones Claude Code, Codex and Cursor share
 All of these are merged, in this order:
 
 1. `~/.ollama_agent/hooks.json` -- your hooks, every project
-2. `<workdir>/.boubou/hooks.json` -- the project's hooks for Boubou
+2. `<workdir>/.rufous/hooks.json` -- the project's hooks for rufous
 3. `<workdir>/.claude/settings.json` and `.claude/settings.local.json` -- the project's Claude Code hooks (the `hooks` key), read as they are
 
 `AGENT_HOOKS=0` turns every hook off. The harness log says what was loaded
@@ -49,11 +49,11 @@ goes on. An entry with a `command` of its own, without the inner `hooks` list, i
 ## The protocol
 
 The command runs through the platform shell in the working directory, with
-`BOUBOU_PROJECT_DIR` set to it, and one JSON object on stdin:
+`RUFOUS_PROJECT_DIR` set to it, and one JSON object on stdin:
 
 | field | when |
 |---|---|
-| `hook_event_name`, `cwd`, `session_id` | always (`session_id` is the Boubou session name when there is one) |
+| `hook_event_name`, `cwd`, `session_id` | always (`session_id` is the rufous session name when there is one) |
 | `source` | `SessionStart`: `startup` |
 | `tool_name`, `tool_input` | `PreToolUse`, `PostToolUse`: the tool and its arguments as the model sent them |
 | `tool_response` | `PostToolUse`: the tool's result (first 20,000 characters) |
@@ -95,7 +95,7 @@ after on the small profiles before keeping such a hook in a project, as every pr
 here is measured.
 
 A project's hooks run as you, with your permissions, as they do in every harness that reads
-them. Read a project's hook files before running Boubou in it.
+them. Read a project's hook files before running rufous in it.
 
 ## Not yet
 

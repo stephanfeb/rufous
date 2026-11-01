@@ -141,12 +141,12 @@ def test_driver_lists_custom_root_and_resolves_fixtures_against_it(tmp_path):
 
 def test_driver_ctx_sweep_names_cells_and_groups_the_summary(tmp_path):
     assert lrab_h2h.ctx_suffix(16384) == "_c16k" and lrab_h2h.ctx_suffix(65536) == "_c64k"
-    _cmd, env = lrab_h2h.boubou_cmd(str(tmp_path), "m", 16384)
+    _cmd, env = lrab_h2h.rufous_cmd(str(tmp_path), "m", 16384)
     assert env["AGENT_CTX"] == "16384"
     for ctx, total in ((16384, 0.4), (65536, 0.9)):
-        d = tmp_path / f"boubou_CP-01{lrab_h2h.ctx_suffix(ctx)}"
+        d = tmp_path / f"rufous_CP-01{lrab_h2h.ctx_suffix(ctx)}"
         d.mkdir()
-        json.dump({"task_id": "CP-01", "agent": "boubou", "total": total, "wall_seconds": 60, "ctx": ctx,
+        json.dump({"task_id": "CP-01", "agent": "rufous", "total": total, "wall_seconds": 60, "ctx": ctx,
                    "failure_mode": "completed", "process": {"tool_calls": 5, "peak_prompt_tokens": ctx // 2,
                                                             "compactions": 2 if ctx == 16384 else 0}},
                   open(d / "score.json", "w"))
@@ -156,10 +156,10 @@ def test_driver_ctx_sweep_names_cells_and_groups_the_summary(tmp_path):
 
 
 def test_compaction_lines_are_counted_for_both_arms():
-    boubou = ("[ctx: 30000/32768 = 91%]\n[context compaction L1: truncated old tool outputs]\n"
+    rufous = ("[ctx: 30000/32768 = 91%]\n[context compaction L1: truncated old tool outputs]\n"
               "[context compaction L2: 41 → 12 messages]\n[context compaction L3 failed, level skipped: x]\n"
               "[5|+9s] ⚙ finish {} -> [TASK_COMPLETE] ok\n")
-    m = pm.parse_transcript(boubou)
+    m = pm.parse_transcript(rufous)
     assert (m["compactions"], m["compaction_max_level"], m["peak_prompt_tokens"]) == (2, 2, 30000)
     mingbird = "[上下文压缩 L1: 截断旧工具输出]\n[上下文压缩 L2 失败,本层跳过: KeyError x]\n[上下文压缩 L3: 40 → 3 条消息]\n"
     m = pm.parse_transcript(mingbird)
@@ -184,20 +184,20 @@ def test_idle_streak_lines_are_counted():
 
 def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_THINK", raising=False)
-    _cmd, env = lrab_h2h.boubou_cmd(str(tmp_path), "m")
+    _cmd, env = lrab_h2h.rufous_cmd(str(tmp_path), "m")
     assert "AGENT_THINK" not in env, "unset --think leaves the profile default"
-    assert lrab_h2h.boubou_cmd(str(tmp_path), "m", think="off")[1]["AGENT_THINK"] == "0"
-    assert lrab_h2h.boubou_cmd(str(tmp_path), "m", 16384, "on")[1]["AGENT_THINK"] == "1"
-    assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", None, None, None, set()) == "boubou_WF-01"
-    assert lrab_h2h.cell_run_id("boubou", "WF-01", "qwen3.5:9b", 16384, "off", 2, {"model"}) \
-        == "boubou_WF-01_mqwen3.5-9b_c16k_toff_r2"
+    assert lrab_h2h.rufous_cmd(str(tmp_path), "m", think="off")[1]["AGENT_THINK"] == "0"
+    assert lrab_h2h.rufous_cmd(str(tmp_path), "m", 16384, "on")[1]["AGENT_THINK"] == "1"
+    assert lrab_h2h.cell_run_id("rufous", "WF-01", "qwen3.5:9b", None, None, None, set()) == "rufous_WF-01"
+    assert lrab_h2h.cell_run_id("rufous", "WF-01", "qwen3.5:9b", 16384, "off", 2, {"model"}) \
+        == "rufous_WF-01_mqwen3.5-9b_c16k_toff_r2"
     assert lrab_h2h.cell_axes("qwen3.5:9b", None, None) == {"model": "qwen3.5:9b", "ctx": int(os.environ.get("AGENT_CTX", "32768")), "think": "default", "policy": "unattended", "workdir": "workdir"}
     # Two models × think on/off at one ctx: the summary labels rows by model and think only.
     for model, think, total in (("qwen3.5:9b", "on", 0.9), ("qwen3.5:9b", "off", 0.5),
                                 ("gemma4:12b", "on", 0.7), ("gemma4:12b", "off", 0.6)):
-        rid = lrab_h2h.cell_run_id("boubou", "WF-01", model, 16384, think, None, {"model"})
+        rid = lrab_h2h.cell_run_id("rufous", "WF-01", model, 16384, think, None, {"model"})
         (tmp_path / rid).mkdir()
-        json.dump({"task_id": "WF-01", "agent": "boubou", "total": total, "wall_seconds": 60,
+        json.dump({"task_id": "WF-01", "agent": "rufous", "total": total, "wall_seconds": 60,
                    "failure_mode": "completed", "axes": lrab_h2h.cell_axes(model, 16384, think),
                    "process": {"tool_calls": 3, "peak_prompt_tokens": 100}},
                   open(tmp_path / rid / "score.json", "w"))
@@ -207,7 +207,7 @@ def test_sweep_axes_in_env_run_id_and_summary(tmp_path, monkeypatch):
     assert "| WF-01@qwen3.5:9b think=on | — | 0.90" in text
     assert "| WF-01@gemma4:12b think=off | — | 0.60" in text
     # A score.json from before axes were recorded still groups by its top-level ctx.
-    old = {"task_id": "CP-01", "agent": "boubou", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
+    old = {"task_id": "CP-01", "agent": "rufous", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
            "model": "qwen3.5:9b", "failure_mode": "completed", "process": {}}
     assert lrab_h2h.axes_of(old) == {"model": "qwen3.5:9b", "ctx": 8192, "think": "default", "policy": "unattended", "workdir": "workdir"}
     assert lrab_h2h.row_key(old, ["ctx"]) == "CP-01@8k"

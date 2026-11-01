@@ -271,22 +271,22 @@ def test_ch05_referee_tells_touched_from_untouched_and_new_files(tmp_path):
 
 def test_driver_threads_the_policy_axis(tmp_path, monkeypatch):
     assert lrab_h2h.tiers_under(EXT) == ["tier5_context", "tier6_editor", "tier7_chat"]
-    cmd, _env = lrab_h2h.boubou_cmd(str(tmp_path), "m")
+    cmd, _env = lrab_h2h.rufous_cmd(str(tmp_path), "m")
     assert "--policy" not in cmd, "unset: the batch harness, as before"
-    cmd, _env = lrab_h2h.boubou_cmd(str(tmp_path), "m", policy="coding")
+    cmd, _env = lrab_h2h.rufous_cmd(str(tmp_path), "m", policy="coding")
     assert cmd[-2:] == ["--policy", "coding"]
-    assert lrab_h2h.cell_run_id("boubou", "ED-01", "m", None, None, None, set(), "coding") == "boubou_ED-01_pcoding"
-    assert lrab_h2h.cell_run_id("boubou", "ED-01", "m", 16384, None, 1, set(), "general") == "boubou_ED-01_c16k_pgeneral_r1"
+    assert lrab_h2h.cell_run_id("rufous", "ED-01", "m", None, None, None, set(), "coding") == "rufous_ED-01_pcoding"
+    assert lrab_h2h.cell_run_id("rufous", "ED-01", "m", 16384, None, 1, set(), "general") == "rufous_ED-01_c16k_pgeneral_r1"
     assert lrab_h2h.cell_axes("m", None, None)["policy"] == "unattended"
     assert lrab_h2h.cell_axes("m", None, None, "general")["policy"] == "general"
-    old = {"task_id": "CP-01", "agent": "boubou", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
+    old = {"task_id": "CP-01", "agent": "rufous", "total": 1.0, "wall_seconds": 1, "ctx": 8192,
            "model": "m", "failure_mode": "completed", "process": {}}
     assert lrab_h2h.axes_of(old)["policy"] == "unattended", "a score.json from before the axis"
     # Two policies on one task: the summary labels rows by policy alone.
     for policy, total in (("general", 0.6), ("coding", 0.9)):
-        rid = lrab_h2h.cell_run_id("boubou", "ED-02", "m", None, None, None, set(), policy)
+        rid = lrab_h2h.cell_run_id("rufous", "ED-02", "m", None, None, None, set(), policy)
         (tmp_path / rid).mkdir()
-        json.dump({"task_id": "ED-02", "agent": "boubou", "total": total, "wall_seconds": 30,
+        json.dump({"task_id": "ED-02", "agent": "rufous", "total": total, "wall_seconds": 30,
                    "failure_mode": "completed", "axes": lrab_h2h.cell_axes("m", None, None, policy),
                    "process": {"tool_calls": 4, "peak_prompt_tokens": 900}},
                   open(tmp_path / rid / "score.json", "w"))

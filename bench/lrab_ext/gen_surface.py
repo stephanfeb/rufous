@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Generate the surface tiers (docs/refactor.md, step 10): tasks shaped like what a user types
 at a product surface rather than LRAB's batch brief, so a turn policy can be measured on the
-work it will actually meet. Deterministic, reviewable, Boubou-side; Mingbird's tree is never
+work it will actually meet. Deterministic, reviewable, rufous-side; Mingbird's tree is never
 written to, and the scorer is Mingbird's (`exists`, `contains_any`, `contains_groups`,
 `not_contains`, `min_words`, `script_pass`). The briefs carry no "FIRST create a numbered
 plan" preamble: the message is the whole prompt, as in an editor or a chat.
 
-  tier6_editor  (`coding` preset: `boubou run --policy coding`)
+  tier6_editor  (`coding` preset: `rufous run --policy coding`)
     ED-01  fix a failing test        slugify collapses hyphens wrongly; three of six tests fail
     ED-02  fix plus a named note     an inclusive-bound bug, then fix_note.md (the named-file gate's case)
     ED-03  add a function with tests title_case into textfmt.py, tests into test_textfmt.py
@@ -15,7 +15,7 @@ plan" preamble: the message is the whole prompt, as in an editor or a chat.
     ED-06  escapes, near-duplicate   tsv_line joins with commas like csv_line; the line to change appears
                                      twice, beside escape sequences (edit_file regression fixture, bk9.3)
 
-  tier7_chat  (`general` preset: `boubou run --policy general`)
+  tier7_chat  (`general` preset: `rufous run --policy general`)
     CH-01  answer from files         owner and deadline of the Postgres migration, from notes/
     CH-02  summarise to a file       brief.md with every decision, owner and date
     CH-03  tidy a folder             inbox/ into images/, docs/, data/; say what went where
@@ -70,7 +70,7 @@ def task_json(**kw):
         "max_wall_minutes": 20,
         "notes": f"surface tier {kw['tier']} (bench/lrab_ext/gen_surface.py): the brief is what a user types "
                  "at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, "
-                 "so only the boubou arm of lrab_h2h.py runs it",
+                 "so only the rufous arm of lrab_h2h.py runs it",
         "extra_judge_note": "",
     }
     base.update(kw)

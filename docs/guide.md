@@ -2,7 +2,7 @@
 
 A working guide, started 2026-10-31. It collects what has held up when a 2B–12B model runs
 under Ollama as a coding agent: what to prepare before the first prompt, what the harness
-has to compensate for, and how to tell a real gain from noise. Boubou is the harness the
+has to compensate for, and how to tell a real gain from noise. rufous is the harness the
 measurements come from, but most of the advice is about the model and the project, not the
 tool.
 
@@ -50,7 +50,7 @@ moves deciding and guessing out of inference and into the context.
 
 ## 2. The tension: context is the budget
 
-Boubou's system prompt and nine core tool schemas are about 1,250 tokens so that a 1B–4B
+rufous's system prompt and nine core tool schemas are about 1,250 tokens so that a 1B–4B
 model can run at all. Every piece of preparation is paid for in the same window: an
 AGENTS.md, a spec, a prefilled skill, a long task list. The gain is not monotone. A 32k
 window with a 2,000-token spec, a 600-token skill and a 1,000-token file read is already a
@@ -61,7 +61,7 @@ So the question the experiment has to answer is not "does prep help" but "where 
 curve bend for this window size", and the guide will carry one reading per model class.
 *Hypothesis* until boubou-rld runs; the `prompt_eval_count` column is the cost side.
 
-Set the window on purpose. Under an editor Boubou takes `--ctx`; left at the model's default a
+Set the window on purpose. Under an editor rufous takes `--ctx`; left at the model's default a
 qwen3.5:9b loaded at 17 GB (bead boubou-0lg). A window the machine cannot hold is a slower
 model, not a bigger one.
 
@@ -72,7 +72,7 @@ demote it.
 
 1. **Write an AGENTS.md** (or `SYSTEM.md`) in the working directory: layout, build and test
    commands, naming conventions, what not to touch. Short, declarative, no advice the model
-   cannot act on. Boubou prefills it for every turn. Cell: `agents`.
+   cannot act on. rufous prefills it for every turn. Cell: `agents`.
 2. **Install the skills for the task family** as `<name>/SKILL.md` folders under
    `.agents/skills` or `.claude/skills` with `triggers:` so they load only when relevant. Cell:
    `skills`.
@@ -82,7 +82,7 @@ demote it.
 4. **Split the work into items small enough for one turn each**, with beads or a tasks file.
    Each item names its file(s) and its finish condition. Cell: `split`.
 5. **Set the context window explicitly** and check the model's memory footprint once.
-6. **Point the model at bounded tools.** Boubou's prompt tells the model to use `list_dir`,
+6. **Point the model at bounded tools.** rufous's prompt tells the model to use `list_dir`,
    `read_file` and `search_files` over `ls`, `cat` and `grep` because their output is cut
    with a marker; an unbounded `cat` of a large file is the fastest way to lose the window.
 
@@ -162,7 +162,7 @@ Drawn from the profiles and the bench; one paragraph per model class once the ce
 - **n = 1 is an anecdote.** Two arms with the same configuration moved a mean 0.70 → 0.47 on
   one run (finish-gate arm, 2026-10-31). Three runs per cell before any mean claim; one run is
   enough only to read a mechanism in a single cell (the rule fired, the edit missed).
-- **Read the process, not just the score.** Boubou's bench table carries tool calls, edit
+- **Read the process, not just the score.** rufous's bench table carries tool calls, edit
   misses, shell errors, backup housekeeping and harness notes per cell
   (`bench/lrab_ext/README.md`). A score that rose while misses doubled is luck.
 - **Record before and after sizes** for every prompt addition; the window is the budget.

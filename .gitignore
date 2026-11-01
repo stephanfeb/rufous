@@ -5,7 +5,7 @@
 /config.json
 /mcp.json
 # Tauri build output
-/crates/boubou-app/gen
+/crates/rufous-app/gen
 
 # LRAB head-to-head runs (large workdirs + transcripts)
 bench/results/

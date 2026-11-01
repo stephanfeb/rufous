@@ -1,0 +1,34 @@
+[package]
+name = "rufous-general"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "rufous general-purpose harness over the kernel: the `general` turn policy, its prompt and skills, the local web UI (Mingbird's /api/* contract) and the terminal chat"
+
+[features]
+default = []
+# Local speech-to-text (sherpa-onnx native libs); `cargo build --features voice`.
+voice = ["rufous-voice/sherpa"]
+
+[dependencies]
+rufous-kernel.workspace = true
+rufous-voice.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

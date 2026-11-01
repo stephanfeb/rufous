@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn a Boubou session transcript into a replay corpus (bead boubou-bk9.13).
+"""Turn a rufous session transcript into a replay corpus (bead boubou-bk9.13).
 
 The tool calls a real model made are the test inputs the unit tests never had: a sed
 replacement with a literal \\n, a `python -c` program with \\" quotes, a path that is a
@@ -13,11 +13,11 @@ placeholder `{workdir}` and prints one JSON line per call:
 Hand-written entries in the same file may add `"fixture": {"files": {...}, "dirs": [...]}`
 and an `expect` object (`starts_with`, `contains`, `not_contains`, `snapshots`) that is
 checked through `run_tool`; `"expect": "blocked"` asserts the gate refuses the call.
-`crates/boubou-kernel/tests/replay.rs` runs every `tests/replay/*.jsonl`.
+`crates/rufous-kernel/tests/replay.rs` runs every `tests/replay/*.jsonl`.
 
     python3 -I bench/replay_extract.py ~/.ollama_agent/sessions/acp_1030_094413.transcript.jsonl \\
         --from 377 --workdir /Users/me/proj --prefix zed-2026-10-31 \\
-        >> crates/boubou-kernel/tests/replay/zed_2026-10-31.jsonl
+        >> crates/rufous-kernel/tests/replay/zed_2026-10-31.jsonl
 """
 import argparse
 import json

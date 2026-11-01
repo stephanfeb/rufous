@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Scripted multi-turn conversations over ACP (bead boubou-6gq).
 
-Drives `boubou acp` the way an editor does: newline-delimited JSON-RPC over stdio,
+Drives `rufous acp` the way an editor does: newline-delimited JSON-RPC over stdio,
 `initialize`, `session/new`, one `session/prompt` per turn, `session/update` notifications
 collected, `session/request_permission` answered from the script (default deny, every ask
 recorded). No `fs` capability is advertised, so the agent's file tools use the disk.
 
-One cell is model x script x run, in its own folder: `home/` is BOUBOU_HOME (the user's
+One cell is model x script x run, in its own folder: `home/` is RUFOUS_HOME (the user's
 `config.json` copied in, so hosts and profiles apply; the session's files and its `.log`
 land in `home/sessions/`), `work/` is a fresh copy of the fixture. Per turn the rig records
 the agent's text, the tool calls the session log lists between `[turn]` markers, the
@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SCRIPTS_DIR = os.path.join(HERE, "convo")
 FIXTURE_ROOTS = [os.path.join(HERE, "convo", "fixtures"), os.path.join(HERE, "lrab_ext", "fixtures")]
-DEFAULT_BINARY = os.path.join(ROOT, "target", "release", "boubou")
+DEFAULT_BINARY = os.path.join(ROOT, "target", "release", "rufous")
 
 SOURCE_EXT = {"rs", "py", "dart", "js", "jsx", "ts", "tsx", "mjs", "cjs", "go", "java", "kt",
               "kts", "swift", "c", "cc", "cpp", "cxx", "h", "hpp", "cs", "rb", "php", "sh",
@@ -415,7 +415,7 @@ def run_cell(binary, model, ctx, script, cell_dir, turn_timeout, user_home):
         p = os.path.expanduser(rel)
         if os.path.exists(p):
             os.remove(p)
-    env = dict(os.environ, BOUBOU_HOME=home)
+    env = dict(os.environ, RUFOUS_HOME=home)
     env.pop("AGENT_UNATTENDED", None)
     cmd = [binary, "acp", "--model", model, "--ctx", str(script.get("ctx") or ctx)]
     stderr = open(os.path.join(cell_dir, "stderr.log"), "w", encoding="utf-8")

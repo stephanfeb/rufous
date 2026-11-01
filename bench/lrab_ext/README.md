@@ -1,4 +1,4 @@
-# Boubou-side LRAB extension
+# rufous-side LRAB extension
 
 Tasks that live in this checkout, scored by Mingbird's LRAB scorer (`score_task.py`, imported
 read-only by `bench/lrab_h2h.py`). Mingbird's tree is never written to. The layout is LRAB's
@@ -6,12 +6,12 @@ read-only by `bench/lrab_h2h.py`). Mingbird's tree is never written to. The layo
 
 ```sh
 python bench/lrab_ext/gen_pressure.py                      # regenerate (deterministic; tests check for drift)
-python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext \
+python bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext \
     --ctx 16384,32768,65536 --model qwen3.5:9b --results bench/results/lrab_ctx
 python bench/lrab_h2h.py --summary --results bench/results/lrab_ctx
 ```
 
-Only the boubou arm runs here: Mingbird's own runner resolves fixtures against its own LRAB
+Only the rufous arm runs here: Mingbird's own runner resolves fixtures against its own LRAB
 root. Task checks are limited to the scorer's root-independent kinds (`exists`, `contains_any`,
 `contains_groups`, `script_pass`); collateral damage is caught by a `check_collateral.py`
 shipped with the fixture (prints `COLLATERAL OK` when every untouched definition is intact; in
@@ -20,18 +20,18 @@ the surface tiers only once the task's own edit has happened, else `COLLATERAL P
 ## Ablation: the kernel off
 
 `AGENT_ABLATION` names the compensations to switch off for a run; the list, with what each
-switch turns off, is `crates/boubou-kernel/src/agent/ablation.rs`, and `kernel` is every
+switch turns off, is `crates/rufous-kernel/src/agent/ablation.rs`, and `kernel` is every
 switch at once. The driver passes the environment through, so one arm is one `--results`
 dir and the comparison is cell by cell against the same axes with the kernel on:
 
 ```sh
-AGENT_ABLATION=kernel python3 bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext \
+AGENT_ABLATION=kernel python3 bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext \
     --tiers tier6_editor --policy coding,unattended --model gemma4:e2b \
     --results bench/results/surface_editor/gemma_e2b_kernel_off
 ```
 
 The transcript's `[ablation] off: …` line says what was off; a misspelt switch is named
-there and turns nothing off. Rebuild `target/release/boubou` first. `reattribute` (2026-11-01, bead boubou-alj) is in the
+there and turns nothing off. Rebuild `target/release/rufous` first. `reattribute` (2026-11-01, bead boubou-alj) is in the
 list: off, an earlier turn's own refusal reply is sent to the model as it was said instead of
 as a `[ledger]` line. `scope_gate` (2026-10-31)
 is in the list: on, an unattended cell whose prompt reads as tracker or docs work refuses the
@@ -45,7 +45,7 @@ the summary shows `mean [min–max] n=3` per task and each arm's run means with 
 deviation, which is the spread a difference between two results dirs has to clear:
 
 ```sh
-python3 bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier6_editor \
+python3 bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext --tiers tier6_editor \
     --policy coding,unattended --model gemma4:e2b --runs 3 \
     --results bench/results/surface_editor/gemma_e2b_x3
 ```
@@ -89,13 +89,13 @@ editor. Run them under the product presets with the driver's policy axis:
 
 ```sh
 python bench/lrab_ext/gen_surface.py
-python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier6_editor \
+python bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext --tiers tier6_editor \
     --policy coding,unattended --model qwen3.5:9b --results bench/results/surface_editor
-python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier7_chat \
+python bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext --tiers tier7_chat \
     --policy general,unattended --model qwen3.5:9b --results bench/results/surface_chat
 ```
 
-`--policy` runs `boubou run --policy <name>`: `unattended` is the batch harness, `general` and
+`--policy` runs `rufous run --policy <name>`: `unattended` is the batch harness, `general` and
 `coding` the product presets, under which a text reply ends the run. For those cells the driver
 writes the final reply (the last assistant text, else the `finish` summary) to `reply.md` in the
 workdir before scoring, so an answer is checked the way a file is. The summary labels rows
@@ -157,8 +157,8 @@ the expectation keys and the table's columns).
 ## Replay corpus (bead boubou-bk9.13)
 
 The tool calls real models made are regression data: `bench/replay_extract.py` turns a
-Boubou session transcript into `crates/boubou-kernel/tests/replay/<corpus>.jsonl` (the
-session's working directory becomes `{workdir}`), and `cargo test -p boubou-kernel --test
+rufous session transcript into `crates/rufous-kernel/tests/replay/<corpus>.jsonl` (the
+session's working directory becomes `{workdir}`), and `cargo test -p rufous-kernel --test
 replay` runs every entry through `Executor::prepare` (`as_written`: the shell gets exactly
 that command, unblocked) or `run_tool` with a fixture. Add the calls of any session that
 showed a harness fault, with the fixture that reproduces it, before fixing it.

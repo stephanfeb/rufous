@@ -1,7 +1,7 @@
-# Design note: a System One decider for Boubou
+# Design note: a System One decider for rufous
 
 *Draft, 28 October 2026. Status as of 29 October 2026: step 1 of section 6 is implemented
-(`crates/boubou-kernel/src/decider.rs`, bead boubou-acy.1), see the addendum at the end. The
+(`crates/rufous-kernel/src/decider.rs`, bead boubou-acy.1), see the addendum at the end. The
 local backend is Ollama's native decision API rather than the Jev-compatible endpoint this note
 assumed; the llama-server logits spike (step 2) is dropped as unnecessary.*
 
@@ -10,7 +10,7 @@ it are treated as unverified until we reproduce them).
 
 ## 1. Why
 
-Boubou makes a dozen small decisions per turn by keyword list, regular expression or numeric
+rufous makes a dozen small decisions per turn by keyword list, regular expression or numeric
 threshold. They are cheap, deterministic and testable, and they fail in a characteristic way:
 a case the list did not anticipate flips the whole loop. The gemma4 chat transcript of
 2026-10-28 was one such case. "Are you capable of software development ?" is 41 characters
@@ -28,7 +28,7 @@ of flipping on a hard boundary.
 Two things this note does **not** propose: replacing the main model's tool choice (that is the
 agent's job), or softening the safety floor (section 4).
 
-## 2. Where Boubou decides today
+## 2. Where rufous decides today
 
 | Decision | Code | Mechanism | System One shape |
 |---|---|---|---|
@@ -42,21 +42,21 @@ agent's job), or softening the safety floor (section 4).
 | Which model for the task | not ported (Mingbird `bench/v37` routing) | fixed per run | Choice over installed models |
 | Time budget stated in the task | `guards/budget.rs::parse_time_budget` | regex over units and number words | Noul (a deadline is stated) gating the regex |
 
-Ranked by value against effort for Boubou:
+Ranked by value against effort for rufous:
 
 1. **Intent** (question / task / follow-up). Smallest surface, the failure class we keep hitting,
    and the easiest to measure against transcripts.
 2. **Stuck detection.** Replaces a string-similarity threshold with a judgement over content;
    catches paraphrased loops the window misses.
 3. **Dispatch classifier.** The veto and simple lists are a Score and a Noul written out by hand.
-4. **Compaction scoring.** Highest payoff on small contexts (Boubou's whole thesis) but the
+4. **Compaction scoring.** Highest payoff on small contexts (rufous's whole thesis) but the
    largest change: it alters what the model sees afterwards, so it needs the most measurement.
 5. **Skill / MCP pre-selection.** Trims the prefill; useful once the MCP catalogue grows.
 6. **Model routing.** Needs several models installed; later.
 
 ## 3. Shape of the code
 
-A trait in `boubou-kernel`, deliberately tiny, mirroring the three primitives:
+A trait in `rufous-kernel`, deliberately tiny, mirroring the three primitives:
 
 ```rust
 /// A typed decision over a block of state. Implementations must be cheap enough to call
@@ -89,10 +89,10 @@ Three implementations:
   the next implementation take over only where the heuristic was guessing.
 - **`LocalDecider`** talks to a Jev-compatible HTTP endpoint. Cloudflare Clef and Open-Jev both
   expose the request format Jev defined (state + typed questions, one parallel pass), and
-  JevK5 ships GGUF weights that run under the llama-server backend Boubou already drives for
+  JevK5 ships GGUF weights that run under the llama-server backend rufous already drives for
   the OpenAI-compatible engine. Configured in `config.json` under a new `decider` section
   (`{"type": "systemone", "base_url": ..., "model": ..., "timeout_ms": 1500}`), off by default,
-  reported by `boubou doctor` with a probe decision and its latency.
+  reported by `rufous doctor` with a probe decision and its latency.
 - **`LayeredDecider`** (the one the loop uses): heuristic first; if its confidence is below a
   per-call-site threshold and the local decider is configured and healthy, ask it; on timeout
   or error fall back to the heuristic answer and log once. This keeps the loop's worst case
@@ -111,8 +111,8 @@ question through a small policy function (`intent_of(messages)`, `is_stuck(recen
   far as we know, no calibrated probability. Verify whether its OpenAI-compatible endpoint
   returns `logprobs` on current versions; if not, Ollama users get the heuristic decider only.
 - **Encoder-class models** (Laya 421M, openJev-verdict 151M): CPU-cheap, weak until fine-tuned.
-  Boubou's transcripts are labelled data for exactly these questions (section 5), so a
-  Boubou-tuned small encoder is a realistic later step.
+  rufous's transcripts are labelled data for exactly these questions (section 5), so a
+  rufous-tuned small encoder is a realistic later step.
 
 ## 4. Where the decider is not allowed
 
@@ -178,7 +178,7 @@ decider stays off by default.
   independent numbers and permissive licences today: JevK5 (Apache-2.0, GGUF) and Clef
   (Apache-2.0). Kev is CC BY-NC and is out for a shipped product.
 - **Calibration drift.** Probabilities calibrated on the vendors' tasks are not calibrated on
-  Boubou's. Thresholds are set from our labelled set, and `doctor` should show the decider's
+  rufous's. Thresholds are set from our labelled set, and `doctor` should show the decider's
   confidence histogram over recent sessions so drift is visible.
 - **Does Ollama expose logprobs?** Unknown at the time of writing; it decides whether
   Ollama-only installs get a local decider without a second engine.
@@ -215,7 +215,7 @@ Step 1 as shipped:
   not asked again that run.
 - `agent/run.rs`: the one `is_qa` call site goes through the decider and logs one line,
   `[decider] intent=… ← heuristic|model (rule, confidence); d1: … p=… conf=… (ms) [DISAGREES]`.
-  Children never ask. `boubou doctor` probes the configured model with the 2026-10-28 chat
+  Children never ask. `rufous doctor` probes the configured model with the 2026-10-28 chat
   sentence and prints the latency.
 
 Shadow mode is the labelled-set collector section 5 asks for. In `shadow` and `on` the loop

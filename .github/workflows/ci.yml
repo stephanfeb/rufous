@@ -15,5 +15,5 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --exclude boubou-app --all-targets -- -D warnings
-      - run: cargo test --workspace --exclude boubou-app
+      - run: cargo clippy --workspace --exclude rufous-app --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude rufous-app

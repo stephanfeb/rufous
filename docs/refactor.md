@@ -1,13 +1,13 @@
 # Refactor: kernel and policies
 
-This document states where Boubou's agent loop is going and tracks how far it has got. It is
+This document states where rufous's agent loop is going and tracks how far it has got. It is
 a plan and a status board, not a log: when a step lands, its row changes, and nothing is
 appended. Dates, measurements and the story of how a step went belong in `docs/changelog.md`;
 what the code does today belongs in `README.md`, `docs/acp.md` and the crate docs.
 
 ## Intent
 
-Boubou started as a port of Mingbird, a batch harness for 2–12B local models. What it has
+rufous started as a port of Mingbird, a batch harness for 2–12B local models. What it has
 become is a layer that compensates for small-model quirks, and that layer is the basis for two
 products over small models:
 
@@ -16,7 +16,7 @@ products over small models:
 
 Neither of them is Mingbird's unattended task run, and the loop must stop assuming it is.
 
-The loop (`crates/boubou-kernel/src/agent/run.rs`) is two things entangled:
+The loop (`crates/rufous-kernel/src/agent/run.rs`) is two things entangled:
 
 | | What it is | Examples |
 |---|---|---|
@@ -35,16 +35,16 @@ is a `git subtree split` per crate directory when the time comes.
 
 | Crate | Holds | Rule |
 |---|---|---|
-| `boubou-kernel` | the model boundary, the ladders, salvage, coercion, compaction, the safety rings, profiles, the executor, config, sessions, tools, MCP, web search, memory, `TurnPolicy` with the `unattended`, `child` and `conversation` behaviours and the kernel's task prefill | depends on no product crate; its public API is what the kernel repository will publish |
-| `boubou-general` | the general-purpose product: `harness` (the `general` preset, its task prompt, its skills under `skills/`), the web UI, the terminal chat (`chat`) | depends on the kernel (and the voice adapter) only |
-| `boubou-coding` | the coding product: `harness` (the `coding` preset, its task prompt, its skills under `skills/`), the ACP server | depends on the kernel only |
-| `boubou-voice` | the speech-to-text adapter | product-neutral; goes with the kernel or the general product at the split |
-| `boubou-cli` | the `boubou` binary wiring the crates together, `run` for the batch harness and the bench | the only crate that sees everything |
-| `boubou-app` | the Tauri shell around `boubou-general` | goes with the general product |
+| `rufous-kernel` | the model boundary, the ladders, salvage, coercion, compaction, the safety rings, profiles, the executor, config, sessions, tools, MCP, web search, memory, `TurnPolicy` with the `unattended`, `child` and `conversation` behaviours and the kernel's task prefill | depends on no product crate; its public API is what the kernel repository will publish |
+| `rufous-general` | the general-purpose product: `harness` (the `general` preset, its task prompt, its skills under `skills/`), the web UI, the terminal chat (`chat`) | depends on the kernel (and the voice adapter) only |
+| `rufous-coding` | the coding product: `harness` (the `coding` preset, its task prompt, its skills under `skills/`), the ACP server | depends on the kernel only |
+| `rufous-voice` | the speech-to-text adapter | product-neutral; goes with the kernel or the general product at the split |
+| `rufous-cli` | the `rufous` binary wiring the crates together, `run` for the batch harness and the bench | the only crate that sees everything |
+| `rufous-app` | the Tauri shell around `rufous-general` | goes with the general product |
 
 Still to place: the `unattended` preset and the parallel dispatch machinery are Mingbird's
-batch harness, used by `boubou run` and the bench. They stay in the kernel until a product
-wants them or neither does, and then move to the bench or a crate of their own. `boubou run`
+batch harness, used by `rufous run` and the bench. They stay in the kernel until a product
+wants them or neither does, and then move to the bench or a crate of their own. `rufous run`
 and the bench see both products' skills through the CLI, the one crate that sees everything;
 the bench stays beside the kernel with a product arm each.
 
@@ -56,7 +56,7 @@ The repositories split when two of these three hold:
 
 ## The seam: `TurnPolicy`
 
-`crates/boubou-kernel/src/agent/policy.rs`. `RunParams::policy` replaces the old
+`crates/rufous-kernel/src/agent/policy.rs`. `RunParams::policy` replaces the old
 `RunParams::interactive` boolean. The loop takes its policy from `RunParams::turn_policy`,
 which is `child` whenever the sandbox flag `child_mode` is set and `policy` otherwise. At
 the start of a turn the loop calls `policy.turn(intent, ablated)` once and gets a `Turn`:
@@ -79,17 +79,17 @@ Presets and who sets them:
 
 | Preset | `text_ends_turn` | `gates` | `intent_routing` | `parallel_dispatch` | Set by |
 |---|---|---|---|---|---|
-| `unattended` | off | all nine | on | on | `boubou run`, the web UI with `batch: true`; the default |
+| `unattended` | off | all nine | on | on | `rufous run`, the web UI with `batch: true`; the default |
 | `child` | off | the five delivery gates, no plan bookkeeping | off (no decider either) | off | a dispatched child, through `RunParams::turn_policy` whenever the sandbox flag is set |
 | `conversation` | on | none | off | off | nobody directly: the kernel's conversational semantics, which the product presets are built on |
-| `general` (`boubou-general::harness`) | on | none | off | off | the web UI's chat (`boubou serve`, `boubou-app`) and `boubou chat` |
-| `coding` (`boubou-coding::harness`) | on | none | off | off | the ACP server (`boubou acp`, Zed) |
+| `general` (`rufous-general::harness`) | on | none | off | off | the web UI's chat (`rufous serve`, `rufous-app`) and `rufous chat` |
+| `coding` (`rufous-coding::harness`) | on | none | off | off | the ACP server (`rufous acp`, Zed) |
 
 `general` and `coding` are each `TurnPolicy { name, prompt, ..conversation() }` in their
 product crate, with their own copy of the task prefill. The copies are the kernel's
 `TASK_BASE` less its two sentences asking for finish (bead boubou-twe, 2026-11-02: in a
 conversation text ends the turn, and a finish summary taken as the reply dropped the standing
-instructions). A test in each product crate states that difference, and one in `boubou-cli`,
+instructions). A test in each product crate states that difference, and one in `rufous-cli`,
 the crate that sees both, pins the presets to each other, so that each divergence is a
 deliberate, documented change (step 10 below) and not drift.
 
@@ -110,16 +110,16 @@ Policy decisions the loop still takes from somewhere other than `TurnPolicy`:
 | # | Step | Done when | Status |
 |---|---|---|---|
 | 1 | `TurnPolicy` struct with `general`, `coding` and `unattended`; `RunParams::interactive` removed; every surface sets a preset | workspace tests pass with no behaviour change; the equality test is in | done |
-| 2 | Crates mirror the repositories: `boubou-core` → `boubou-kernel`, `boubou-web` → `boubou-general`, `boubou-acp` → `boubou-coding` | the workspace builds and tests under the new names; the kernel depends on no product crate | done |
-| 3 | `boubou chat` runs `general`; `chat_mode` removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | done |
+| 2 | Crates mirror the repositories: `boubou-core` → `rufous-kernel`, `boubou-web` → `rufous-general`, `boubou-acp` → `rufous-coding` | the workspace builds and tests under the new names; the kernel depends on no product crate | done |
+| 3 | `rufous chat` runs `general`; `chat_mode` removed | `RunParams::chat_mode` gone; `chat` and the web UI behave the same on a text reply | done |
 | 4 | The intent route is a value the policy derives from the decider's intent (`Route`, and `Turn` for the derived switches) | the route read in fewer than ten places in `run.rs`; no `!child && policy.x && intent == …` expressions | done |
 | 5 | System prompt chosen from the policy and the route (`Turn::prompt`, `Prompt::rebuild`) | `run.rs` no longer branches on `child` or `qa` to pick a prompt | done |
 | 6 | The finish gates are named units the policy lists (`Gate`, `Gates`) | `coding` can keep the named-deliverable gate and drop the test guard by changing the preset only | done |
 | 7 | `child_mode` split: sandbox and tool face stay as safety; the rest is the `child` preset | `run.rs` reads `child` only where the sandbox or the dispatch receipt needs it | done |
-| 8 | Kernel boundary inside `boubou-kernel`: the ladders, compaction, retry, the corrector ledger and salvage are modules the policy-driven loop calls (`agent/ladders.rs`, `guards/leak.rs`) | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | done |
+| 8 | Kernel boundary inside `rufous-kernel`: the ladders, compaction, retry, the corrector ledger and salvage are modules the policy-driven loop calls (`agent/ladders.rs`, `guards/leak.rs`) | `run.rs` is the policy loop; the kernel module has no policy field reads; line counts recorded in the changelog | done |
 | 9 | Sessions record the policy they ran under (`policy` in `<name>.meta.json`, a key Mingbird's merge preserves) | a resumed session keeps its policy or says it changed: the loop logs `[policy] session X ran under A; this turn runs under B` and the meta follows the turn that ran | done |
-| 10 | `general` and `coding` diverge where measurement says so. Rig in place: `boubou run --policy`, `lrab_h2h.py --policy`, `bench/lrab_ext` tiers `tier6_editor` (five editor briefs) and `tier7_chat` (five chat briefs), `reply.md` for text answers | the pinning tests are replaced by ones that state the difference and why, with the bench numbers in the changelog | open: two runs 2026-10-30 (changelog). Run 1: coding 0.94 vs unattended 0.80, every unattended refusal a test-guard misfire. Gate 2 replaced (`testguard.rs`). Run 2: coding 1.00 vs unattended 0.91, 0 refusals, 10 min against 38; the one difference left is ED-03 at n=1. tier7_chat general vs unattended: 1.00 everywhere, 6 min. No divergence is warranted by these numbers; the named-deliverable gate was not needed in any run. Ablation (gemma4:e2b, `kernel` off): 0.64 against 0.72, six finishes over a failing check against none, 15 min against 6. `small_model` alone: 0.69, ED-04 1.00/1.00 with real edits, ED-01 lost to the invented `workdir/` path; the rule is a wash at n=1, and the recurring model quirk is the path, not the edit protocol. `finish_gate` alone: unattended 0.70 against 0.74; its five coding cells repeat the probe's configuration and moved 0.70 to 0.47, so every ablation mean difference is inside run-to-run noise and only the per-cell mechanism readings stand; n≥3 per cell before any mean claim. Workdir-prefix rule in gemma4:e2b's profile (bead 8e6): rerun fired in 4 cells, no invented subdirectory, 0.76. Three-run baseline (2026-10-31): 0.748, run means 0.66/0.80/0.78, sd 0.07, the rule fired on the first call in 18/30 cells, ED-04 0/6 to the ≤4B rule's whole-file writes against 1.00/1.00 with it off; the rule has no winning cell left; removed 2026-10-31 (bead 6uj), no tool is withheld by parameter count, after-measurement `gemma_e2b_no_small_rule`: 0.825 vs 0.748 (run means 0.82/0.77/0.89 vs 0.66/0.80/0.78), ED-04 0/6 → 4/6 full passes; new losses are stale-`old`-text misses after the model's own edit and single-occurrence replacement (ED-02 coding 1.00 → 0.62), which is `bk9.3`'s case. The rule stays out. `--workdir-name proj` run (2026-10-31): the model asked for `proj` and `proj/slug.py`, never `workdir`, so the rule keys on the right thing and covers real project directories; 0.839 over 10 cells, inside the baseline spread |
-| 11 | The chat CLI, the prompts and the skills move into the product crates | `boubou-cli` holds wiring and `run` only; each product crate owns its preset's prompts and skills (`harness.rs` and `skills/` in `boubou-general` and `boubou-coding`; skills compiled in, `Skill::embedded`) | done |
+| 10 | `general` and `coding` diverge where measurement says so. Rig in place: `rufous run --policy`, `lrab_h2h.py --policy`, `bench/lrab_ext` tiers `tier6_editor` (five editor briefs) and `tier7_chat` (five chat briefs), `reply.md` for text answers | the pinning tests are replaced by ones that state the difference and why, with the bench numbers in the changelog | open: two runs 2026-10-30 (changelog). Run 1: coding 0.94 vs unattended 0.80, every unattended refusal a test-guard misfire. Gate 2 replaced (`testguard.rs`). Run 2: coding 1.00 vs unattended 0.91, 0 refusals, 10 min against 38; the one difference left is ED-03 at n=1. tier7_chat general vs unattended: 1.00 everywhere, 6 min. No divergence is warranted by these numbers; the named-deliverable gate was not needed in any run. Ablation (gemma4:e2b, `kernel` off): 0.64 against 0.72, six finishes over a failing check against none, 15 min against 6. `small_model` alone: 0.69, ED-04 1.00/1.00 with real edits, ED-01 lost to the invented `workdir/` path; the rule is a wash at n=1, and the recurring model quirk is the path, not the edit protocol. `finish_gate` alone: unattended 0.70 against 0.74; its five coding cells repeat the probe's configuration and moved 0.70 to 0.47, so every ablation mean difference is inside run-to-run noise and only the per-cell mechanism readings stand; n≥3 per cell before any mean claim. Workdir-prefix rule in gemma4:e2b's profile (bead 8e6): rerun fired in 4 cells, no invented subdirectory, 0.76. Three-run baseline (2026-10-31): 0.748, run means 0.66/0.80/0.78, sd 0.07, the rule fired on the first call in 18/30 cells, ED-04 0/6 to the ≤4B rule's whole-file writes against 1.00/1.00 with it off; the rule has no winning cell left; removed 2026-10-31 (bead 6uj), no tool is withheld by parameter count, after-measurement `gemma_e2b_no_small_rule`: 0.825 vs 0.748 (run means 0.82/0.77/0.89 vs 0.66/0.80/0.78), ED-04 0/6 → 4/6 full passes; new losses are stale-`old`-text misses after the model's own edit and single-occurrence replacement (ED-02 coding 1.00 → 0.62), which is `bk9.3`'s case. The rule stays out. `--workdir-name proj` run (2026-10-31): the model asked for `proj` and `proj/slug.py`, never `workdir`, so the rule keys on the right thing and covers real project directories; 0.839 over 10 cells, inside the baseline spread |
+| 11 | The chat CLI, the prompts and the skills move into the product crates | `rufous-cli` holds wiring and `run` only; each product crate owns its preset's prompts and skills (`harness.rs` and `skills/` in `rufous-general` and `rufous-coding`; skills compiled in, `Skill::embedded`) | done |
 | 12 | Repositories split: kernel, general-purpose agent, coding agent | each product repository depends on a published kernel version; two of the three signals above hold | open |
 
 Steps 3 to 7 can land in any order and each one is a single commit with the workspace tests

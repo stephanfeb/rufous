@@ -22,8 +22,8 @@ import json
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BOUBOU_ROOT = os.path.dirname(os.path.dirname(HERE))
-MINGBIRD_ROOT = os.environ.get("MINGBIRD_ROOT") or os.path.join(os.path.dirname(BOUBOU_ROOT), "Mingbird-agent")
+RUFOUS_ROOT = os.path.dirname(os.path.dirname(HERE))
+MINGBIRD_ROOT = os.environ.get("MINGBIRD_ROOT") or os.path.join(os.path.dirname(RUFOUS_ROOT), "Mingbird-agent")
 LRAB_FIXTURES = os.path.join(MINGBIRD_ROOT, "bench", "lrab", "fixtures")
 OUT = os.path.join(HERE, "hidden")
 

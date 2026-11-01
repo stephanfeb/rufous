@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Process metrics for one LRAB cell, from the agent transcript and the finished workdir.
 
-Both arms print the same transcript shape (Boubou mirrors Mingbird's CLI output):
+Both arms print the same transcript shape (rufous mirrors Mingbird's CLI output):
   [ctx: 1582/32768 = 4%]                       prompt tokens before a turn
   [N|+Ns] ⚙ tool {"args"...} -> result head     a tool call and the head of its result
-  [N] ⚠️ text                                    a guard firing (English in Boubou, Chinese in Mingbird)
-  [N] 🐚 [exit N]: text                          a failed command's first stderr line (Boubou)
+  [N] ⚠️ text                                    a guard firing (English in rufous, Chinese in Mingbird)
+  [N] 🐚 [exit N]: text                          a failed command's first stderr line (rufous)
 so one parser scores both. The counts reported, alongside the artefact score:
 
   tool_calls            ⚙ lines
@@ -20,7 +20,7 @@ so one parser scores both. The counts reported, alongside the artefact score:
   compactions           compaction ladder steps taken ([context compaction L1..3] / [上下文压缩 L1..3]
                         lines, failed levels excluded) plus context-overflow forced compactions
   compaction_max_level  the deepest ladder level reached (0 = none)
-  prunes                recency-pruning passes ([context pruning: N older tool results …], Boubou only)
+  prunes                recency-pruning passes ([context pruning: N older tool results …], rufous only)
   pruned_results        tool results collapsed to fact lines over the run
   budget_nudges         ⏱ time-budget nudges injected
   forced_end            the run was ended by the wrap-up/dead-loop guard or the iteration cap,
@@ -75,7 +75,7 @@ NAMED_FILE = re.compile(r"\b([\w][\w\-]*\.(?:md|py|json|yaml|yml|csv|txt|png|svg
 # Never deliverables even when named: the prompt itself and plan files.
 NOT_DELIVERABLE = {"task_input.txt", "plan.md", "todo.json"}
 
-# Guard classifier: (metric, [substrings]); English (Boubou) and Chinese (Mingbird) side by side.
+# Guard classifier: (metric, [substrings]); English (rufous) and Chinese (Mingbird) side by side.
 GUARDS = [
     ("finish_refusals", ["finish rejected", "rejected a hollow finish", "拒绝 finish", "拒绝假 finish"]),
     ("predelivery_checks", ["pre-delivery check", "交付自查"]),

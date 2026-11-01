@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the context-pressure tier (bead boubou-65d.9): tasks whose inputs do not fit a
 small context, so the agent has to search, run and summarise instead of reading everything.
-Deterministic (seeded), reviewable, Boubou-side: Mingbird's tree is never written to. The task
+Deterministic (seeded), reviewable, rufous-side: Mingbird's tree is never written to. The task
 files use Mingbird's LRAB schema and its scorer's check kinds (exists, contains_any,
 contains_groups, script_pass), so `bench/lrab_h2h.py --task-root bench/lrab_ext` scores them
 with the same referee. Only checks that need no seed under Mingbird's tree are used
@@ -54,7 +54,7 @@ def task_json(**kw):
         "judge_rubric": "",
         "max_wall_minutes": 40,
         "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve "
-                 "against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+                 "against bench/lrab_ext, so only the rufous arm of lrab_h2h.py runs it",
         "extra_judge_note": "",
     }
     base.update(kw)

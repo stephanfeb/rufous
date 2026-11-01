@@ -366,105 +366,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "boubou-app"
-version = "0.2.0"
-dependencies = [
- "boubou-general",
- "boubou-kernel",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
-]
-
-[[package]]
-name = "boubou-cli"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "boubou-coding",
- "boubou-general",
- "boubou-kernel",
- "boubou-voice",
- "clap",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "boubou-coding"
-version = "0.2.0"
-dependencies = [
- "agent-client-protocol",
- "boubou-kernel",
- "chrono",
- "futures-util",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "boubou-general"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "axum",
- "boubou-kernel",
- "boubou-voice",
- "chrono",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
-name = "boubou-kernel"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "dirs",
- "encoding_rs",
- "futures-util",
- "glob",
- "regex",
- "reqwest",
- "rmcp",
- "scraper",
- "serde",
- "serde_json",
- "sha1 0.10.7",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "unicode-normalization",
-]
-
-[[package]]
-name = "boubou-voice"
-version = "0.2.0"
-dependencies = [
- "boubou-kernel",
- "reqwest",
- "serde_json",
- "sherpa-onnx",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3692,6 +3593,105 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "rufous-app"
+version = "0.2.0"
+dependencies = [
+ "rufous-general",
+ "rufous-kernel",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
+name = "rufous-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rufous-coding",
+ "rufous-general",
+ "rufous-kernel",
+ "rufous-voice",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rufous-coding"
+version = "0.2.0"
+dependencies = [
+ "agent-client-protocol",
+ "chrono",
+ "futures-util",
+ "rufous-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rufous-general"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "rufous-kernel",
+ "rufous-voice",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "rufous-kernel"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "encoding_rs",
+ "futures-util",
+ "glob",
+ "regex",
+ "reqwest",
+ "rmcp",
+ "scraper",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "rufous-voice"
+version = "0.2.0"
+dependencies = [
+ "reqwest",
+ "rufous-kernel",
+ "serde_json",
+ "sherpa-onnx",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

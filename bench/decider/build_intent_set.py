@@ -8,7 +8,7 @@ Labels, by what the loop must do, not by surface form:
   task       needs the task loop: run_bash, files written or edited, a deliverable, a plan.
   follow_up  a short steer on work already under way (continuation, correction, confirmation).
 
-Sources: candidates.json (collected from the user's sessions, English only (Boubou targets en_UK), LRAB prompts, probe prompts and
+Sources: candidates.json (collected from the user's sessions, English only (rufous targets en_UK), LRAB prompts, probe prompts and
 the test corpora; labelled here by index) plus authored cases that over-sample the heuristic's
 0.5 defaults (short messages, long cue-free messages) and its known blind spots (questions that
 contain task verbs). `uncertain` marks cases where a reasonable labeller could disagree.
@@ -172,7 +172,7 @@ for t in [
     "A requirements.txt matching the imports in this project is missing",
     "The config example in the README is out of date compared to config.rs",
     "The report needs a figure comparing wall time per arm, saved under figures/",
-    "All occurrences of the old product name in docs/ should say Boubou",
+    "All occurrences of the old product name in docs/ should say rufous",
     "The dockerfile is broken since the base image changed",
     "The two JSON schemas in schema/ should be merged into one with shared definitions",
     "Line endings in the templates are mixed and should be LF throughout",

@@ -4,7 +4,7 @@
   "plan_steps": [],
   "judge_rubric": "",
   "max_wall_minutes": 20,
-  "notes": "surface tier 6 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "notes": "surface tier 6 (bench/lrab_ext/gen_surface.py): the brief is what a user types at the product surface; run with --policy; fixtures resolve against bench/lrab_ext, so only the rufous arm of lrab_h2h.py runs it",
   "extra_judge_note": "",
   "id": "ED-05",
   "domain": "editor-explain-without-changing",

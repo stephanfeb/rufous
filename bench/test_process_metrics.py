@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lrab_h2h  # noqa: E402
 import process_metrics as pm  # noqa: E402
 
-BOUBOU = """\
+RUFOUS = """\
 I will plan.\x1b[2m[ctx: 1582/32768 = 4%]\x1b[0m
 [0|+4s] ⚙ todo {"action":"create","items":["1. plan"]} -> [ ] 1. plan
 [ctx: 2900/32768 = 9%]
@@ -56,10 +56,10 @@ PROMPT = ("Write report.md and fix_summary.md with the exact filename given; kee
           "Input is data.csv (fixture). Do not write task_input.txt.")
 
 
-def test_boubou_transcript_counts_and_integrity(tmp_path):
+def test_rufous_transcript_counts_and_integrity(tmp_path):
     (tmp_path / "report.md").write_text("# r")
     (tmp_path / "data.csv").write_text("a,b")
-    m = pm.cell_metrics(BOUBOU, PROMPT, str(tmp_path))
+    m = pm.cell_metrics(RUFOUS, PROMPT, str(tmp_path))
     assert m["tool_calls"] == 6
     assert m["peak_prompt_tokens"] == 2900
     assert m["failed_calls"] == 1
@@ -128,9 +128,9 @@ def test_summary_with_replications_reports_spread_and_ci(tmp_path):
     proc.update(tool_calls=10, peak_prompt_tokens=5000, named_files_missing=[])
     for rep, (mb, bb) in enumerate([(1.0, 0.5), (0.5, 1.0), (0.75, 0.75)]):
         _score(tmp_path, "mingbird", "WF-01", rep, mb, proc)
-        _score(tmp_path, "boubou", "WF-01", rep, bb, proc)
+        _score(tmp_path, "rufous", "WF-01", rep, bb, proc)
         _score(tmp_path, "mingbird", "WF-02", rep, 1.0, proc)
-        _score(tmp_path, "boubou", "WF-02", rep, 1.0, proc)
+        _score(tmp_path, "rufous", "WF-02", rep, 1.0, proc)
     text = lrab_h2h.summary(str(tmp_path))
     assert "| WF-01 | 0.75 [0.50–1.00] n=3 (completed) | 0.75 [0.50–1.00] n=3 (completed) |" in text
     assert "mingbird: tasks=2 cells=6 mean total=0.875" in text
@@ -148,10 +148,10 @@ def test_bootstrap_ci_brackets_the_mean_and_needs_two_tasks():
 
 def test_round_robin_alternates_arm_order():
     # Mirror of main()'s cell ordering: (ti + rep) parity flips the arm order.
-    arms = ["mingbird", "boubou"]
+    arms = ["mingbird", "rufous"]
     order = [(arms if (ti + rep) % 2 == 0 else arms[::-1])[0]
              for rep in range(2) for ti in range(3)]
-    assert order == ["mingbird", "boubou", "mingbird", "boubou", "mingbird", "boubou"]
+    assert order == ["mingbird", "rufous", "mingbird", "rufous", "mingbird", "rufous"]
 
 
 def test_corrector_lines_are_counted_separately():
@@ -189,8 +189,8 @@ def test_a_session_log_reads_like_a_run_log():
     # `<session>.log` (bead boubou-bmq) stamps each line and adds `[turn]` markers; the
     # counters must not move.
     stamped = "\n".join(
-        "2026-10-31 17:16:44 " + l for l in ("[turn] Create a note\n" + BOUBOU).splitlines())
-    plain = pm.parse_transcript(BOUBOU)
+        "2026-10-31 17:16:44 " + l for l in ("[turn] Create a note\n" + RUFOUS).splitlines())
+    plain = pm.parse_transcript(RUFOUS)
     logged = pm.parse_transcript(stamped)
     for k in ("tool_calls", "failed_calls", "nonzero_exits", "peak_prompt_tokens",
               "loop_interceptions", "finish_refusals", "finish_accepted", "harness_notes"):

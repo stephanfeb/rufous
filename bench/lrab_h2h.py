@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""LRAB head-to-head: Mingbird (Python) vs Boubou (this Rust port) on Mingbird's benchmark.
+"""LRAB head-to-head: Mingbird (Python) vs rufous (this Rust port) on Mingbird's benchmark.
 
 Mingbird is a third-party project and is never modified: its runner is invoked as-is for the
 `mingbird` arm, its tasks/fixtures are read in place, and its scorer (`score_task`) is imported
-read-only as the single referee for both arms. The `boubou` arm is driven here with the same
+read-only as the single referee for both arms. The `rufous` arm is driven here with the same
 workdir preparation, env knobs, kill-resume protocol and failure-mode classification as
 Mingbird's `_cmd_mingbird`, so the two arms differ only in the runtime under test.
 
 Usage (the mingbird arm needs `requests` and `beautifulsoup4` in the interpreter):
   uv run --with requests --with beautifulsoup4 python bench/lrab_h2h.py --model gemma4:e2b
-  python bench/lrab_h2h.py --arms boubou --tasks WF-01,WF-07 --timeout-min 20
+  python bench/lrab_h2h.py --arms rufous --tasks WF-01,WF-07 --timeout-min 20
   python bench/lrab_h2h.py --runs 3             # 3 runs per cell (alias --reps), round-robin over (run, task, arm)
-  python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier6_editor \
+  python bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext --tiers tier6_editor \
                            --policy coding --workdir-name proj
                                                 # the cell's working directory is <cell>/proj, so the model's
                                                 # system prompt names a directory not called "workdir"
   python bench/lrab_h2h.py --summary            # table from an existing results dir
-  python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --ctx 16384,32768,65536
-                                                # Boubou-side tiers (context pressure), AGENT_CTX sweep
+  python bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext --ctx 16384,32768,65536
+                                                # rufous-side tiers (context pressure), AGENT_CTX sweep
   python bench/lrab_h2h.py --model qwen3.5:9b,gemma4:12b --think on,off --ctx 16384
                                                 # serving sweep: every (model, think, ctx) cell is recorded
-  python bench/lrab_h2h.py --arms boubou --task-root bench/lrab_ext --tiers tier6_editor,tier7_chat \
+  python bench/lrab_h2h.py --arms rufous --task-root bench/lrab_ext --tiers tier6_editor,tier7_chat \
                            --policy general,coding
                                                 # turn-policy sweep (docs/refactor.md step 10): the task file
                                                 # is the one message of a web chat / an editor turn
@@ -42,22 +42,22 @@ standard deviation across runs ("run means 0.70/0.47, sd 0.16"), which is the sp
 comparison between two results dirs has to clear. The 2026-10-31 coding repeat moved a five-cell
 preset mean 0.70 → 0.47 under one configuration, so no mean claim is made from n=1.
 
---workdir-name NAME (boubou arm only; default `workdir`) names the cell's working directory,
+--workdir-name NAME (rufous arm only; default `workdir`) names the cell's working directory,
 the last segment of the absolute path the system prompt shows the model; recorded as axis
 `workdir`, in the run id as `_w<name>` when it is not the default, and the summary labels rows
 `dir=<name>` when it varies.
 
---policy runs `boubou run --policy <name>` (boubou arm only): `unattended` is the batch harness,
+--policy runs `rufous run --policy <name>` (rufous arm only): `unattended` is the batch harness,
 `general` and `coding` the product presets, under which a text reply ends the run. For every
-boubou cell the final reply (the last assistant text, else the `finish` summary) is written to
+rufous cell the final reply (the last assistant text, else the `finish` summary) is written to
 `reply.md` in the workdir before scoring, unless the agent wrote one itself, so a task can check
 an answer the way it checks a file under any policy.
 
-Env: MINGBIRD_ROOT (default: sibling `../Mingbird-agent`), BOUBOU_BIN (default: PATH, then
+Env: MINGBIRD_ROOT (default: sibling `../Mingbird-agent`), RUFOUS_BIN (default: PATH, then
 this checkout's target/release then target/debug), AGENT_CTX / AGENT_SLIM_OUTPUT pass through.
 
 Task roots: a task root holds `tasks/<tier>/*.json` and `fixtures/`, Mingbird's LRAB layout. The
-default root is Mingbird's `bench/lrab`; `--task-root` points at a Boubou-side root such as
+default root is Mingbird's `bench/lrab`; `--task-root` points at a rufous-side root such as
 `bench/lrab_ext` (the context-pressure tier). Mingbird's own runner resolves fixtures against its
 own tree, so the mingbird arm only runs on the default root; the scorer is the same for both.
 """
@@ -76,31 +76,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import process_metrics  # noqa: E402  (same directory)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BOUBOU_ROOT = os.path.dirname(HERE)
+RUFOUS_ROOT = os.path.dirname(HERE)
 MINGBIRD_ROOT = os.environ.get("MINGBIRD_ROOT") or os.path.join(
-    os.path.dirname(BOUBOU_ROOT), "Mingbird-agent")
+    os.path.dirname(RUFOUS_ROOT), "Mingbird-agent")
 LRAB = os.path.join(MINGBIRD_ROOT, "bench", "lrab")
 BENCH_HOME = os.path.expanduser("~/.mingbird_bench")   # same isolated home as the mingbird arm
-HIDDEN_DIR = os.path.join(BOUBOU_ROOT, "bench", "lrab_ext", "hidden")
+HIDDEN_DIR = os.path.join(RUFOUS_ROOT, "bench", "lrab_ext", "hidden")
 TIERS = ["tier1_retrieval", "tier2_synthesis", "tier3_workflow", "tier4_longhorizon"]
 
 
-# ---------------------------------------------------------------- boubou arm
-def boubou_exe():
+# ---------------------------------------------------------------- rufous arm
+def rufous_exe():
     cands = []
-    if os.environ.get("BOUBOU_BIN"):
-        cands.append(os.environ["BOUBOU_BIN"])
-    on_path = shutil.which("boubou")
+    if os.environ.get("RUFOUS_BIN"):
+        cands.append(os.environ["RUFOUS_BIN"])
+    on_path = shutil.which("rufous")
     if on_path:
         cands.append(on_path)
-    exe = "boubou.exe" if os.name == "nt" else "boubou"
-    cands += [os.path.join(BOUBOU_ROOT, "target", "release", exe),
-              os.path.join(BOUBOU_ROOT, "target", "debug", exe)]
+    exe = "rufous.exe" if os.name == "nt" else "rufous"
+    cands += [os.path.join(RUFOUS_ROOT, "target", "release", exe),
+              os.path.join(RUFOUS_ROOT, "target", "debug", exe)]
     for c in cands:
         if os.path.isfile(c):
             return c
-    raise FileNotFoundError("boubou binary not found; set BOUBOU_BIN or run "
-                            "`cargo build --release -p boubou-cli` (tried: %s)" % ", ".join(cands))
+    raise FileNotFoundError("rufous binary not found; set RUFOUS_BIN or run "
+                            "`cargo build --release -p rufous-cli` (tried: %s)" % ", ".join(cands))
 
 
 def prepare_workdir(task, workdir, task_root=LRAB):
@@ -134,13 +134,13 @@ def axes_env(env, ctx=None, think=None):
 POLICIES = ("unattended", "general", "coding")
 
 
-def boubou_cmd(workdir, model, ctx=None, think=None, policy=None):
+def rufous_cmd(workdir, model, ctx=None, think=None, policy=None):
     """Same contract and env as Mingbird's `_cmd_mingbird`; no --new so phase 2 of a
     kill-resume run continues from .agent_state.json. `ctx` / `think` override AGENT_CTX /
     AGENT_THINK for the cell; `policy` adds `--policy <name>` (unset = the batch harness)."""
     env = dict(os.environ)
     env.pop("AGENT_STREAM", None)
-    env["BOUBOU_HOME"] = BENCH_HOME
+    env["RUFOUS_HOME"] = BENCH_HOME
     env["MINGBIRD_HOME"] = BENCH_HOME
     env["AGENT_CTX"] = os.environ.get("AGENT_CTX", "32768")
     axes_env(env, ctx, think)
@@ -148,7 +148,7 @@ def boubou_cmd(workdir, model, ctx=None, think=None, policy=None):
     env["AGENT_UNATTENDED"] = "1"
     env.setdefault("PYTHONUTF8", "1")
     ensure_python_on_path(env)
-    cmd = [boubou_exe(), "run", model, os.path.join(workdir, "task_input.txt"), workdir]
+    cmd = [rufous_exe(), "run", model, os.path.join(workdir, "task_input.txt"), workdir]
     if policy:
         cmd += ["--policy", policy]
     return cmd, env
@@ -243,9 +243,9 @@ def _run_phase(cmd, env, cwd, timeout_s):
         return -9, out or "", err or "", time.time() - t0, True
 
 
-def run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx=None, think=None, policy=None):
+def run_rufous(task, workdir, model, timeout_min, kill_at_pct, ctx=None, think=None, policy=None):
     """Returns (rc, stdout, stderr, wall, meta). meta mirrors run_bench's resume dict."""
-    cmd, env = boubou_cmd(workdir, model, ctx, think, policy)
+    cmd, env = rufous_cmd(workdir, model, ctx, think, policy)
     budget = timeout_min * 60
     if not kill_at_pct:
         rc, out, err, wall, timed_out = _run_phase(cmd, env, workdir, budget)
@@ -296,7 +296,7 @@ MINGBIRD_EMPTY_SPIN = "\u590d\u4f4d\u65e0\u6548,\u4f18\u96c5\u9000\u51fa"
 
 
 def classify(rc, wall, transcript, score, workdir):
-    """run_bench's failure-mode ladder, applied to the boubou arm verbatim."""
+    """run_bench's failure-mode ladder, applied to the rufous arm verbatim."""
     if rc != 0:
         mode = "crash" if wall < 60 else "error"
         if mode == "crash" and "UnicodeEncodeError" in transcript:
@@ -378,19 +378,19 @@ def cell_axes(model, ctx, think, policy=None, workdir_name=None):
             "workdir": workdir_name or DEFAULT_WORKDIR_NAME}
 
 
-def run_boubou_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge,
+def run_rufous_arm(task_path, task, model, out_dir, run_id, timeout_min, kill_at_pct, judge,
                    task_root=LRAB, ctx=None, think=None, overlay=None, policy=None,
                    workdir_name=DEFAULT_WORKDIR_NAME):
     workdir = os.path.join(out_dir, workdir_name)
     prepare_workdir(task, workdir, task_root)
-    rc, out, err, wall, meta = run_boubou(task, workdir, model, timeout_min, kill_at_pct, ctx, think, policy)
+    rc, out, err, wall, meta = run_rufous(task, workdir, model, timeout_min, kill_at_pct, ctx, think, policy)
     with open(os.path.join(out_dir, "transcript.txt"), "w", encoding="utf-8") as f:
         f.write(out)
         if err:
             f.write("\n--- STDERR ---\n" + err)
     write_reply(workdir)  # every policy: unattended's `finish` summary is its reply
     axes = cell_axes(model, ctx, think, policy, workdir_name)
-    base = {"task_id": task["id"], "agent": "boubou", "model": model,
+    base = {"task_id": task["id"], "agent": "rufous", "model": model,
             "wall_seconds": round(wall, 1), "exit_code": rc, "run_id": run_id,
             "ctx": axes["ctx"], "axes": axes}
     if meta and (meta.get("timed_out") or meta.get("phase2_timeout")):
@@ -572,6 +572,11 @@ PROCESS_COLS = [("calls", "tool_calls"), ("peak ctx", "peak_prompt_tokens"), ("c
                 ("shell", "shell_errors"), ("bak", "bak_calls"), ("notes", "harness_notes")]
 
 
+# The arm's name before rufous: accepted on --arms and read from older score.json rows, so
+# result folders written then still summarise beside new ones.
+ARM_ALIASES = {"boubou": "rufous"}
+
+
 def summary(results):
     rows = {}
     scores = [json.load(open(sp, encoding="utf-8")) for sp in glob.glob(os.path.join(results, "*", "score.json"))]
@@ -580,8 +585,9 @@ def summary(results):
     values = {k: {str(axes_of(d)[k]) for d in scores if axes_of(d)[k] is not None} for k in AXES}
     varying = [k for k in AXES if len(values[k]) > 1]
     for d in scores:
-        rows.setdefault(row_key(d, varying), {}).setdefault(d["agent"], []).append(d)
-    arms = ["mingbird", "boubou"]
+        arm = ARM_ALIASES.get(d["agent"], d["agent"])
+        rows.setdefault(row_key(d, varying), {}).setdefault(arm, []).append(d)
+    arms = ["mingbird", "rufous"]
     order = sorted(rows, key=lambda x: (not x.startswith("WF"), x))
     lines = []
     # The default workdir name is the layout, not a setting: printed only when it varies or
@@ -591,12 +597,12 @@ def summary(results):
     if constant:
         lines.append("axes: " + ", ".join(constant) + (f"; varying: {', '.join(varying)}" if varying else ""))
         lines.append("")
-    lines += ["| task | mingbird | boubou |", "|---|---|---|"]
+    lines += ["| task | mingbird | rufous |", "|---|---|---|"]
     per_task = {a: [] for a in arms}
     for tid in order:
         r = rows[tid]
         lines.append(f"| {tid} | {cell_reps(r['mingbird']) if 'mingbird' in r else '—'} "
-                     f"| {cell_reps(r['boubou']) if 'boubou' in r else '—'} |")
+                     f"| {cell_reps(r['rufous']) if 'rufous' in r else '—'} |")
         for a in arms:
             if a in r:
                 per_task[a].append((sum(cell_total(d) for d in r[a]) / len(r[a]),
@@ -659,7 +665,7 @@ def summary(results):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="gemma4:e2b", help="model tag, or a comma list to sweep")
-    ap.add_argument("--arms", default="mingbird,boubou")
+    ap.add_argument("--arms", default="mingbird,rufous")
     ap.add_argument("--task-root", default=LRAB,
                     help="directory holding tasks/<tier>/*.json and fixtures/ (default: Mingbird's LRAB)")
     ap.add_argument("--tiers", default="",
@@ -669,11 +675,11 @@ def main():
     ap.add_argument("--think", default="",
                     help="comma list of on,off to sweep AGENT_THINK (unset = the model profile's default)")
     ap.add_argument("--policy", default="",
-                    help="comma list of unattended, general, coding: the turn policy `boubou run` uses for "
-                         "the cell (boubou arm only; unset = unattended); run ids get _pcoding etc.")
+                    help="comma list of unattended, general, coding: the turn policy `rufous run` uses for "
+                         "the cell (rufous arm only; unset = unattended); run ids get _pcoding etc.")
     ap.add_argument("--tasks", default="", help="comma list of task ids to restrict to")
     ap.add_argument("--heldout", action="store_true", help="use tasks_heldout instead of tasks")
-    ap.add_argument("--results", default=os.path.join(BOUBOU_ROOT, "bench", "results", "lrab_h2h"))
+    ap.add_argument("--results", default=os.path.join(RUFOUS_ROOT, "bench", "results", "lrab_h2h"))
     ap.add_argument("--timeout-min", type=int, default=20)
     ap.add_argument("--kill-at-pct", type=int, default=None, help="force kill-resume at this %% of budget")
     ap.add_argument("--judge", default="", help="judge model; empty = deterministic scoring only")
@@ -682,14 +688,14 @@ def main():
                          "cells run round-robin over (run, task, arm) with the arm order alternating per "
                          "task so machine drift cannot follow one arm")
     ap.add_argument("--workdir-name", default=DEFAULT_WORKDIR_NAME,
-                    help="name of the cell's working directory (boubou arm only): the last segment of the "
+                    help="name of the cell's working directory (rufous arm only): the last segment of the "
                          "absolute path the system prompt shows the model; recorded as axis `workdir`")
     ap.add_argument("--hidden", default=HIDDEN_DIR,
                     help='dir of hidden scorer overlays (<task_id>/overlay.json); "" disables')
     ap.add_argument("--summary", action="store_true", help="only print the table for --results")
     ap.add_argument("--dry-run", action="store_true", help="print the commands and exit")
     a = ap.parse_args()
-    a.results = os.path.abspath(a.results)   # the boubou arm runs with cwd=workdir
+    a.results = os.path.abspath(a.results)   # the rufous arm runs with cwd=workdir
     os.makedirs(a.results, exist_ok=True)
     if a.summary:
         print(summary(a.results))
@@ -697,10 +703,10 @@ def main():
     if not os.path.isdir(LRAB):
         sys.exit(f"Mingbird checkout not found at {MINGBIRD_ROOT} (set MINGBIRD_ROOT)")
     task_root = os.path.abspath(a.task_root)
-    arms = [x for x in a.arms.split(",") if x]
+    arms = [ARM_ALIASES.get(x, x) for x in a.arms.split(",") if x]
     if "mingbird" in arms and os.path.realpath(task_root) != os.path.realpath(LRAB):
         sys.exit("the mingbird arm resolves fixtures against Mingbird's own LRAB root, so a custom "
-                 "--task-root runs with --arms boubou only")
+                 "--task-root runs with --arms rufous only")
     ids = {x for x in a.tasks.split(",") if x}
     tiers = [t for t in a.tiers.split(",") if t] or (
         TIERS[:3] if os.path.realpath(task_root) == os.path.realpath(LRAB) else tiers_under(task_root, a.heldout))
@@ -714,12 +720,12 @@ def main():
     if any(p not in POLICIES for p in policies if p):
         sys.exit("--policy takes a comma list of " + ", ".join(POLICIES))
     if any(policies) and "mingbird" in arms:
-        sys.exit("the mingbird arm has no turn policies, so --policy runs with --arms boubou only")
+        sys.exit("the mingbird arm has no turn policies, so --policy runs with --arms rufous only")
     wname = a.workdir_name.strip()
     if not wname or wname in (".", "..") or "/" in wname or "\\" in wname:
         sys.exit("--workdir-name takes one plain directory name")
     if wname != DEFAULT_WORKDIR_NAME and "mingbird" in arms:
-        sys.exit("Mingbird's runner lays out its own workdir, so --workdir-name runs with --arms boubou only")
+        sys.exit("Mingbird's runner lays out its own workdir, so --workdir-name runs with --arms rufous only")
     swept = {"model"} if len(models) > 1 else set()
     cells = []
     for rep in range(a.reps):
@@ -742,8 +748,8 @@ def main():
             continue
         if a.dry_run:
             axes_txt = " ".join(f"{k}={v}" for k, v in cell_axes(model, ctx, think, policy, wname).items())
-            if arm == "boubou":
-                cmd, env = boubou_cmd(os.path.join(out_dir, wname), model, ctx, think, policy)
+            if arm == "rufous":
+                cmd, env = rufous_cmd(os.path.join(out_dir, wname), model, ctx, think, policy)
                 print(run_id, axes_txt, f"AGENT_THINK={env.get('AGENT_THINK', '(unset)')}", cmd)
             else:
                 print(run_id, axes_txt, "run_bench.py --agent mingbird --task", task_path)
@@ -757,8 +763,8 @@ def main():
               + (f" kill_at={kill_at}%" if kill_at else ""), flush=True)
         t0 = time.time()
         overlay = load_overlay(a.hidden, task["id"])
-        if arm == "boubou":
-            sc = run_boubou_arm(task_path, task, model, out_dir, run_id, budget, kill_at, a.judge,
+        if arm == "rufous":
+            sc = run_rufous_arm(task_path, task, model, out_dir, run_id, budget, kill_at, a.judge,
                                 task_root, ctx, think, overlay, policy, wname)
         else:
             with open(os.path.join(out_dir, "runner.log"), "w", encoding="utf-8") as log:

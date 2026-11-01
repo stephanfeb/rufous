@@ -3,7 +3,7 @@
 section 5, bead boubou-acy.2).
 
 Reads a labelled set (JSONL: text, has_progress, label in question|task|follow_up, source),
-runs `boubou decide` once over the originals and once over light rephrasings, and reports:
+runs `rufous decide` once over the originals and once over light rephrasings, and reports:
 
 - accuracy of the heuristic, of the model, and of simulated `on` mode (heuristic where its
   confidence >= threshold, model below), overall and on the heuristic-default subset (the only
@@ -23,7 +23,7 @@ import argparse, json, os, statistics, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-BOUBOU = os.path.join(ROOT, "target", "release", "boubou")
+RUFOUS = os.path.join(ROOT, "target", "release", "rufous")
 LABELS = ("question", "task", "follow_up")
 
 
@@ -61,7 +61,7 @@ def run_decide(cases, model, timeout_ms):
         for c in cases:
             f.write(json.dumps({"text": c["text"], "has_progress": bool(c.get("has_progress"))}) + "\n")
         path = f.name
-    cmd = [BOUBOU, "decide", "--file", path, "--timeout-ms", str(timeout_ms)]
+    cmd = [RUFOUS, "decide", "--file", path, "--timeout-ms", str(timeout_ms)]
     if model:
         cmd += ["--model", model]
     try:
@@ -70,7 +70,7 @@ def run_decide(cases, model, timeout_ms):
         os.unlink(path)
     rows = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
     if len(rows) != len(cases):
-        sys.exit(f"boubou decide returned {len(rows)} rows for {len(cases)} cases: {p.stderr[-500:]}")
+        sys.exit(f"rufous decide returned {len(rows)} rows for {len(cases)} cases: {p.stderr[-500:]}")
     return rows
 
 

@@ -1,23 +1,23 @@
 [workspace]
 resolver = "3"
-members = ["crates/boubou-kernel", "crates/boubou-voice", "crates/boubou-general", "crates/boubou-coding", "crates/boubou-cli", "crates/boubou-app"]
-# The Tauri shell is heavy to compile; build it explicitly with `cargo build -p boubou-app`.
-default-members = ["crates/boubou-kernel", "crates/boubou-voice", "crates/boubou-general", "crates/boubou-coding", "crates/boubou-cli"]
+members = ["crates/rufous-kernel", "crates/rufous-voice", "crates/rufous-general", "crates/rufous-coding", "crates/rufous-cli", "crates/rufous-app"]
+# The Tauri shell is heavy to compile; build it explicitly with `cargo build -p rufous-app`.
+default-members = ["crates/rufous-kernel", "crates/rufous-voice", "crates/rufous-general", "crates/rufous-coding", "crates/rufous-cli"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/stephanfeb/boubou"
+repository = "https://github.com/stephanfeb/rufous"
 authors = ["Stephan February"]
-description = "Boubou: a local-model autonomous agent, the Rust successor to Mingbird"
+description = "rufous: a local-model autonomous agent, the Rust successor to Mingbird"
 
 [workspace.dependencies]
-boubou-kernel = { path = "crates/boubou-kernel" }
-boubou-general = { path = "crates/boubou-general" }
-boubou-voice = { path = "crates/boubou-voice" }
-boubou-coding = { path = "crates/boubou-coding" }
+rufous-kernel = { path = "crates/rufous-kernel" }
+rufous-general = { path = "crates/rufous-general" }
+rufous-voice = { path = "crates/rufous-voice" }
+rufous-coding = { path = "crates/rufous-coding" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }

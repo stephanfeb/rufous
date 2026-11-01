@@ -1,6 +1,6 @@
 # Conversation scripts (bead boubou-6gq)
 
-Scripted multi-turn sessions that `bench/acp_convo.py` drives through `boubou acp` the way an
+Scripted multi-turn sessions that `bench/acp_convo.py` drives through `rufous acp` the way an
 editor does, for the features the single-prompt tiers cannot see: the scope gate, standing
 instructions held across tool-heavy turns, follow-ups that must be answered rather than acted
 on, compaction over a long conversation, the permission dialog. One cell is model x script x

@@ -3,7 +3,7 @@
   "required_plan_steps_min": 5,
   "judge_rubric": "",
   "max_wall_minutes": 40,
-  "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve against bench/lrab_ext, so only the boubou arm of lrab_h2h.py runs it",
+  "notes": "context-pressure tier (bench/lrab_ext/gen_pressure.py); fixtures resolve against bench/lrab_ext, so only the rufous arm of lrab_h2h.py runs it",
   "extra_judge_note": "",
   "id": "CP-02",
   "domain": "verbose-test-triage-under-context-pressure",

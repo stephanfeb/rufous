@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Micro-probes: one harness mechanism per probe, many cheap trials, Boubou only.
+"""Micro-probes: one harness mechanism per probe, many cheap trials, rufous only.
 
 The 18 LRAB tasks are low-power for mechanism work (same-night reruns move the mean by up to
 0.07). These probes isolate one failure form each and run it n times:
@@ -10,8 +10,8 @@ The 18 LRAB tasks are low-power for mechanism work (same-night reruns move the m
   loop          `python fetch.py` always fails the same way. Measures how many identical
                 attempts the agent makes before a guard intervenes, whether it ends cleanly,
                 and whether the deliverable it writes is honest about the failure.
-  emission      Model-side floor: raw Ollama /api/chat with Boubou's own tool schemas (from
-                `boubou tools`) on prompts that each call for one obvious tool call. Measures
+  emission      Model-side floor: raw Ollama /api/chat with rufous's own tool schemas (from
+                `rufous tools`) on prompts that each call for one obvious tool call. Measures
                 the schema-valid emission rate per model (+ quant from /api/show). This is the
                 standing gate: a parser or model problem must never be attributed to the harness.
 
@@ -148,7 +148,7 @@ AXES = {"ctx": None, "think": None}
 
 
 def run_agent(workdir, model, timeout_s, budget_min):
-    cmd, env = lrab_h2h.boubou_cmd(workdir, model, AXES["ctx"], AXES["think"])
+    cmd, env = lrab_h2h.rufous_cmd(workdir, model, AXES["ctx"], AXES["think"])
     cmd += ["--new", "--time-budget", str(budget_min)]
     rc, out, err, wall, timed_out = lrab_h2h._run_phase(cmd, env, workdir, timeout_s)
     text = out + ("\n--- STDERR ---\n" + err if err else "")
@@ -259,8 +259,8 @@ def loop_metrics(text, workdir=None, rc=0, timed_out=False):
     }
 
 
-def boubou_schemas():
-    out = subprocess.run([lrab_h2h.boubou_exe(), "tools"], capture_output=True, text=True, check=True)
+def rufous_schemas():
+    out = subprocess.run([lrab_h2h.rufous_exe(), "tools"], capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 
@@ -307,7 +307,7 @@ def judge_emission(resp, expect_tool, required, schemas):
 
 
 def run_emission(model, n, out_dir, think):
-    schemas = boubou_schemas()
+    schemas = rufous_schemas()
     rows, counts = [], {}
     t0 = time.time()
     for rep in range(n):
@@ -472,11 +472,11 @@ def main():
     ap.add_argument("--n", type=int, default=None,
                     help="trials per agent probe (default 10) / repeats per emission prompt (default 5)")
     ap.add_argument("--timeout-s", type=int, default=300, help="hard kill per agent trial")
-    ap.add_argument("--budget-min", type=float, default=4, help="--time-budget passed to boubou run")
+    ap.add_argument("--budget-min", type=float, default=4, help="--time-budget passed to rufous run")
     ap.add_argument("--think", choices=["on", "off"], default=None,
                     help="force think on/off (emission: the chat call; agent probes: AGENT_THINK)")
     ap.add_argument("--ctx", type=int, default=None, help="AGENT_CTX for the agent probes")
-    ap.add_argument("--results", default=os.path.join(lrab_h2h.BOUBOU_ROOT, "bench", "results", "probes"))
+    ap.add_argument("--results", default=os.path.join(lrab_h2h.RUFOUS_ROOT, "bench", "results", "probes"))
     ap.add_argument("--summary", action="store_true")
     ap.add_argument("--rescore", action="store_true",
                     help="recompute trial.json/summary.json for saved agent-probe trials, then print the table")

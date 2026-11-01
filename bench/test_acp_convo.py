@@ -15,7 +15,7 @@ import acp_convo as rig  # noqa: E402
 
 FAKE_AGENT = textwrap.dedent('''
     import json, os, sys
-    home = os.environ["BOUBOU_HOME"]
+    home = os.environ["RUFOUS_HOME"]
     os.makedirs(os.path.join(home, "sessions"), exist_ok=True)
     log = open(os.path.join(home, "sessions", "acp_fake.log"), "a", encoding="utf-8")
     cwd = None
@@ -91,7 +91,7 @@ SCRIPT = {
 def _fake_binary(tmp_path):
     fake = tmp_path / "fake_agent.py"
     fake.write_text(FAKE_AGENT, encoding="utf-8")
-    wrapper = tmp_path / "fake_boubou"
+    wrapper = tmp_path / "fake_rufous"
     wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} -I {fake} \"$@\"\n", encoding="utf-8")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
     return str(wrapper)

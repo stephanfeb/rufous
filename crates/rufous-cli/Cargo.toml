@@ -1,0 +1,36 @@
+[package]
+name = "rufous-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "rufous command-line agent"
+
+[[bin]]
+name = "rufous"
+path = "src/main.rs"
+
+[features]
+default = []
+# Local speech-to-text in `rufous serve` / `rufous voice` (sherpa-onnx native libs).
+voice = ["rufous-general/voice", "rufous-voice/sherpa"]
+
+[dependencies]
+rufous-kernel.workspace = true
+rufous-general.workspace = true
+rufous-voice.workspace = true
+rufous-coding.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

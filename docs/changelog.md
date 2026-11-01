@@ -2962,3 +2962,41 @@ Turn 1 cost, gemma r4 and r5 (5 and 7 calls, 33 s each):
 - Both ended in an honest failure and passed. The developer sees the false claim streamed,
   then the correction. No bead: the holds were right, and the churn is the model retrying a
   refused name.
+
+## The project is renamed rufous (bead boubou-hq0.1, 2026-11-02)
+
+For the alpha, boubou becomes rufous: the crates (`rufous-kernel`, `-voice`, `-general`,
+`-coding`, `-cli`, `-app`), the binary (`rufous run`, `rufous acp`, …), the types, the tracing
+targets, the MCP client name and the docs. The app's Tauri identifier is now `chat.rufous.app`.
+In prose the name is lowercase, as on the site.
+
+The rename goes forward only. Kept as written:
+- this changelog's earlier entries;
+- `docs/small-models-follow-text-not-state.md`;
+- `bench/results`;
+- the bench fixture name `boubou_convo_perm.txt`;
+- the bead ids, whose prefix stays `boubou-`.
+
+Old names still work as fallbacks:
+- **Environment:** each `RUFOUS_*` variable is read first, then the `BOUBOU_*` one (`HOME`,
+  `MODEL`, `STT_DIR`, `WEB_INDEX`). Hooks get both `RUFOUS_PROJECT_DIR` and
+  `BOUBOU_PROJECT_DIR`.
+- **Per-project files:** `<workdir>/.boubou/hooks.json` is read beside `.rufous/hooks.json`. The
+  child sandbox protects both names. A SYSTEM.md that opens with `<!-- boubou: replace -->`
+  still replaces the base prompt; the new mark is `<!-- rufous: replace -->`.
+- **Bench:** `lrab_h2h.py` takes `--arms boubou` as `rufous` and reads older `"agent": "boubou"`
+  rows under rufous, so earlier result folders summarise beside new ones.
+
+The data directory is unchanged: `~/.ollama_agent`, shared with Mingbird.
+
+Model-visible: CHAT_SYSTEM opens "You are rufous" in place of "You are Boubou". The name has the
+same length, so the prompt size does not change, but the text a chat turn sees does, and the next
+chat-tier reading should say so.
+
+The README's name story now tells the rufous hummingbird. The rename had turned it into a
+"Southern rufous" bush-shrike, a bird that does not exist. The web-search test fixture keeps the
+real Southern boubou.
+
+589 Rust tests, 66 bench tests and clippy (as CI runs it) pass. Two kernel `ollama_proc` tests
+failed once each on a port already in use, with Ollama live on 11434, and passed on the rerun.
+The repository folder is still `agentic/boubou`; renaming it is left to the user.

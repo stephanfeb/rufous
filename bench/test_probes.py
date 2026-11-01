@@ -21,7 +21,7 @@ def test_judge_emission_verdicts():
     req = {"path": "str", "content": "str"}
     ok = _resp(calls=[{"function": {"name": "create_file", "arguments": {"path": "a.txt", "content": "hi"}}}])
     assert j(ok, "create_file", req, SCHEMAS)[0] == "valid"
-    # stringified JSON arguments are accepted, as Boubou's parser accepts them
+    # stringified JSON arguments are accepted, as rufous's parser accepts them
     s = _resp(calls=[{"function": {"name": "create_file", "arguments": '{"path":"a","content":"b"}'}}])
     assert j(s, "create_file", req, SCHEMAS)[0] == "valid"
     miss = _resp(calls=[{"function": {"name": "create_file", "arguments": {"content": "hi"}}}])
