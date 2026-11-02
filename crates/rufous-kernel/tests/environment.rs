@@ -92,6 +92,7 @@ fn agents_md_follows_system_md_in_both_prompts_and_is_capped() {
             system_file: None,
             unattended: false,
             skills: vec![],
+            skill_catalogue: None,
             profile_note: None,
             hook_context: None,
             environment: env,

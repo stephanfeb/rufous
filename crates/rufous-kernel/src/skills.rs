@@ -37,6 +37,29 @@ pub const SKILL_FILE: &str = "SKILL.md";
 /// Upper bound on companion files named when a folder skill is loaded.
 pub const MAX_LISTED_FILES: usize = 20;
 
+/// Lines in the task prompt's SKILLS AVAILABLE block ([`SkillSet::catalogue`]).
+pub const MAX_CATALOGUE_SKILLS: usize = 12;
+
+/// Characters of a description in the SKILLS AVAILABLE block.
+const CATALOGUE_DESCRIPTION_CHARS: usize = 80;
+
+/// The first sentence when it fits in [`CATALOGUE_DESCRIPTION_CHARS`], else the text cut at
+/// the last word boundary before that, with `…`.
+fn short_description(d: &str) -> String {
+    let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(i) = d.find(". ") {
+        if d[..=i].chars().count() <= CATALOGUE_DESCRIPTION_CHARS {
+            return d[..=i].to_string();
+        }
+    }
+    if d.chars().count() <= CATALOGUE_DESCRIPTION_CHARS {
+        return d;
+    }
+    let cut: String = d.chars().take(CATALOGUE_DESCRIPTION_CHARS).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ';', ':', '.']))
+}
+
 /// The directories a skill may sit in, in precedence order: the project's own, the
 /// conventional project directories, rufous's home, the conventional home directories,
 /// the install directory. One list for the loop, the `skills` tool and the CLI.
@@ -373,6 +396,39 @@ impl SkillSet {
             .filter(|s| s.applies_to(&low))
             .take(cap)
             .collect()
+    }
+
+    /// The task prompt's SKILLS AVAILABLE block (bead boubou-15s): the skills read from disk
+    /// that are not in effect (`exclude`), the project's (under `workdir`) first, each with a
+    /// short description, at most `cap` lines. A skill without triggers was otherwise never
+    /// named to the model, which had to think of calling `skills` on its own. `None` when
+    /// there is nothing to list. Built-in skills are matched by their triggers and listed by
+    /// the tool, so they stay out of the prompt.
+    pub fn catalogue(&self, exclude: &[&str], workdir: &Path, cap: usize) -> Option<String> {
+        let mut listed: Vec<&Skill> = self
+            .iter()
+            .filter(|s| s.embedded.is_none() && !exclude.contains(&s.name.as_str()))
+            .collect();
+        if listed.is_empty() || cap == 0 {
+            return None;
+        }
+        // Stable: alphabetical within each group.
+        listed.sort_by_key(|s| !s.path.starts_with(workdir));
+        let more = listed.len().saturating_sub(cap);
+        let mut out = String::from(
+            "SKILLS AVAILABLE (not loaded; when the task matches one, call skills with action \"load\" and its name, then follow it):",
+        );
+        for s in listed.iter().take(cap) {
+            out.push_str(&format!(
+                "\n- {}: {}",
+                s.name,
+                short_description(&s.description)
+            ));
+        }
+        if more > 0 {
+            out.push_str(&format!("\n({more} more: skills action \"list\")"));
+        }
+        Some(out)
     }
 
     /// Prompt listing, one skill per line.

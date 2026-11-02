@@ -73,6 +73,7 @@ fn project_system_md_appends_or_replaces() {
         system_file: None,
         unattended: false,
         skills,
+        skill_catalogue: None,
         profile_note: None,
         hook_context: None,
         environment: None,
@@ -126,6 +127,7 @@ fn project_system_md_appends_or_replaces() {
         system_file: Some(&wd.join("override.txt")),
         unattended: false,
         skills: vec![],
+        skill_catalogue: None,
         profile_note: None,
         hook_context: None,
         environment: None,
@@ -319,4 +321,95 @@ fn built_in_skills_sit_below_every_directory_and_load_from_memory() {
     assert!(listed.contains("ledger: Reconcile a ledger"), "{listed}");
     let loaded = ex.run_tool("skills", &json!({"action": "load", "name": "ledger"}));
     assert_eq!(loaded, "### SKILL: ledger\nBuilt-in steps.\n");
+}
+
+// ---- the SKILLS AVAILABLE block (bead boubou-15s) ----
+
+#[test]
+fn skills_without_a_trigger_are_named_in_the_task_prompt() {
+    // A Claude-style skill (name and description only) was found but never named to the
+    // model; in two Zed sessions it never called `skills` and so never learnt of it.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path();
+    let home = tempfile::tempdir().expect("home");
+    write(
+        &wd.join(".agents").join("skills").join("beads"),
+        "SKILL.md",
+        "---\nname: beads\ndescription: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management.\n---\nbody\n",
+    );
+    skill(home.path(), "zeta", "");
+    skill(home.path(), "finance", "triggers: ledger\n");
+    const BUILT: &str = "---\nname: tidy\ndescription: Tidy a folder\n---\nBuilt-in tidy.\n";
+    let mut a = Agent::new(RunParams::plain("gemma4:12b", wd), Finish, OkTools)
+        .with_skill_dirs(vec![
+            wd.join(".agents").join("skills"),
+            home.path().to_path_buf(),
+        ])
+        .with_builtin_skills(vec![Skill::embedded(BUILT).expect("skill")]);
+    let m = a.task_messages("Reconcile the ledger");
+    let p = &m[0].content;
+    let at = p.find("SKILLS AVAILABLE").expect("block");
+    let block = &p[at..p.find("Current working directory").expect("workdir")];
+    // The project's own first; the one in effect and the built-in are not listed.
+    assert!(
+        block.contains(
+            "\n- beads: Use when working in a repository that uses bd or Beads for durable project task…\n- zeta: about zeta"
+        ),
+        "{block}"
+    );
+    assert!(
+        !block.contains("finance") && !block.contains("tidy"),
+        "{block}"
+    );
+    assert!(p.find("### SKILL: finance").expect("in effect") < at);
+
+    // The Q&A prompt carries none of it.
+    let q = a.task_messages("What does EBITDA stand for?");
+    let out = a.run(q, None, None).expect("loop");
+    assert!(!out[0].content.contains("SKILLS AVAILABLE"));
+}
+
+#[test]
+fn the_block_is_capped_and_absent_without_skills_on_disk() {
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path();
+    let mut a = Agent::new(RunParams::plain("gemma4:12b", wd), Finish, OkTools)
+        .with_skill_dirs(vec![wd.join("skills")]);
+    let m = a.task_messages("Write a haiku");
+    assert!(!m[0].content.contains("SKILLS AVAILABLE"));
+
+    for i in 0..15 {
+        skill(&wd.join("skills"), &format!("s{i:02}"), "");
+    }
+    let set = SkillSet::discover([wd.join("skills")]);
+    let c = set
+        .catalogue(&[], wd, rufous_kernel::skills::MAX_CATALOGUE_SKILLS)
+        .expect("block");
+    assert_eq!(c.lines().filter(|l| l.starts_with("- ")).count(), 12);
+    assert!(c.ends_with("\n(3 more: skills action \"list\")"), "{c}");
+    assert_eq!(set.catalogue(&[], wd, 0), None);
+}
+
+#[test]
+fn a_skill_added_between_turns_is_named_on_the_next_one() {
+    // "Reload the agent in Zed and the new skill is not picked up": a continued session
+    // rebuilds the task prompt every turn, so the next turn names it.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path();
+    let mut p = RunParams::plain("gemma4:12b", wd);
+    p.policy = rufous_kernel::agent::TurnPolicy::conversation();
+    let mut a = Agent::new(p, Finish, OkTools).with_skill_dirs(vec![wd.join("skills")]);
+    let msgs = a.task_messages("Tidy up the notes folder");
+    let mut out = a.run(msgs, None, None).expect("turn 1");
+    assert!(!out[0].content.contains("SKILLS AVAILABLE"));
+    skill(&wd.join("skills"), "openspec-propose", "");
+    out.push(Message::user("Now propose the change"));
+    let out = a.run(out, None, None).expect("turn 2");
+    assert!(
+        out[0]
+            .content
+            .contains("\n- openspec-propose: about openspec-propose"),
+        "{}",
+        out[0].content
+    );
 }

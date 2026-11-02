@@ -310,6 +310,9 @@ pub struct PromptOptions<'a> {
     pub unattended: bool,
     /// Skills in effect for this task (`name`, body), prefilled after the base prompt.
     pub skills: Vec<(String, String)>,
+    /// The SKILLS AVAILABLE block ([`crate::skills::SkillSet::catalogue`], bead boubou-15s),
+    /// after the skills in effect. Task prompt only.
+    pub skill_catalogue: Option<String>,
     /// The model profile's prompt note (bead 65d.15), after the skills and before the
     /// workdir line. Only the task prompt carries it; the Q&A prompt does not.
     pub profile_note: Option<&'a str>,
@@ -354,6 +357,10 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
             "\n\nSKILL IN EFFECT FOR THIS TASK (follow it):\n### SKILL: {name}\n{}",
             body.trim_end()
         ));
+    }
+    if let Some(c) = &opts.skill_catalogue {
+        base.push_str("\n\n");
+        base.push_str(c);
     }
     if let Some(note) = opts.profile_note.map(str::trim).filter(|n| !n.is_empty()) {
         base.push_str(&format!(

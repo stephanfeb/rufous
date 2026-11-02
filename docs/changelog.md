@@ -3177,3 +3177,28 @@ for such literals, using `code_paths`' pattern with drives added. Each literal i
 way as before: masked only when it resolves inside the working directory and is not a sensitive file.
 
 Locally: 605 tests, clippy and rustfmt pass.
+
+## Skills without a trigger are named to the model (bead boubou-15s, 2026-11-02)
+
+Reported as "new skills are not picked up when I reload the agent in Zed". At 18:10 on 2026-11-02
+the todoapp project gained `.agents/skills/beads` and six `openspec-*` skills. `rufous skills` listed
+all seven, so discovery worked; every turn rediscovers, so nothing was stale. But in the two Zed
+sessions after that (`acp_1102_181813`, `acp_1102_190002`) none of them reached the model. They are
+Claude-style skills with a name and a description but no rufous `triggers`, so they were never
+prefilled. The prompt did not say they existed, and the model made 0 calls to `skills` in either
+session.
+
+The task prompt now ends its skills section with a SKILLS AVAILABLE block:
+- The skills read from disk that are not in effect, the project's own first, at most 12.
+- Each one's description cut to its first sentence or 80 characters.
+- An instruction to load one with `skills` when the task matches.
+
+Built-in skills stay out of the block: they prefill on their triggers as before, and the tool lists
+them. The Q&A and child prompts do not carry it. It is rebuilt with the task prompt, so a skill added
+mid-session is named on the next turn.
+
+Size: with no skills on disk the prompt is unchanged. For the todoapp project the block is 709
+characters, about 177 tokens: the coding task prompt goes from 13,965 to 14,674 characters. There
+are three new tests. Locally: 608 tests, clippy and rustfmt pass.
+
+Not measured yet: whether a 4B model then loads a listed skill when the task matches.

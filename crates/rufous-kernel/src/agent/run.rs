@@ -391,12 +391,19 @@ fn task_system(
             names.join(", ")
         )));
     }
+    let in_effect: Vec<&str> = skills.iter().map(|(n, _)| n.as_str()).collect();
+    let skill_catalogue = set.catalogue(
+        &in_effect,
+        &params.workdir,
+        crate::skills::MAX_CATALOGUE_SKILLS,
+    );
     let opts = prompt::PromptOptions {
         base: Some(base),
         workdir: Some(&params.workdir),
         system_file: params.system_file.as_deref(),
         unattended: params.unattended,
         skills,
+        skill_catalogue,
         profile_note: params.profile.prompt_note.as_deref(),
         hook_context,
         environment: (!params.ablated(ablation::ENV_BLOCK)).then_some(environment),
