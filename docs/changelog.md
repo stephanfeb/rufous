@@ -3225,3 +3225,20 @@ These cases are unchanged:
 
 Four new tests (unix); before the fix, two of them hung for the length of their `sleep`. Locally:
 612 tests, clippy and rustfmt pass.
+
+## search_files skips stores, binaries and backups (bead boubou-r7i, 2026-11-02)
+
+On Zed, `search_files` from the project root matched inside `.git/index` and
+`.beads/embeddeddolt/.dolt/noms`, and handed lossily decoded binary to the model (sessions
+`acp_1102_193840` and `acp_1102_200337`).
+
+While descending, `search_files` now skips:
+- the directories `.git`, `.hg`, `.svn`, `.jj`, `.beads` and `node_modules`;
+- harness names (`.bak` backups, the trash dir, `.agent_state*`), as `list_dir` already does;
+- any file with a NUL byte in its first 8000 bytes (git's binary heuristic).
+
+The path the model passes is never skipped, so `search_files(.git, …)` still searches when asked.
+The output format and the 200-files and 20-matches caps are unchanged. One new test in
+`tests/exec_tools.rs`. The workspace tests, clippy and rustfmt pass. `ollama_proc`'s port test
+failed once and then passed on a rerun; it reuses a port it has just released, and the failure is
+unrelated to this change.

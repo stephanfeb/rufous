@@ -1152,3 +1152,32 @@ fn a_stop_during_the_grace_ends_the_call() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(!running("sleep 38.5"));
 }
+
+// ---- search_files skips (bead boubou-r7i) ----
+
+#[test]
+fn search_files_skips_stores_binaries_and_backups_from_the_root() {
+    let (d, mut e) = ex();
+    let put = |rel: &str, body: &[u8]| {
+        let p = d.path().join(rel);
+        std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+        std::fs::write(p, body).expect("write");
+    };
+    put("src/app.txt", b"needle in text\n");
+    put(".git/index", b"needle in git\n");
+    put(".beads/embeddeddolt/noms", b"needle in beads\n");
+    put("node_modules/pkg/index.js", b"needle in deps\n");
+    put("blob.bin", b"needle\0in binary\n");
+    put("src/app.txt.bak", b"needle in backup\n");
+    let r = e.run_tool("search_files", &json!({"path": ".", "pattern": "needle"}));
+    assert!(r.contains("app.txt:1: needle in text"), "{r}");
+    for absent in ["in git", "in beads", "in deps", "binary", "in backup"] {
+        assert!(!r.contains(absent), "{absent}: {r}");
+    }
+    // Asked for by name, a store is still searched.
+    let r = e.run_tool(
+        "search_files",
+        &json!({"path": ".git", "pattern": "needle"}),
+    );
+    assert!(r.contains("index:1: needle in git"), "{r}");
+}

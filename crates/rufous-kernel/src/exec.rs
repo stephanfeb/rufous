@@ -1061,6 +1061,9 @@ impl Executor {
         }
     }
 
+    /// Skips binary files (a NUL in the first 8000 bytes, as git judges it), harness names, and
+    /// the stores in `SEARCH_SKIP_DIRS` below the path given: from a project root the model was
+    /// handed `.git/index` and dolt noms bytes (bead boubou-r7i).
     fn search_files(&self, path: &str, pattern: &str) -> String {
         let d = self.workdir.join(path);
         let re = match Regex::new(pattern) {
@@ -1072,12 +1075,19 @@ impl Executor {
             let Ok(rd) = std::fs::read_dir(dir) else {
                 return;
             };
-            let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            let mut entries: Vec<PathBuf> = rd
+                .flatten()
+                .filter(|e| !is_harness_name(&e.file_name().to_string_lossy()))
+                .map(|e| e.path())
+                .collect();
             entries.sort();
             for fp in entries.iter().filter(|p| p.is_file()).take(200) {
                 let Ok(bytes) = std::fs::read(fp) else {
                     continue;
                 };
+                if bytes[..bytes.len().min(8000)].contains(&0) {
+                    continue;
+                }
                 let content = String::from_utf8_lossy(&bytes);
                 for (i, line) in content.lines().enumerate() {
                     if re.is_match(line) {
@@ -1089,7 +1099,11 @@ impl Executor {
                     }
                 }
             }
-            for sub in entries.iter().filter(|p| p.is_dir()) {
+            let skipped = |p: &&PathBuf| {
+                p.file_name()
+                    .is_some_and(|n| SEARCH_SKIP_DIRS.contains(&n.to_string_lossy().as_ref()))
+            };
+            for sub in entries.iter().filter(|p| p.is_dir() && !skipped(p)) {
                 walk(sub, root, re, out);
                 if out.len() >= 20 {
                     return;
@@ -1390,6 +1404,9 @@ fn backup_target(p: &Path, workdir: &Path, root: Option<&Path>) -> PathBuf {
 /// The harness's own files, kept out of `list_dir` so the model does not spend its turn on
 /// them (boubou-7s3: nine deletes of one `.bak` in a 47-call editor turn). Mingbird's
 /// layout still writes them into the workdir; they are simply not listed.
+/// VCS, tracker and package-manager stores `search_files` does not descend into.
+const SEARCH_SKIP_DIRS: [&str; 6] = [".git", ".hg", ".svn", ".jj", ".beads", "node_modules"];
+
 pub fn is_harness_name(name: &str) -> bool {
     name.ends_with(".bak")
         || name == TRASH_DIR
