@@ -3202,3 +3202,26 @@ characters, about 177 tokens: the coding task prompt goes from 13,965 to 14,674 
 are three new tests. Locally: 608 tests, clippy and rustfmt pass.
 
 Not measured yet: whether a 4B model then loads a listed skill when the task matches.
+
+## A backgrounded command no longer hangs the turn (bead boubou-d4z, 2026-11-02)
+
+On Zed, qwen3.5:9b ran `./gradlew npmBuild run &` (session `acp_1102_200337`, 20:12) and the turn
+hung for 11 minutes, until the user killed the processes. Cancel did nothing.
+
+`run_command` bounded only the shell. Once `sh` exited (at once, with `&`), it joined the pipe readers
+with no limit and stopped checking the stop flag. The backgrounded gradle had inherited the pipes and
+held them open.
+
+The readers now hand their bytes over a channel. After the shell exits, the wait for them is bounded
+by a 2 s grace and by the command's own deadline, and the stop flag is checked throughout. If a pipe
+is still held at the end, rufous kills the process group and appends a note: "a background process
+kept the command's output open … it was stopped. To leave a process running, redirect its output
+(cmd > file.log 2>&1 &)."
+
+These cases are unchanged:
+- A backgrounded process whose output is redirected holds no pipe, and keeps running.
+- `server & sleep 5; curl …` inside one command works as before.
+- Background output that ends within the grace is kept.
+
+Four new tests (unix); before the fix, two of them hung for the length of their `sleep`. Locally:
+612 tests, clippy and rustfmt pass.

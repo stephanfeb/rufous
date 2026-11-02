@@ -1585,8 +1585,12 @@ pub(crate) fn run_command(
             }
         }
     };
+    // Each pipe is read on its own thread and arrives over a channel, so the wait for it
+    // can be bounded: a process the command backgrounded inherits the pipes and holds them
+    // open for as long as it lives (bead boubou-d4z).
     let reader = |pipe: Option<std::process::ChildStdout>,
                   err: Option<std::process::ChildStderr>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut p) = pipe {
@@ -1595,11 +1599,12 @@ pub(crate) fn run_command(
             if let Some(mut e) = err {
                 let _ = e.read_to_end(&mut buf);
             }
-            buf
-        })
+            let _ = tx.send(buf);
+        });
+        rx
     };
-    let out_t = reader(child.stdout.take(), None);
-    let err_t = reader(None, child.stderr.take());
+    let out_rx = reader(child.stdout.take(), None);
+    let err_rx = reader(None, child.stderr.take());
     let start = Instant::now();
     let mut timed_out = false;
     let mut interrupted = false;
@@ -1622,8 +1627,39 @@ pub(crate) fn run_command(
             Err(_) => break None,
         }
     };
-    let stdout = text::decode_console(&out_t.join().unwrap_or_default());
-    let stderr = text::decode_console(&err_t.join().unwrap_or_default());
+    // The shell is gone; its output may still be held by a process it put in the
+    // background. Wait out a short grace (never past the command's own deadline), then stop
+    // the process group and say so.
+    let deadline = (Instant::now() + BACKGROUND_GRACE).min(start + timeout);
+    let (mut out, mut err) = (None, None);
+    let mut held = false;
+    loop {
+        recv_ready(&out_rx, &mut out);
+        recv_ready(&err_rx, &mut err);
+        if out.is_some() && err.is_some() {
+            break;
+        }
+        if !interrupted && stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+            interrupted = true;
+        }
+        if interrupted || timed_out || Instant::now() >= deadline {
+            held = !interrupted && !timed_out;
+            kill_tree(child.id());
+            let after = Instant::now() + BACKGROUND_GRACE;
+            while (out.is_none() || err.is_none()) && Instant::now() < after {
+                recv_ready(&out_rx, &mut out);
+                recv_ready(&err_rx, &mut err);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stdout = text::decode_console(&out.unwrap_or_default());
+    let mut stderr = text::decode_console(&err.unwrap_or_default());
+    if held {
+        stderr.push_str(BACKGROUND_NOTE);
+    }
     let code = status.map(exit_code).unwrap_or(1);
     CommandRun {
         code,
@@ -1631,6 +1667,19 @@ pub(crate) fn run_command(
         stderr,
         timed_out,
         interrupted,
+    }
+}
+
+/// How long a command's output may stay open after its shell has exited.
+const BACKGROUND_GRACE: Duration = Duration::from_secs(2);
+
+const BACKGROUND_NOTE: &str = "\n[a background process kept the command's output open after the shell exited; it was stopped. To leave a process running, redirect its output (cmd > file.log 2>&1 &).]";
+
+fn recv_ready(rx: &std::sync::mpsc::Receiver<Vec<u8>>, slot: &mut Option<Vec<u8>>) {
+    if slot.is_none() {
+        if let Ok(b) = rx.try_recv() {
+            *slot = Some(b);
+        }
     }
 }
 

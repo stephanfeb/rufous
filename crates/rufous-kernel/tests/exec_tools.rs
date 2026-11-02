@@ -1071,3 +1071,84 @@ fn a_shell_write_by_absolute_path_is_backed_up_when_the_workdir_path_has_a_tilde
         "old\n"
     );
 }
+
+// ---- a backgrounded process holding the output (bead boubou-d4z) ----
+
+#[cfg(unix)]
+fn running(pattern: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-f", pattern])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backgrounded_process_holding_the_output_is_stopped_after_the_grace() {
+    // Live Zed 2026-11-02: `./gradlew npmBuild run &` hung the turn for 11 minutes; the
+    // shell had exited and the wait for its output had no limit.
+    use std::time::{Duration, Instant};
+    let (_d, mut e) = ex();
+    let t0 = Instant::now();
+    let out = e.run_tool("run_bash", &json!({"command": "echo up; sleep 37.4141 &"}));
+    assert!(t0.elapsed() < Duration::from_secs(8), "{out}");
+    assert!(out.contains("up"), "{out}");
+    assert!(
+        out.contains("a background process kept the command's output open"),
+        "{out}"
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!running("sleep 37.4141"), "the background process is gone");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backgrounded_process_with_redirected_output_is_left_alone() {
+    use std::time::{Duration, Instant};
+    let (_d, mut e) = ex();
+    let t0 = Instant::now();
+    let out = e.run_tool(
+        "run_bash",
+        &json!({"command": "sleep 3.2718 > /dev/null 2>&1 &"}),
+    );
+    assert!(t0.elapsed() < Duration::from_secs(2), "{out}");
+    assert!(!out.contains("background process"), "{out}");
+    assert!(running("sleep 3.2718"), "still running, as asked");
+}
+
+#[cfg(unix)]
+#[test]
+fn background_output_that_ends_within_the_grace_is_kept() {
+    let (_d, mut e) = ex();
+    let out = e.run_tool(
+        "run_bash",
+        &json!({"command": "echo hi; (sleep 1; echo late) &"}),
+    );
+    assert!(out.contains("hi") && out.contains("late"), "{out}");
+    assert!(!out.contains("background process"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stop_during_the_grace_ends_the_call() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    let (_d, mut e) = ex();
+    let stop = Arc::new(AtomicBool::new(false));
+    e.stop = Some(stop.clone());
+    let raiser = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::SeqCst);
+        })
+    };
+    let t0 = Instant::now();
+    let out = e.run_tool("run_bash", &json!({"command": "sleep 38.5 &"}));
+    raiser.join().expect("raiser");
+    assert!(t0.elapsed() < Duration::from_millis(1500), "{out}");
+    assert!(out.contains("stopped by the user"), "{out}");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!running("sleep 38.5"));
+}
