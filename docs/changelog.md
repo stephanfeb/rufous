@@ -3156,3 +3156,17 @@ heuristics still decide; it loads a second model in Ollama. Turn it off with "de
 `RunParams::decider_notice` keeps dispatched children, and any policy that never consults the
 decider, silent. The loop and the decider are unchanged. Four tests: kernel, web, ACP, and the
 child and policy cases. Locally: 603 tests, clippy and rustfmt pass.
+
+## Shell backups when the workdir path has `~` (bead boubou-2pl, 2026-11-02)
+
+CI run 41437950992 brought the Windows replay failures down from 40 to 3. Two of the remaining
+three were not the gate. `bash_snapshot`, the backup taken before a shell `rm`, redirect, `sed -i`
+and the like, picks a command's file paths with a pattern that stopped at `~` and `:`.
+
+The CI runner's temporary directory is `C:\Users\RUNNER~1\…`, so an absolute path was cut at the
+`~`. What was left was treated as relative to the working directory, named no file, and the shell
+overwrote or deleted the real one with no backup.
+
+The fault was not Windows-only: on macOS a working directory with a `~` in its path lost the backup
+the same way, and the new test fails there without the fix. Both patterns now accept `:` and `~`.
+The backup still requires the resolved path to be a file inside the working directory.

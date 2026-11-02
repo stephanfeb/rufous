@@ -1457,10 +1457,12 @@ pub fn unescape_command(command: &str) -> String {
 /// first, globs expanded (`rm lib/*.dart`, bead boubou-bk9.12), beside the file or under
 /// `backup_root` (see [`Executor::harness_dir`]).
 pub fn bash_snapshot(cmd: &str, workdir: &Path, backup_root: Option<&Path>) -> Vec<String> {
+    // `:` and `~` for a drive and an 8.3 short name (`C:\Users\RUNNER~1\…`); without them the
+    // token was cut there and named no file, so nothing was backed up (bead boubou-2pl).
     static TOK: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]{1,8}").expect("regex"));
+        LazyLock::new(|| Regex::new(r"[A-Za-z0-9_\-./\\:~]+\.[A-Za-z0-9]{1,8}").expect("regex"));
     static GLOB: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"[A-Za-z0-9_\-./\\*?]*[*?][A-Za-z0-9_\-./\\*?]*").expect("regex")
+        Regex::new(r"[A-Za-z0-9_\-./\\:~*?]*[*?][A-Za-z0-9_\-./\\:~*?]*").expect("regex")
     });
     let low = format!(" {cmd} ");
     let suspects = [

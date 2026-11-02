@@ -1043,3 +1043,31 @@ fn append_file_starts_on_a_new_line_when_the_file_does_not_end_on_one() {
     append(&mut e, "a.txt", "");
     assert_eq!(text("a.txt"), "x\ny");
 }
+
+// Bead boubou-2pl: the snapshot's path pattern stopped at `~`, so an absolute path under an
+// 8.3 short name (C:\Users\RUNNER~1\…, Windows CI's temp directory) matched no file and the
+// shell overwrote it with no backup.
+#[test]
+fn a_shell_write_by_absolute_path_is_backed_up_when_the_workdir_path_has_a_tilde() {
+    let t = tempfile::tempdir().expect("tmp");
+    let wd = t.path().join("RUN~1").join("work");
+    std::fs::create_dir_all(wd.join("lib")).expect("mkdir");
+    std::fs::write(wd.join("lib").join("f.txt"), "old\n").expect("seed");
+    let h = tempfile::tempdir().expect("harness");
+    let mut e = Executor::with_policy(&wd, SafetyPolicy::default());
+    e.harness_dir = h.path().to_path_buf();
+    let target = wd.join("lib").join("f.txt");
+    let r = e.run_tool(
+        "run_bash",
+        &json!({"command": format!("echo new >> {}", target.display())}),
+    );
+    assert!(
+        r.contains("[backup of f.txt kept by the harness; nothing to clean up]"),
+        "{r}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.path().join("backups").join("lib").join("f.txt.bak"))
+            .expect("bak"),
+        "old\n"
+    );
+}
