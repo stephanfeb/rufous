@@ -3170,3 +3170,10 @@ overwrote or deleted the real one with no backup.
 The fault was not Windows-only: on macOS a working directory with a `~` in its path lost the backup
 the same way, and the new test fails there without the fix. Both patterns now accept `:` and `~`.
 The backup still requires the resolved path to be a file inside the working directory.
+
+The third failure (bead boubou-9ox, amended) was a path partway through a word:
+`python3 -c "open('C:\Users\…')"`. `mask_inside_paths` now makes a second pass over the command
+for such literals, using `code_paths`' pattern with drives added. Each literal is judged the same
+way as before: masked only when it resolves inside the working directory and is not a sensitive file.
+
+Locally: 605 tests, clippy and rustfmt pass.

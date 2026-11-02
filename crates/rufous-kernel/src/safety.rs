@@ -714,22 +714,45 @@ pub fn mask_inside_paths(command: &str, workdir: &Path, allow_dirs: &[PathBuf]) 
             Some((k, v)) if !word.starts_with(['"', '\'']) => (k.len() + 1, v),
             _ => (0, word),
         };
-        let bare = path.trim_matches(['"', '\'']);
-        if !looks_absolute(bare) {
-            continue;
-        }
-        let ShellPath::Known(p) = expand_shell_path(bare) else {
-            continue;
-        };
-        let (real, inside) = safe_path(workdir, &p, allow_dirs);
-        if inside && !is_sensitive_path(&real) {
+        if maskable(path.trim_matches(['"', '\'']), workdir, allow_dirs) {
             out.push_str(&command[last..m.start() + lead]);
             out.push('.');
             last = m.end();
         }
     }
     out.push_str(&command[last..]);
+    // A literal that starts partway through a word: `open('<wd>/x')` in inline code. The
+    // pattern of [`code_paths`], with drives and `~` inside the path.
+    static INNER_LIT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:^|[\s"'`(=,\[{])((?:[A-Za-z]:[\\/]|/|~[\\/])[^\s"'`(),;\]\[{}<>|&]*)"#)
+            .expect("regex")
+    });
+    let words = out;
+    let mut out = String::with_capacity(words.len());
+    let mut last = 0;
+    for c in INNER_LIT.captures_iter(&words) {
+        let m = c.get(1).expect("group");
+        if maskable(m.as_str(), workdir, allow_dirs) {
+            out.push_str(&words[last..m.start()]);
+            out.push('.');
+            last = m.end();
+        }
+    }
+    out.push_str(&words[last..]);
     out
+}
+
+/// An absolute path literal that resolves inside the working directory (or an allowed one)
+/// and is not a sensitive file: [`mask_inside_paths`] replaces it.
+fn maskable(lit: &str, workdir: &Path, allow_dirs: &[PathBuf]) -> bool {
+    if !looks_absolute(lit) {
+        return false;
+    }
+    let ShellPath::Known(p) = expand_shell_path(lit) else {
+        return false;
+    };
+    let (real, inside) = safe_path(workdir, &p, allow_dirs);
+    inside && !is_sensitive_path(&real)
 }
 
 const UNKNOWN_CWD_MSG: &str = "[safety net: the command changes directory to a place the gate cannot evaluate (cd -, cd $VAR) before a recursive delete; refused. Delete with a path relative to the working directory instead.]";

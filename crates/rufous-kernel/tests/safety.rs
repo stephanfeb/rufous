@@ -960,3 +960,17 @@ fn a_drive_path_to_the_workdir_is_not_asked_on_windows() {
         .check(&bash("type C:\\Users\\someone\\secret.txt"), d.path())
         .is_some());
 }
+
+#[test]
+fn a_path_inside_inline_code_is_masked_when_it_points_inside() {
+    // Bead boubou-9ox amendment: `open('<wd>/…')` starts partway through a quoted word.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().display().to_string();
+    let inside = format!("python3 -c \"open('{wd}/home/x.txt', 'w').write('1')\"");
+    assert_eq!(
+        mask_inside_paths(&inside, d.path(), &[]),
+        "python3 -c \"open('.', 'w').write('1')\""
+    );
+    let outside = "python3 -c \"open('/home/x/y.txt', 'w').write('1')\"";
+    assert_eq!(mask_inside_paths(outside, d.path(), &[]), outside);
+}
