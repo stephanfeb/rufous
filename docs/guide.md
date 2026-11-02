@@ -80,7 +80,10 @@ demote it.
    see §6). Let the model fill the shape if it can; review it yourself before implementation.
    Cell: `spec`.
 4. **Split the work into items small enough for one turn each**, with beads or a tasks file.
-   Each item names its file(s) and its finish condition. Cell: `split`.
+   Each item names its file(s), a "done when" and an "out of scope" (the nearby work it
+   leaves to other items); review the items before working them. Then only ask for work
+   that has an item, and name the item: an instruction outside the tracker has nothing to
+   bound it. Cell: `split`.
 5. **Set the context window explicitly** and check the model's memory footprint once.
 6. **Point the model at bounded tools.** rufous's prompt tells the model to use `list_dir`,
    `read_file` and `search_files` over `ls`, `cat` and `grep` because their output is cut
