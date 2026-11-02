@@ -3242,3 +3242,22 @@ The output format and the 200-files and 20-matches caps are unchanged. One new t
 `tests/exec_tools.rs`. The workspace tests, clippy and rustfmt pass. `ollama_proc`'s port test
 failed once and then passed on a rerun; it reuses a port it has just released, and the failure is
 unrelated to this change.
+
+## Timings and prompt identity in the log (bead boubou-xwi, measurement step, 2026-11-03)
+
+In continued Zed sessions, follow-up turns waited 163–190 s before their first step, at about
+40–50K tokens of context (`acp_1102_215800` 22:34, `acp_1102_190002` 19:19 and 19:23,
+`acp_1102_181813` 18:50). The log could not say why. The candidates were a model reload, or a
+full prefill caused by the per-turn prompt rebuild.
+
+This change is measurement only; nothing sent to the model changes.
+- Each call now logs Ollama's done-chunk durations after the `[ctx: …]` line:
+  `[timing: load 0.0s · prompt 48806 tok 160.2s · gen 312 tok 9.4s]`. `ChatResponse.timing`
+  is `None` from the OpenAI backend.
+- When a continued session rebuilds its prompt, the log now says whether the system prompt
+  changed. It reads either `system prompt unchanged (N chars)` or `system prompt changed at
+  char K of N→M`, with 60 chars of each side around the first difference.
+
+Two new tests: a fake NDJSON done chunk in `tests/ollama_stream.rs`, and the timing and
+prompt lines in `tests/prompt_bias.rs`. The workspace tests, clippy and rustfmt pass. The fix
+waits on readings from a live session.

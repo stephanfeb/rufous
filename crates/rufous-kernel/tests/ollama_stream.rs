@@ -93,3 +93,30 @@ fn a_cumulative_tool_call_list_is_not_doubled() {
         ]
     );
 }
+
+#[test]
+fn the_done_chunks_durations_arrive_as_timing() {
+    // bead boubou-xwi: load and prefill time are what tell a reload from a full prefill.
+    use std::time::Duration;
+    let mut done: serde_json::Value = serde_json::from_str(&chunk(json!([]), true)).expect("json");
+    done["prompt_eval_count"] = json!(48806);
+    done["load_duration"] = json!(1_500_000_000u64);
+    done["prompt_eval_duration"] = json!(160_200_000_000u64);
+    done["eval_duration"] = json!(9_400_000_000u64);
+    let host = ndjson_server(vec![done.to_string()]);
+    let mut b = OllamaBackend::new(host, &RunParams::plain("m", "/tmp")).expect("backend");
+    let r = b
+        .chat("m", &[Message::user("go")], &[], &mut |_| {})
+        .expect("chat");
+    let t = r.timing.expect("timing");
+    assert_eq!(t.load, Duration::from_millis(1500));
+    assert_eq!(t.prompt_eval, Duration::from_millis(160_200));
+    assert_eq!(t.eval, Duration::from_millis(9400));
+    // A server that sends no durations leaves it unset.
+    let host = ndjson_server(vec![chunk(json!([]), true)]);
+    let mut b = OllamaBackend::new(host, &RunParams::plain("m", "/tmp")).expect("backend");
+    let r = b
+        .chat("m", &[Message::user("go")], &[], &mut |_| {})
+        .expect("chat");
+    assert_eq!(r.timing, None);
+}

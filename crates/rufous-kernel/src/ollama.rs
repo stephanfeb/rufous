@@ -161,6 +161,13 @@ pub struct ChatChunk {
     pub prompt_eval_count: Option<u64>,
     #[serde(default)]
     pub eval_count: Option<u64>,
+    /// Ollama's done-chunk durations, in nanoseconds.
+    #[serde(default)]
+    pub load_duration: Option<u64>,
+    #[serde(default)]
+    pub prompt_eval_duration: Option<u64>,
+    #[serde(default)]
+    pub eval_duration: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -413,3 +413,68 @@ fn a_skill_added_between_turns_is_named_on_the_next_one() {
         out[0].content
     );
 }
+
+#[test]
+fn a_rebuilt_prompt_logs_whether_it_changed_and_each_call_its_timing() {
+    // bead boubou-xwi: a follow-up turn waited 190 s before its first step. The log has to
+    // say whether the rebuild moved the prompt's text and where the call's time went.
+    use rufous_kernel::agent::chat::Timing;
+    use rufous_kernel::agent::run::prompt_change;
+    use std::time::Duration;
+    struct Timed;
+    impl ChatBackend for Timed {
+        fn chat(
+            &mut self,
+            _m: &str,
+            _msgs: &[Message],
+            _t: &[Value],
+            _on: &mut dyn FnMut(StreamPiece<'_>),
+        ) -> Result<ChatResponse, ChatError> {
+            let mut r = ChatResponse::text("Done, here is the answer.");
+            r.prompt_eval_count = Some(48806);
+            r.eval_count = Some(312);
+            r.timing = Some(Timing {
+                load: Duration::ZERO,
+                prompt_eval: Duration::from_millis(160_200),
+                eval: Duration::from_millis(9400),
+            });
+            Ok(r)
+        }
+    }
+    let d = tempfile::tempdir().expect("tmp");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink = logs.clone();
+    let mut p = RunParams::plain("gemma4:12b", d.path());
+    p.policy = rufous_kernel::agent::TurnPolicy::conversation();
+    let mut a = Agent::new(p, Timed, OkTools).with_sink(move |ev| {
+        if let AgentEvent::Log(l) = ev {
+            sink.lock().expect("lock").push(l);
+        }
+    });
+    let msgs = a.task_messages("Tidy up the notes folder");
+    let mut out = a.run(msgs, None, None).expect("turn 1");
+    out.push(Message::user("Now sort them by date"));
+    a.run(out, None, None).expect("turn 2");
+    let logs = logs.lock().expect("lock").join("\n");
+    assert!(
+        logs.contains("[timing: load 0.0s · prompt 48806 tok 160.2s · gen 312 tok 9.4s]"),
+        "{logs}"
+    );
+    assert!(logs.contains("[prompt] system prompt "), "{logs}");
+
+    assert_eq!(
+        prompt_change("abc", "abc"),
+        "system prompt unchanged (3 chars)"
+    );
+    let c = prompt_change("one\ntwo", "one\nTWO!");
+    assert!(
+        c.starts_with("system prompt changed at char 4 of 7→8: "),
+        "{c}"
+    );
+    assert!(c.contains("one⏎two") && c.contains("one⏎TWO!"), "{c}");
+    let c = prompt_change("abc", "abcdef");
+    assert!(
+        c.starts_with("system prompt changed at char 3 of 3→6"),
+        "{c}"
+    );
+}

@@ -276,6 +276,7 @@ pub fn parse_completion(d: &Value) -> ChatResponse {
         prompt_eval_count: usage.get("prompt_tokens").and_then(Value::as_u64),
         eval_count: usage.get("completion_tokens").and_then(Value::as_u64),
         done_reason,
+        timing: None,
     }
 }
 
@@ -429,6 +430,7 @@ impl SseAssembler {
             prompt_eval_count: self.usage.get("prompt_tokens").and_then(Value::as_u64),
             eval_count: self.usage.get("completion_tokens").and_then(Value::as_u64),
             done_reason,
+            timing: None,
         }
     }
 }

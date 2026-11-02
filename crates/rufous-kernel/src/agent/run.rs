@@ -902,6 +902,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 environment,
             };
             let sys = system_for(turn.prompt, &inputs, sink, &skill_text);
+            if let Some(old) = messages.iter().find(|m| m.role == Role::System) {
+                log!("[prompt] {}", prompt_change(&old.content, &sys));
+            }
             let mut m = vec![Message::system(sys)];
             m.extend(messages.into_iter().filter(|m| m.role != Role::System));
             messages = m;
@@ -1206,6 +1209,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             if let Some(pt) = r.prompt_eval_count.filter(|&p| p > 0) {
                 let pct = pt * 100 / u64::from(params.num_ctx.max(1));
                 log!("[ctx: {pt}/{} = {pct}%]", params.num_ctx);
+                if let Some(t) = r.timing {
+                    log!(
+                        "[timing: load {:.1}s · prompt {pt} tok {:.1}s · gen {} tok {:.1}s]",
+                        t.load.as_secs_f64(),
+                        t.prompt_eval.as_secs_f64(),
+                        r.eval_count.unwrap_or(0),
+                        t.eval.as_secs_f64()
+                    );
+                }
                 sink(AgentEvent::ContextUsage {
                     used: pt,
                     limit: params.num_ctx,
@@ -2439,4 +2451,31 @@ fn compact<B: ChatBackend>(
         });
     }
     c.messages
+}
+
+/// Whether a rebuilt system prompt kept the old one's text, and if not where it first
+/// differs: a change early in the prompt makes the server prefill the whole history again
+/// (bead boubou-xwi).
+pub fn prompt_change(old: &str, new: &str) -> String {
+    let (o, n) = (text::clen(old), text::clen(new));
+    let Some(at) = old
+        .chars()
+        .zip(new.chars())
+        .position(|(a, b)| a != b)
+        .or((o != n).then_some(o.min(n)))
+    else {
+        return format!("system prompt unchanged ({n} chars)");
+    };
+    let window = |s: &str| -> String {
+        s.chars()
+            .skip(at.saturating_sub(60))
+            .take(120)
+            .collect::<String>()
+            .replace('\n', "⏎")
+    };
+    format!(
+        "system prompt changed at char {at} of {o}→{n}: …{}… ⇢ …{}…",
+        window(old),
+        window(new)
+    )
 }

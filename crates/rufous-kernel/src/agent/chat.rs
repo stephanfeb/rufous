@@ -4,6 +4,7 @@
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::RunParams;
 use crate::ollama::{ChatRequest, Client, Message, Options, Role, ToolCall};
@@ -24,6 +25,16 @@ pub struct ChatResponse {
     pub prompt_eval_count: Option<u64>,
     pub eval_count: Option<u64>,
     pub done_reason: Option<String>,
+    /// Where the call's time went, when the server says (Ollama does; OpenAI-style servers
+    /// do not). Logged per call to tell model loads and full prefills apart (bead boubou-xwi).
+    pub timing: Option<Timing>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timing {
+    pub load: Duration,
+    pub prompt_eval: Duration,
+    pub eval: Duration,
 }
 
 impl ChatResponse {
@@ -33,6 +44,7 @@ impl ChatResponse {
             prompt_eval_count: None,
             eval_count: None,
             done_reason: None,
+            timing: None,
         }
     }
 
@@ -44,6 +56,7 @@ impl ChatResponse {
             prompt_eval_count: None,
             eval_count: None,
             done_reason: None,
+            timing: None,
         }
     }
 }
@@ -235,6 +248,7 @@ impl OllamaBackend {
         let mut prompt_eval = None;
         let mut eval = None;
         let mut done_reason = None;
+        let mut timing = None;
         let mut aborted = false;
         self.rt.block_on(self.client.chat_stream(req, |chunk| {
             if self
@@ -274,6 +288,17 @@ impl OllamaBackend {
             if chunk.done_reason.is_some() {
                 done_reason = chunk.done_reason.clone();
             }
+            if chunk.load_duration.is_some()
+                || chunk.prompt_eval_duration.is_some()
+                || chunk.eval_duration.is_some()
+            {
+                let ns = |v: Option<u64>| Duration::from_nanos(v.unwrap_or(0));
+                timing = Some(Timing {
+                    load: ns(chunk.load_duration),
+                    prompt_eval: ns(chunk.prompt_eval_duration),
+                    eval: ns(chunk.eval_duration),
+                });
+            }
             true
         }))?;
         if aborted {
@@ -290,6 +315,7 @@ impl OllamaBackend {
             prompt_eval_count: prompt_eval,
             eval_count: eval,
             done_reason,
+            timing,
         })
     }
 }
