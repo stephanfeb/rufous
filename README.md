@@ -1,7 +1,7 @@
 # rufous
 
 A local-model autonomous agent, written in Rust. rufous is the successor to
-[Mingbird](../Mingbird-agent), the Python/Tk original, and keeps its two ideas:
+[Mingbird](https://arxiv.org/abs/2610.02001), the Python/Tk original, and keeps its two ideas:
 
 - **Tiny prefill.** System prompt plus nine core tool schemas, about 1250 tokens, so a 1B–4B
   model running under Ollama can drive it.
