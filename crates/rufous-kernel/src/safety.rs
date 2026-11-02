@@ -682,6 +682,56 @@ fn cwd_before(cmd: &str, offset: usize, workdir: &Path) -> Option<PathBuf> {
     Some(cwd)
 }
 
+/// A shell word: a quoted string whole, or a run up to whitespace or a shell metacharacter.
+static SHELL_WORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""[^"]*"|'[^']*'|[^\s"'|&;<>()]+"#).expect("regex"));
+
+/// A word that is an absolute path as written: a drive, a root, the home.
+fn looks_absolute(w: &str) -> bool {
+    DRIVE_RE.is_match(w)
+        || w.starts_with('/')
+        || w.starts_with('\\')
+        || w == "~"
+        || w.starts_with("~/")
+        || w.starts_with("~\\")
+        || w.starts_with('$')
+        || w.starts_with('%')
+}
+
+/// The command with every absolute path literal that resolves inside the working directory
+/// (or an allowed directory) replaced by `.`, for [`matches_escape_pattern`] only (bead
+/// boubou-9ox). The patterns cannot tell where a path points, so `c:\users` and `cp … /home/`
+/// fired on the working directory itself, the usual place for one on Windows and Linux.
+/// Outside literals, sensitive files and paths the gate cannot evaluate are left as written,
+/// so they match as before.
+pub fn mask_inside_paths(command: &str, workdir: &Path, allow_dirs: &[PathBuf]) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut last = 0;
+    for m in SHELL_WORD_RE.find_iter(command) {
+        let word = m.as_str();
+        // `--out=/path`: the value after the first `=` is the path.
+        let (lead, path) = match word.split_once('=') {
+            Some((k, v)) if !word.starts_with(['"', '\'']) => (k.len() + 1, v),
+            _ => (0, word),
+        };
+        let bare = path.trim_matches(['"', '\'']);
+        if !looks_absolute(bare) {
+            continue;
+        }
+        let ShellPath::Known(p) = expand_shell_path(bare) else {
+            continue;
+        };
+        let (real, inside) = safe_path(workdir, &p, allow_dirs);
+        if inside && !is_sensitive_path(&real) {
+            out.push_str(&command[last..m.start() + lead]);
+            out.push('.');
+            last = m.end();
+        }
+    }
+    out.push_str(&command[last..]);
+    out
+}
+
 const UNKNOWN_CWD_MSG: &str = "[safety net: the command changes directory to a place the gate cannot evaluate (cd -, cd $VAR) before a recursive delete; refused. Delete with a path relative to the working directory instead.]";
 
 pub fn is_sensitive_path(path: &Path) -> bool {
@@ -1429,7 +1479,8 @@ impl Gate {
                     }
                 };
             }
-            if matches_escape_pattern(&low) {
+            let masked = mask_inside_paths(command, workdir, &self.policy.allow_dirs);
+            if matches_escape_pattern(&masked.to_lowercase()) {
                 return match ask(
                     &self.policy,
                     self.confirmer.as_mut(),

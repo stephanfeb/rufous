@@ -3113,3 +3113,23 @@ v0.3.1 adds the following since v0.3.0:
 256 px, from the same `rufous-icon-512.png` as the web UI's mark. The rounded square fills about 80%
 of the canvas, the margin macOS icons use, and the rest is transparent. Bundling is still off in
 `tauri.conf.json`, so this is the window and dock icon only.
+
+## Escape patterns no longer fire on the working directory's own path (bead boubou-9ox, 2026-11-02)
+
+Ring 3's `BASH_ESCAPE_PATTERNS` match on the raw command line, so they cannot tell where a path
+points. `c:\users`, `type X:\…` and the like fired on any absolute drive path, and `cp|mv … /home/` on
+any `/home` path. A command that named its own working directory by absolute path was therefore asked
+attended, or refused unattended, whenever that directory sat under `C:\Users` or `/home`, which is
+where a Windows or Linux user's projects usually live.
+
+The fix is `mask_inside_paths`. It replaces with `.` every absolute path literal that resolves inside
+the working directory or an allowed directory and is not a sensitive file. The escape patterns run on
+the masked text; every other check still sees the command as written.
+
+Outside paths, `..` out of the working directory, unknown variables, and `.ssh` or `.env` inside the
+working directory are left as written, so they match as before. An unquoted path with a space in it
+still stops at the space and is still asked.
+
+`tests/replay.rs` runs on every OS again. Three new tests were added, one of them Windows-only.
+Locally: 600 tests, clippy and rustfmt pass. Windows is checked by CI.
+

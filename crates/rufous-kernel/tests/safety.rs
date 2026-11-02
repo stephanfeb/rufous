@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use rufous_kernel::safety::{
-    matches_escape_pattern, risk_classify, DenyAll, Gate, SafetyPolicy, DANGER_CMD,
+    mask_inside_paths, matches_escape_pattern, risk_classify, DenyAll, Gate, SafetyPolicy,
+    DANGER_CMD,
 };
 use rufous_kernel::tools::ToolInvocation;
 
@@ -895,4 +896,67 @@ fn inline_code_naming_an_outside_path_is_asked_about_like_a_file_tool() {
     ] {
         assert!(gate.check(&bash(cmd), d.path()).is_none(), "{cmd}");
     }
+}
+
+// Bead boubou-9ox: the escape patterns cannot tell where a path points, so a command naming
+// the working directory by its absolute path was asked whenever the workdir sat under
+// `/home` (Linux) or `C:\Users` (Windows). Paths that resolve inside are masked first.
+#[test]
+fn an_absolute_path_inside_the_workdir_does_not_trip_the_escape_patterns() {
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().display().to_string();
+    let mut gate = Gate::headless(SafetyPolicy::default());
+    // `/home/` in the command, but inside the working directory.
+    let cmd = format!("cp a.txt {wd}/home/b.txt");
+    assert!(
+        matches_escape_pattern(&cmd.to_lowercase()),
+        "the pattern alone fires"
+    );
+    assert_eq!(gate.check(&bash(&cmd), d.path()), None, "{cmd}");
+    let quoted = format!("cp a.txt \"{wd}/home/b.txt\"");
+    assert_eq!(gate.check(&bash(&quoted), d.path()), None, "{quoted}");
+    let flag = format!("cp --target-directory={wd}/home a.txt");
+    assert_eq!(gate.check(&bash(&flag), d.path()), None, "{flag}");
+}
+
+#[test]
+fn outside_sensitive_and_escaping_paths_still_trip_them() {
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().display().to_string();
+    let mut gate = Gate::headless(SafetyPolicy::default());
+    for cmd in [
+        "cp a.txt /home/x/b.txt".to_string(),
+        format!("cp {wd}/a.txt /home/x/b.txt"),
+        format!("cat {wd}/.ssh/id_ed25519"),
+    ] {
+        assert!(gate.check(&bash(&cmd), d.path()).is_some(), "{cmd}");
+    }
+    // Left as written, so the patterns see them: `..` out of the workdir, an unknown variable,
+    // and a path outside next to one inside.
+    for cmd in [
+        format!("cp a.txt {wd}/../home/b.txt"),
+        "cp a.txt $OTHER/home/b.txt".to_string(),
+    ] {
+        assert_eq!(mask_inside_paths(&cmd, d.path(), &[]), cmd);
+    }
+    let mixed = format!("cp {wd}/a.txt /home/x/b.txt");
+    assert_eq!(
+        mask_inside_paths(&mixed, d.path(), &[]),
+        "cp . /home/x/b.txt"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_drive_path_to_the_workdir_is_not_asked_on_windows() {
+    // The CI runner's temp directory is under C:\Users, which `c:\\users` matched.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path().display().to_string();
+    let mut gate = Gate::headless(SafetyPolicy::default());
+    for cmd in [format!("type {wd}\\x.txt"), format!("cd {wd} && dir")] {
+        assert_eq!(gate.check(&bash(&cmd), d.path()), None, "{cmd}");
+    }
+    assert!(gate
+        .check(&bash("type C:\\Users\\someone\\secret.txt"), d.path())
+        .is_some());
 }

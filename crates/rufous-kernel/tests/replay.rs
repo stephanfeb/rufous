@@ -9,11 +9,6 @@
 //! scope gate with that instruction before the call (bead boubou-6x3); the gate's confirmer
 //! here denies, so an out-of-scope call is `"blocked"`.
 
-// The corpus is POSIX commands recorded on macOS. On Windows `{workdir}` becomes `C:\…`, and
-// the gate's drive-path escape patterns refuse every command that names it, inside or not
-// (bead boubou-9ox); unix-only until that is designed.
-#![cfg(unix)]
-
 use std::path::Path;
 
 use rufous_kernel::exec::Executor;
