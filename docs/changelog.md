@@ -3133,3 +3133,26 @@ still stops at the space and is still asked.
 `tests/replay.rs` runs on every OS again. Three new tests were added, one of them Windows-only.
 Locally: 600 tests, clippy and rustfmt pass. Windows is checked by CI.
 
+## The decision model says it is there, and that shadow mode only logs (bead boubou-xki, 2026-11-02)
+
+The code's default for `decider.mode` is `off`, and nothing in rufous writes a `decider` section.
+But a `config.json` that says `shadow` or `on` makes every consulting turn ask a second Ollama
+model, and the user was never told. The only trace was a `[decider] …` log line, which the editor
+dropped and the web UI does not show. The developer's own config had said `shadow` with `tev1:4b`
+since 2026-10-29.
+
+Config stays the switch, and `on` stays reachable through it (the user's decision). Each surface
+now says it once, at the start:
+- `rufous run` and `rufous chat`: a `[decider]` line before the first turn.
+- The web UI: a note when a chat starts.
+- Zed: an Info notice before the first turn of each session.
+- `rufous doctor`.
+
+The text comes from one place, `DeciderConfig::notice`. In shadow mode it reads: "Decision model
+<model>: shadow mode only. Its answers are logged to the session's .decisions.jsonl and the
+heuristics still decide; it loads a second model in Ollama. Turn it off with "decider": {"mode":
+"off"} in config.json." In `on` mode it says that the model routes a turn below the threshold.
+
+`RunParams::decider_notice` keeps dispatched children, and any policy that never consults the
+decider, silent. The loop and the decider are unchanged. Four tests: kernel, web, ACP, and the
+child and policy cases. Locally: 603 tests, clippy and rustfmt pass.

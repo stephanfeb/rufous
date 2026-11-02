@@ -346,6 +346,12 @@ impl std::fmt::Debug for TurnSetup {
 /// be `Send`; the factory is shared across sessions.
 pub trait AgentFactory: Send + Sync {
     fn new_turn(&self, setup: TurnSetup) -> rufous_kernel::Result<Box<dyn TurnRunner>>;
+
+    /// What the editor is told once per session before its first turn (bead boubou-xki):
+    /// the decision model the turns will ask, if any.
+    fn notice(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The production factory: `Agent::standard` on the user's `config.json`, the real executor
@@ -381,6 +387,11 @@ pub fn turn_params(
 }
 
 impl AgentFactory for StandardFactory {
+    fn notice(&self) -> Option<String> {
+        // The coding policy consults the decider on every turn.
+        self.cfg.decider.notice()
+    }
+
     fn new_turn(&self, setup: TurnSetup) -> rufous_kernel::Result<Box<dyn TurnRunner>> {
         let params = turn_params(
             setup.model,

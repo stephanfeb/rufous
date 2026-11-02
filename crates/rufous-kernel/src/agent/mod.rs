@@ -119,6 +119,15 @@ pub struct RunParams {
 }
 
 impl RunParams {
+    /// The decision model's notice for a run under these parameters (bead boubou-xki): `None`
+    /// for a dispatched child or a policy that never consults the decider, which load nothing.
+    pub fn decider_notice(&self, cfg: &crate::decider::DeciderConfig) -> Option<String> {
+        if self.child_mode || !self.policy.consult_decider {
+            return None;
+        }
+        cfg.notice()
+    }
+
     pub fn from_env(model: impl Into<String>, workdir: impl Into<PathBuf>) -> Result<Self> {
         let num_ctx = env_parse("AGENT_CTX")?.unwrap_or(DEFAULT_NUM_CTX);
         let slim_env = parse_switch("AGENT_SLIM_OUTPUT", env_raw("AGENT_SLIM_OUTPUT").as_deref());

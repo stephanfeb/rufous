@@ -255,6 +255,13 @@ impl AppState {
         drop(g);
         self.bus
             .note(format!("====== start · {} ======", req.model));
+        // Once per chat, when it starts (bead boubou-xki): both web policies consult the
+        // decider, and a resumed chat already said this when it began.
+        if !existed {
+            if let Some(n) = req.config.decider.notice() {
+                self.bus.note(n);
+            }
+        }
         let confirmer = WebConfirmer {
             hub: self.ask.clone(),
             bus: self.bus.clone(),

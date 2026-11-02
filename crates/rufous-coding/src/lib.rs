@@ -65,6 +65,8 @@ struct SessionState {
     mcp_servers: rufous_kernel::mcp::McpConfig,
     /// Writes the user declined, carried across turns (bead boubou-vj3).
     declined: Arc<Mutex<Vec<rufous_kernel::safety::DeclinedWrite>>>,
+    /// The factory's notice was sent (bead boubou-xki): once per session, new or loaded.
+    noticed: bool,
 }
 
 type Sessions = Arc<Mutex<HashMap<SessionId, SessionState>>>;
@@ -197,6 +199,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             busy: false,
                             mcp_servers,
                             declined: Arc::default(),
+                            noticed: false,
                         };
                         lock(&sessions).insert(id.clone(), st);
                         tracing::info!(target: "rufous_coding", session = %id, cwd = %req.cwd.display(), "session/new");
@@ -277,6 +280,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             busy: false,
                             mcp_servers,
                             declined: Arc::default(),
+                            noticed: false,
                         };
                         lock(&sessions).insert(req.session_id.clone(), st);
                         tracing::info!(
@@ -313,6 +317,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 Some(s) => {
                                     s.busy = true;
                                     s.stop.store(false, Ordering::SeqCst);
+                                    let first = !std::mem::replace(&mut s.noticed, true);
                                     Ok((
                                         s.cwd.clone(),
                                         s.name.clone(),
@@ -320,14 +325,23 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                         s.stop.clone(),
                                         s.mcp_servers.clone(),
                                         s.declined.clone(),
+                                        first,
                                     ))
                                 }
                             }
                         };
-                        let (cwd, name, prior, stop, mcp_servers, declined) = match taken {
+                        let (cwd, name, prior, stop, mcp_servers, declined, first) = match taken {
                             Ok(t) => t,
                             Err(e) => return responder.respond_with_error(e),
                         };
+                        if let Some(n) = factory.notice().filter(|_| first) {
+                            if let Err(e) = cx.send_notification(SessionNotification::new(
+                                req.session_id.clone(),
+                                bridge::notice_update(&n),
+                            )) {
+                                tracing::warn!(target: "rufous_coding", "session/update (notice): {e}");
+                            }
+                        }
                         let text = prompt_text(&req.prompt);
                         let plan_dir =
                             rufous_kernel::agent::session::harness_dir(&sessions_dir, &name);

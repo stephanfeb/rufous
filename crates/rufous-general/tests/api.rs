@@ -760,3 +760,36 @@ fn a_chat_turn_is_interactive_unless_batch_mode_is_on() {
     assert_eq!(r["prefs"]["batch"], json!(true));
     assert_eq!(s.get("/api/status")["prefs"]["batch"], json!(true));
 }
+
+#[test]
+fn a_decision_model_in_use_is_announced_once_per_chat() {
+    // Bead boubou-xki: `decider.mode` in config.json loads a second model; the chat says so
+    // when it starts, shadow mode says it only logs, and the next message says nothing more.
+    let (_sc, sp) = scripted(false, false);
+    let home = tempfile::tempdir().expect("tmp");
+    let wd = home.path().join("work");
+    std::fs::create_dir_all(&wd).expect("mkdir");
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"ollama_host": "http://127.0.0.1:9", "decider": {"mode": "shadow", "model": "tev1:4b"}}"#,
+    )
+    .expect("cfg");
+    let st = Arc::new(AppState::with_spawner(home.path().to_path_buf(), wd, sp));
+    let mut rx = st.bus.subscribe();
+    let idle = |st: &Arc<AppState>| {
+        assert!(wait_until(|| !st.busy(), Duration::from_secs(5)));
+    };
+    assert!(st.start("hi".into(), "m".into(), true));
+    idle(&st);
+    assert!(st.start("more".into(), "m".into(), true));
+    idle(&st);
+    let mut notes = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if ev["type"] == "note" {
+            notes.push(ev["data"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    let decider: Vec<_> = notes.iter().filter(|n| n.contains("tev1:4b")).collect();
+    assert_eq!(decider.len(), 1, "{notes:?}");
+    assert!(decider[0].contains("shadow mode only"), "{}", decider[0]);
+}

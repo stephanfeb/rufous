@@ -37,6 +37,18 @@ struct Pending {
     args: Value,
 }
 
+/// An informational notice from a sentence-led text: the first sentence is the title, the
+/// rest the description (bead boubou-xki, the decision-model notice).
+pub fn notice_update(text: &str) -> SessionUpdate {
+    let (title, rest) = text.split_once(". ").unwrap_or((text, ""));
+    let n = Notice::new(NoticeSeverity::Info, title.trim_end_matches('.'));
+    SessionUpdate::Notice(if rest.is_empty() {
+        n
+    } else {
+        n.description(rest.to_string())
+    })
+}
+
 /// Per-turn state of the mapping.
 #[derive(Debug)]
 pub struct TurnBridge {

@@ -379,3 +379,43 @@ fn systemone_wire_shapes_match_ollama_0_40() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn the_notice_names_the_model_and_says_what_the_mode_does() {
+    // Bead boubou-xki: every surface tells the user, once per session, that a second model
+    // is in use and whether it acts.
+    use rufous_kernel::agent::{RunParams, TurnPolicy};
+    use rufous_kernel::decider::DeciderConfig;
+    assert_eq!(DeciderConfig::default().notice(), None);
+    let shadow = DeciderConfig {
+        mode: DeciderMode::Shadow,
+        model: "tev1:4b".into(),
+        ..Default::default()
+    };
+    let n = shadow.notice().expect("shadow");
+    assert!(
+        n.starts_with("Decision model tev1:4b: shadow mode only. ")
+            && n.contains("heuristics still decide")
+            && n.contains("second model")
+            && n.contains(r#""decider": {"mode": "off"}"#),
+        "{n}"
+    );
+    let on = DeciderConfig {
+        mode: DeciderMode::On,
+        threshold: 0.8,
+        ..shadow.clone()
+    };
+    let n = on.notice().expect("on");
+    assert!(n.contains(": on. ") && n.contains("below 0.8"), "{n}");
+
+    // Only a run that would consult it says so: not a child, not a policy without it.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut p = RunParams::plain("m".to_string(), d.path());
+    p.policy = TurnPolicy::conversation();
+    assert!(p.decider_notice(&shadow).is_some());
+    p.child_mode = true;
+    assert_eq!(p.decider_notice(&shadow), None);
+    p.child_mode = false;
+    p.policy = TurnPolicy::child();
+    assert_eq!(p.decider_notice(&shadow), None);
+}

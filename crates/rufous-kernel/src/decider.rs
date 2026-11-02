@@ -69,6 +69,30 @@ impl Default for DeciderConfig {
     }
 }
 
+impl DeciderConfig {
+    /// What a surface tells the user once per session when the decision model is in use
+    /// (bead boubou-xki): which model, that shadow mode only logs, that it loads a second
+    /// model, and how to turn it off. `None` when the mode is `off`.
+    pub fn notice(&self) -> Option<String> {
+        let what = match self.mode {
+            DeciderMode::Off => return None,
+            DeciderMode::Shadow => "shadow mode only. Its answers are logged to the session's \
+                 .decisions.jsonl and the heuristics still decide"
+                .to_string(),
+            DeciderMode::On => format!(
+                "on. Its answer routes a turn where the heuristics are unsure (confidence \
+                 below {})",
+                self.threshold
+            ),
+        };
+        Some(format!(
+            "Decision model {}: {what}; it loads a second model in Ollama. Turn it off with \
+             \"decider\": {{\"mode\": \"off\"}} in config.json.",
+            self.model
+        ))
+    }
+}
+
 /// A local decision model: one request carries the state and named typed questions.
 pub trait DecisionBackend: Send {
     fn name(&self) -> String;

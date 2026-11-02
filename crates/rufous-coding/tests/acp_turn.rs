@@ -23,7 +23,7 @@ use agent_client_protocol::schema::v1::{
     WriteTextFileResponse,
 };
 use agent_client_protocol::schema::v1::{
-    EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio,
+    EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio, Notice, NoticeSeverity,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Channel, Client, ConnectTo, Responder};
@@ -1187,4 +1187,94 @@ async fn a_write_declined_in_one_turn_is_asked_about_under_its_name_in_the_next(
     );
     assert!(!target.exists());
     assert!(!cwd.join("boubou_convo_perm.txt").exists());
+}
+
+/// [`ScriptedFactory`] whose turns would ask a decision model in shadow mode.
+struct Noticing(ScriptedFactory);
+
+impl AgentFactory for Noticing {
+    fn new_turn(&self, setup: TurnSetup) -> rufous_kernel::Result<Box<dyn TurnRunner>> {
+        self.0.new_turn(setup)
+    }
+    fn notice(&self) -> Option<String> {
+        rufous_kernel::decider::DeciderConfig {
+            mode: rufous_kernel::decider::DeciderMode::Shadow,
+            model: "tev1:4b".into(),
+            ..Default::default()
+        }
+        .notice()
+    }
+}
+
+#[tokio::test]
+async fn the_decision_model_is_announced_once_per_session_as_shadow_only() {
+    // Bead boubou-xki: the editor dropped the `[decider]` log line, so a user whose config
+    // turned the decider on was never told a second model was in use.
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let factory = Noticing(ScriptedFactory {
+        script: vec![],
+        delay: Duration::ZERO,
+        forever: false,
+        turns: Arc::new(AtomicUsize::new(0)),
+        opened_with: Arc::new(Mutex::new(Vec::new())),
+    });
+    let agent = RufousAcp::with_factory(cwd.join("home"), "scripted:1b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    // (prompt index, update) so the notice can be placed before the first turn's output.
+    let seen: Arc<Mutex<Vec<SessionUpdate>>> = Arc::default();
+    let marks: Arc<Mutex<Vec<usize>>> = Arc::default();
+    let client_seen = seen.clone();
+    let m = marks.clone();
+    let s2 = seen.clone();
+    let client = Client
+        .builder()
+        .name("test-editor")
+        .on_receive_notification(
+            async move |n: SessionNotification, _cx| {
+                client_seen.lock().expect("lock").push(n.update);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(client_ch, async |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let ns = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            for p in ["hello", "again"] {
+                cx.send_request(PromptRequest::new(ns.session_id.clone(), vec![p.into()]))
+                    .block_task()
+                    .await?;
+                m.lock().expect("lock").push(s2.lock().expect("lock").len());
+            }
+            Ok(())
+        });
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    client_res.expect("client side");
+
+    let seen = seen.lock().expect("lock");
+    let marks = marks.lock().expect("lock");
+    let notices: Vec<(usize, &Notice)> = seen
+        .iter()
+        .enumerate()
+        .filter_map(|(i, u)| match u {
+            SessionUpdate::Notice(n) if n.title.contains("tev1:4b") => Some((i, n)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{seen:?}");
+    let (at, n) = notices[0];
+    assert_eq!(at, 0, "first update of the session");
+    assert!(at < marks[0]);
+    assert_eq!(n.severity, NoticeSeverity::Info);
+    assert_eq!(n.title, "Decision model tev1:4b: shadow mode only");
+    assert!(n
+        .description
+        .as_deref()
+        .is_some_and(|d| d.contains("heuristics still decide") && d.contains("config.json")));
 }

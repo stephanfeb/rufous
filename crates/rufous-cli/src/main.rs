@@ -636,9 +636,13 @@ fn run_task(
     }
 
     ensure_engine(cfg);
+    let notice = params.decider_notice(&cfg.decider);
     let mut agent = Agent::standard(params, cfg)?
         .with_sink(print_event)
         .with_builtin_skills(skills);
+    if let Some(n) = notice {
+        println!("[decider] {n}");
+    }
     install_ctrl_c(agent.stop_flag());
     println!("[engine] {}", agent.engine);
     let sdir = sessions_dir(&agent_home());
@@ -710,9 +714,13 @@ fn chat(
     let params = rufous_general::chat::params(model, &workdir)?;
     let cli_tb = cli_budget(time_budget.as_deref());
     ensure_engine(cfg);
+    let notice = params.decider_notice(&cfg.decider);
     let mut agent = Agent::standard(params, cfg)?
         .with_sink(print_event)
         .with_builtin_skills(rufous_general::harness::skills());
+    if let Some(n) = notice {
+        println!("[decider] {n}");
+    }
     install_ctrl_c(agent.stop_flag());
     println!("[engine] {}", agent.engine);
     rufous_general::chat::repl(
@@ -940,6 +948,9 @@ async fn doctor(cfg: &Config) -> Result<()> {
             cfg.decider.model
         ),
         mode => {
+            if let Some(n) = cfg.decider.notice() {
+                println!("decider      : {n}");
+            }
             let b = rufous_kernel::decider::OllamaSystemOne::new(
                 cfg.ollama_host(),
                 cfg.decider.model.clone(),
