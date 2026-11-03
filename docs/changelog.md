@@ -3290,3 +3290,23 @@ Two new tests: the context survives a follow-up turn with the hooks fired once
 (`tests/hooks.rs`), and `prefix_change` (`tests/prompt_bias.rs`). The workspace tests, clippy
 and rustfmt pass, apart from `ollama_proc`'s port test, which failed once and passed three
 reruns. That test is unrelated to this change.
+
+## v0.3.2 (2026-11-03)
+
+CI run 41582119560 on 4c98db6 is green on all three systems.
+
+v0.3.2 adds the following since v0.3.1:
+- `run_bash` bounds its wait for output that a backgrounded process keeps open, so a command that
+  starts a server in the background no longer runs to the timeout (boubou-d4z).
+- `search_files` skips VCS and tracker stores (`.git`, `.beads`, `node_modules` …), binary files
+  and the harness's own backups (boubou-r7i).
+- The SessionStart hook context survives the prompt rebuild on follow-up turns. Losing it changed
+  the system prompt and made the server prefill the whole history again (boubou-xwi).
+- Each model call logs Ollama's load, prompt and generation times, and the log says where a request
+  stops extending the previous one (boubou-xwi).
+- The escape-pattern checks skip absolute paths inside the working directory and paths inside
+  inline code (boubou-9ox). Shell backups find paths containing `~` or `:` (boubou-2pl).
+- Skills that have no trigger are named in the task prompt (boubou-15s). The decision model is
+  announced once per session, and shadow mode only logs it (boubou-xki).
+- The desktop app uses the rufous hummingbird icon. The guide says that task items should carry
+  "Done when" and "Out of scope", and that only work that has an item should be asked for.
