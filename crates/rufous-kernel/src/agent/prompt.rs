@@ -297,6 +297,19 @@ fn push_agents(base: &mut String, agents: Option<&str>) {
     }
 }
 
+const SESSION_CONTEXT_HEAD: &str = "\n\nSESSION CONTEXT (from the project's hooks; follow it):\n";
+const SESSION_CONTEXT_END: &str = "\nEND SESSION CONTEXT";
+
+/// The `SessionStart` context a built task prompt carries, as it was given. A continued
+/// session's rebuild takes it from the previous system message rather than firing the hooks
+/// again, so the prompt keeps its text and the server its prefix cache (bead boubou-xwi).
+/// `None` when there is no block, or for a prompt built before the block had its end line.
+pub fn session_context(system: &str) -> Option<String> {
+    let start = system.find(SESSION_CONTEXT_HEAD)? + SESSION_CONTEXT_HEAD.len();
+    let len = system[start..].find(SESSION_CONTEXT_END)?;
+    Some(system[start..start + len].to_string())
+}
+
 /// Options for [`system_prompt`].
 #[derive(Debug, Clone, Default)]
 pub struct PromptOptions<'a> {
@@ -349,8 +362,9 @@ pub fn system_prompt(opts: &PromptOptions<'_>) -> String {
         .map(str::trim)
         .filter(|c| !c.is_empty())
     {
-        base.push_str("\n\nSESSION CONTEXT (from the project's hooks; follow it):\n");
+        base.push_str(SESSION_CONTEXT_HEAD);
         base.push_str(ctx);
+        base.push_str(SESSION_CONTEXT_END);
     }
     for (name, body) in &opts.skills {
         base.push_str(&format!(

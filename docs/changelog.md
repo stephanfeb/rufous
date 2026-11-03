@@ -3261,3 +3261,32 @@ This change is measurement only; nothing sent to the model changes.
 Two new tests: a fake NDJSON done chunk in `tests/ollama_stream.rs`, and the timing and
 prompt lines in `tests/prompt_bias.rs`. The workspace tests, clippy and rustfmt pass. The fix
 waits on readings from a live session.
+
+## Follow-up turns keep the session context; request-prefix diff in the log (bead boubou-xwi, 2026-11-03)
+
+Readings from the timing build (`acp_1103_083226`, qwen3.5:9b, ctx 65536):
+- In the steady state, a call's prompt costs 0.3–2 s, so the prefix cache works. Load is
+  0.0 s throughout. A full prefill runs at about 290–305 tok/s.
+- The follow-up turn at 08:59:36 logged `system prompt changed at char 7377 of 15038→9277`.
+  The next call took 92.3 s for 27,245 prompt tokens.
+- Compaction at 08:54:28 cost 79.4 s on the next call.
+- Two spikes have no cause found yet: 74.7 s after a failed `edit_file`, and 30.6 s after a
+  blocked duplicate call.
+
+Fix: ACP builds a new agent for every turn, so on a follow-up turn the `SessionStart` hooks do
+not fire. The rebuilt prompt therefore lost the SESSION CONTEXT block (5.7K chars of `bd prime`
+output). That changed the prompt part-way through, and the model lost that context after its
+first turn. The block now ends with an `END SESSION CONTEXT` line (+3 tokens). A rebuild that
+does not fire the hooks takes the block from the previous system message
+(`prompt::session_context`), unchanged. A session saved before this change carries nothing
+over, as before.
+
+Measurement: before each call, the loop compares the request with the previous one. It logs
+`[prefix] tools changed: +a −b` and/or `[prefix] request differs from the previous at message
+K of N (…)` when the new request does not just extend the old one. Nothing is logged in the
+steady state.
+
+Two new tests: the context survives a follow-up turn with the hooks fired once
+(`tests/hooks.rs`), and `prefix_change` (`tests/prompt_bias.rs`). The workspace tests, clippy
+and rustfmt pass, apart from `ollama_proc`'s port test, which failed once and passed three
+reruns. That test is unrelated to this change.

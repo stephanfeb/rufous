@@ -360,3 +360,51 @@ fn a_stop_hook_defers_a_finish_once() {
         "{l:?}"
     );
 }
+
+#[test]
+fn a_follow_up_turn_keeps_the_session_context_without_firing_the_hooks() {
+    // bead boubou-xwi: ACP builds a new agent per turn. Its rebuild dropped the hook block,
+    // which changed the prompt at char 7377 and cost a 92 s full prefill on the next call.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path();
+    claude_settings(
+        wd,
+        json!({ "SessionStart": [{ "hooks": [
+            { "type": "command", "command": "echo 'Project rule: run bd prime.'" }
+        ]}]}),
+    );
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let mut a = agent(wd, vec![ChatResponse::text("Done.")], logs.clone());
+    let m = a.task_messages("Tidy the notes");
+    let first = m[0].content.clone();
+    assert_eq!(
+        rufous_kernel::agent::prompt::session_context(&first).as_deref(),
+        Some("Project rule: run bd prime.")
+    );
+    let mut out = a.run(m, Some("hooks_follow_up"), None).expect("turn 1");
+    // A fresh agent continues the session, as the editor bridge does.
+    let mut b = agent(wd, vec![ChatResponse::text("Done again.")], logs.clone());
+    out.push(Message::user("Now sort them"));
+    let out = b.run(out, Some("hooks_follow_up"), None).expect("turn 2");
+    assert_eq!(out[0].content, first, "the rebuilt prompt keeps its text");
+    let l = logs.lock().expect("lock");
+    assert_eq!(
+        l.iter()
+            .filter(|x| x.starts_with("[hooks] SessionStart: "))
+            .count(),
+        1,
+        "{l:?}"
+    );
+    assert!(
+        l.iter()
+            .any(|x| x.starts_with("[prompt] system prompt unchanged")),
+        "{l:?}"
+    );
+    // A prompt saved before the block had its end line carries nothing over.
+    assert_eq!(
+        rufous_kernel::agent::prompt::session_context(
+            "x\n\nSESSION CONTEXT (from the project's hooks; follow it):\nold"
+        ),
+        None
+    );
+}

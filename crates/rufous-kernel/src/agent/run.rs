@@ -338,6 +338,9 @@ struct PromptInputs<'a> {
     builtin: &'a [Skill],
     /// `Some` only for the one build that fires the `SessionStart` hooks.
     hooks: Option<&'a Hooks>,
+    /// A rebuild's context from the previous system message ([`prompt::session_context`]),
+    /// used as it is when `hooks` is `None`.
+    carried_context: Option<&'a str>,
     environment: &'a prompt::Environment,
 }
 
@@ -352,6 +355,7 @@ fn task_system(
         skill_dirs,
         builtin,
         hooks,
+        carried_context,
         environment,
     } = *inputs;
     // SessionStart hooks (a fresh session's first prompt build only): their context enters
@@ -371,7 +375,7 @@ fn task_system(
         }
         ctx
     } else {
-        None
+        carried_context.map(str::to_string)
     };
     let set = SkillSet::discover(skill_dirs).with_builtin(builtin.iter().cloned());
     let mut skills = Vec::new();
@@ -650,6 +654,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             skill_dirs: &self.skill_dirs,
             builtin: &self.builtin_skills,
             hooks: session_hooks,
+            carried_context: None,
             environment: &self.environment,
         };
         let sys = system_for(which, &inputs, &mut self.sink, task);
@@ -817,6 +822,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut named_gate_warns = 0;
         let mut named_writes_warns = 0;
         let mut reattributed_logged = false;
+        // The previous request as sent, for the prefix diff (bead boubou-xwi).
+        let mut last_request: Option<(Vec<String>, Vec<Message>)> = None;
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
         let mut text_ladder = TextLadder::default();
@@ -894,11 +901,21 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             // assembled the messages itself) gets its SessionStart hooks now, once.
             let session_hooks = (!continued && !*hooks_started).then_some(&*hooks);
             *hooks_started = true;
+            let carried = session_hooks
+                .is_none()
+                .then(|| {
+                    messages
+                        .iter()
+                        .find(|m| m.role == Role::System)
+                        .and_then(|m| prompt::session_context(&m.content))
+                })
+                .flatten();
             let inputs = PromptInputs {
                 params,
                 skill_dirs,
                 builtin: builtin_skills,
                 hooks: session_hooks,
+                carried_context: carried.as_deref(),
                 environment,
             };
             let sys = system_for(turn.prompt, &inputs, sink, &skill_text);
@@ -1058,6 +1075,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 log!("[{i}] ledger: an earlier turn's reply after a declined write is sent as a ledger line");
             }
             let sent: &[Message] = view.as_deref().unwrap_or(&messages);
+            let tool_names = tool_names(&ct);
+            if let Some((tools, msgs)) = &last_request {
+                for line in prefix_change(tools, msgs, &tool_names, sent) {
+                    log!("[{i}] [prefix] {line}");
+                }
+            }
+            last_request = Some((tool_names, sent.to_vec()));
             let r = match backend.chat(model, sent, &ct, &mut |p| match p {
                 StreamPiece::Token(t) => sink(AgentEvent::Text(t.to_string())),
                 StreamPiece::Think(t) => sink(AgentEvent::Thinking(t.to_string())),
@@ -2478,4 +2502,74 @@ pub fn prompt_change(old: &str, new: &str) -> String {
         window(old),
         window(new)
     )
+}
+
+fn tool_names(defs: &[Value]) -> Vec<String> {
+    defs.iter()
+        .filter_map(|d| d["function"]["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Where a request stops extending the previous one: a changed tool set, or the first
+/// earlier message that differs. The server reuses its cache only up to there, so whatever
+/// follows is processed again (bead boubou-xwi). Empty when the new request only appends.
+pub fn prefix_change(
+    old_tools: &[String],
+    old: &[Message],
+    tools: &[String],
+    new: &[Message],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if old_tools != tools {
+        let added: Vec<&str> = tools
+            .iter()
+            .filter(|t| !old_tools.contains(t))
+            .map(String::as_str)
+            .collect();
+        let gone: Vec<&str> = old_tools
+            .iter()
+            .filter(|t| !tools.contains(t))
+            .map(String::as_str)
+            .collect();
+        out.push(if added.is_empty() && gone.is_empty() {
+            "tools reordered".to_string()
+        } else {
+            format!("tools changed: +{} −{}", added.join(","), gone.join(","))
+        });
+    }
+    if let Some(k) = (0..old.len()).find(|&k| new.get(k) != Some(&old[k])) {
+        let excerpt = |m: Option<&Message>| match m {
+            None => "(gone)".to_string(),
+            Some(m) => {
+                let calls: Vec<&str> = m
+                    .tool_calls
+                    .iter()
+                    .map(|t| t.function.name.as_str())
+                    .collect();
+                format!(
+                    "{} {}{}",
+                    m.role.as_str(),
+                    text::head(&m.content, 80).replace('\n', "⏎"),
+                    if calls.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [calls {}]", calls.join(","))
+                    }
+                )
+            }
+        };
+        let same_text = new.get(k).is_some_and(|m| m.content == old[k].content);
+        out.push(format!(
+            "request differs from the previous at message {k} of {} ({} ⇢ {}){}",
+            new.len(),
+            excerpt(old.get(k)),
+            excerpt(new.get(k)),
+            if same_text {
+                " (same text; calls, thinking or images differ)"
+            } else {
+                ""
+            }
+        ));
+    }
+    out
 }

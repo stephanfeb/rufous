@@ -478,3 +478,33 @@ fn a_rebuilt_prompt_logs_whether_it_changed_and_each_call_its_timing() {
         "{c}"
     );
 }
+
+#[test]
+fn a_request_that_does_not_extend_the_previous_one_is_located() {
+    // bead boubou-xwi: mid-turn prefills of 30-75 s with no rebuild and no compaction.
+    use rufous_kernel::agent::run::prefix_change;
+    let t = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let old = vec![
+        Message::system("sys"),
+        Message::user("go"),
+        Message::assistant("a"),
+    ];
+    let mut longer = old.clone();
+    longer.push(Message::user("next"));
+    assert!(prefix_change(&t(&["read_file"]), &old, &t(&["read_file"]), &longer).is_empty());
+    let mut rewritten = longer.clone();
+    rewritten[1] = Message::user("go, but shorter");
+    let l = prefix_change(
+        &t(&["read_file", "edit_file"]),
+        &old,
+        &t(&["read_file", "run_bash"]),
+        &rewritten,
+    );
+    assert_eq!(l[0], "tools changed: +run_bash −edit_file");
+    assert_eq!(
+        l[1],
+        "request differs from the previous at message 1 of 4 (user go ⇢ user go, but shorter)"
+    );
+    let l = prefix_change(&t(&["a", "b"]), &old, &t(&["b", "a"]), &longer);
+    assert_eq!(l, vec!["tools reordered".to_string()]);
+}
