@@ -65,6 +65,28 @@ Set the window on purpose. Under an editor rufous takes `--ctx`; left at the mod
 qwen3.5:9b loaded at 17 GB (bead boubou-0lg). A window the machine cannot hold is a slower
 model, not a bigger one.
 
+### Model speed and the reply time limit
+
+rufous waits at most `AGENT_APITIMEOUT` seconds (default 240) for the model to send anything.
+That is a hard limit. A model that sends nothing for that long gets interrupted: the turn ends
+with a message saying so, the work so far is kept, and the same request is not sent again
+(bead boubou-yqu). A call reaches the limit in one of two ways:
+
+- **Before the first token.** The whole prompt is processed before anything is sent. A model
+  that processes 90 tok/s gets through about 21,600 tokens in 240 s, so a longer prompt can
+  never start a reply. Prompt speed × the limit is the largest prompt a model can work with,
+  whatever the window says.
+- **Mid-reply.** Ollama holds a tool call back until it is complete. A slow model writing a
+  whole file as one `create_file` sends nothing while it writes: 4,000 tokens at 12.5 tok/s is
+  over five minutes. Asking for the work in smaller pieces (a file section by section) keeps
+  each call under the limit.
+
+Read your model's speeds from the session log. Each call logs a line like `[timing: load 0.0s ·
+prompt 5135 tok 56.1s · gen 235 tok 18.3s]`, here about 90 tok/s for the prompt and 13 tok/s for
+the reply (bonsai-2:27b, a 2-bit 27B, 2026-11-04). To give a slow model longer, set the variable
+in the agent's environment. In Zed that is `"env": {"AGENT_APITIMEOUT": "600"}` in the
+`agent_servers` entry. A faster model or a smaller window is usually the better fix.
+
 ## 3. Prep checklist
 
 In the order that is expected to matter most. Each item names the cell that will confirm or

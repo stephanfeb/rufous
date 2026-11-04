@@ -16,6 +16,11 @@ pub enum Error {
     Config(String),
     #[error("ollama: {0}")]
     Ollama(String),
+    /// The model server sent nothing for the read timeout (`AGENT_APITIMEOUT`): before the
+    /// first chunk (`mid_reply` false: loading or processing the prompt) or after some
+    /// (bead boubou-yqu).
+    #[error("no reply from the model server within the read timeout ({})", if *mid_reply { "mid-reply" } else { "before the first token" })]
+    Timeout { mid_reply: bool },
     /// Non-2xx reply from the model server, body kept for the loop's 4xx/5xx triage.
     #[error("HTTP {status}: {body}")]
     Status { status: u16, body: String },

@@ -3288,3 +3288,112 @@ fn an_earlier_refusal_reply_is_sent_as_a_ledger_line_and_kept_as_said() {
         assert!(!out.iter().any(|m| m.content.starts_with("[ledger]")));
     }
 }
+
+/// Answers like `inner`, except that call number `fail_at` fails with `err`.
+struct FailsOnce {
+    inner: Scripted,
+    fail_at: usize,
+    err: ChatError,
+    calls: usize,
+}
+
+impl ChatBackend for FailsOnce {
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        self.calls += 1;
+        if self.calls == self.fail_at {
+            return Err(self.err.clone());
+        }
+        self.inner.chat(model, messages, tools, on)
+    }
+}
+
+fn fails_once(
+    d: &Path,
+    err: ChatError,
+) -> (Agent<FailsOnce, ScriptedTools>, Arc<Mutex<Vec<AgentEvent>>>) {
+    let calls: Vec<Call> = vec![("list_dir", json!({"path": "."}), "a.txt")];
+    let backend = FailsOnce {
+        inner: Scripted {
+            calls: calls.clone(),
+            i: 0,
+            finish_content: "done".to_string(),
+            finish_summary: "Listed the folder.".to_string(),
+        },
+        fail_at: 2,
+        err,
+        calls: 0,
+    };
+    let tools = ScriptedTools {
+        calls,
+        repeat: Vec::new(),
+        served: Vec::new(),
+    };
+    let mut params = RunParams::plain("slow:27b", d);
+    params.sleep_scale = 0.0;
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
+    let sink = Arc::clone(&events);
+    let mut a =
+        Agent::new(params, backend, tools).with_sink(move |e| sink.lock().expect("lock").push(e));
+    a.sessions_dir = d.join("sessions");
+    (a, events)
+}
+
+#[test]
+fn a_reply_timeout_ends_the_turn_with_a_message_and_is_not_resent() {
+    // Bead boubou-yqu: bonsai-2:27b was sent the same 5,898-token request five times, each
+    // time writing for 4–6 minutes past the read timeout.
+    let d = tempfile::tempdir().expect("tmp");
+    let (mut a, events) = fails_once(d.path(), ChatError::Timeout { mid_reply: true });
+    let out = a
+        .run(start("List the folder."), None, None)
+        .expect("a timeout ends the turn, it is not a failed run");
+    assert_eq!(
+        a.backend.calls, 2,
+        "the timed-out request was not sent again"
+    );
+    assert!(
+        out.iter()
+            .any(|m| m.role == Role::Tool && m.content.contains("a.txt")),
+        "the work before the timeout is kept: {out:#?}"
+    );
+    let ev = events.lock().expect("lock");
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Error(t) if t.contains("slow:27b"))));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Text(t)
+        if t.contains("⏱ Stopped: slow:27b") && t.contains("partway through its reply")
+            && t.contains("AGENT_APITIMEOUT"))));
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::Finished { .. })));
+}
+
+#[test]
+fn a_transport_error_that_is_not_a_timeout_is_still_retried() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (mut a, events) = fails_once(
+        d.path(),
+        ChatError::Transport("error sending request: connection refused".into()),
+    );
+    a.run(start("List the folder."), None, None).expect("loop");
+    assert!(
+        a.backend.calls >= 3,
+        "retried after the failure: {}",
+        a.backend.calls
+    );
+    let ev = events.lock().expect("lock");
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Finished { .. })));
+}
+
+#[test]
+fn the_timeout_note_says_where_the_model_stalled() {
+    use rufous_kernel::agent::run::reply_timeout_note;
+    let before = reply_timeout_note("m", 240, false, 23000);
+    assert!(before.contains("before its first token") && before.contains("~23000 tokens"));
+    let mid = reply_timeout_note("m", 240, true, 23000);
+    assert!(mid.contains("smaller pieces") && !mid.contains("~23000"));
+}

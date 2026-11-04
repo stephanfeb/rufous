@@ -3343,3 +3343,40 @@ The workspace tests, clippy, rustfmt and the bench's Python tests pass. Not meas
 number of compactions and the post-compaction prompt seconds over at least 3 real sessions that
 reach 60 %, and one bench arm that compacts (n ≥ 3), to check that shortening old arguments
 costs no score.
+
+## 2026-11-04: a reply timeout ends the turn (boubou-yqu)
+
+In session acp_1104_092436 (bonsai-2:27b, a 2-bit 27B: about 90 tok/s for the prompt and
+12.5 tok/s for the reply), step 5 was sent five times with the same 5,898-token request. Each
+time Ollama generated 3,000–4,600 tokens over 4–6 minutes. The client then gave up on the
+240 s per-read limit with "error decoding response body", and the retry ladder sent the same
+request again. Almost certainly the model was writing docs/design.md as one `create_file`,
+which Ollama's qwen3.5 parser holds back until it is complete. The result was about 20 minutes
+and nothing written.
+
+The limit stays as a hard performance floor, as the user decided. What changed is what happens
+when a call hits it:
+- `ollama::Error::Timeout { mid_reply }` and `ChatError::Timeout { mid_reply }` come from
+  reqwest's `is_timeout()`. `mid_reply` is false when the timeout came during `send()` (no
+  headers yet: loading, or processing the prompt). It is true when the timeout came while the
+  body was being read and at least one chunk had arrived.
+- On a timeout, the loop does not use the retry ladder. It logs `⏱ reply timeout …`, shows an
+  error notice, and sends the user a message (`reply_timeout_note`) that says where the model
+  stalled and what can change: `AGENT_APITIMEOUT` in Zed's `env`, a faster model, a smaller
+  context, or smaller pieces of work. It then ends the turn `Ok` with session status
+  `timeout`. ACP keeps the history on `Ok`, so a follow-up carries on from there.
+- Every other transport failure keeps the retry ladder.
+- The OpenAI-compatible backend is unchanged. Its limit is a 900 s cap on the whole request, not
+  `AGENT_APITIMEOUT`, so the message's remedy would be wrong for it.
+
+Five tests:
+- Two in `tests/reply_timeout.rs` run real local sockets that stall before the headers and
+  after one chunk.
+- Three in `tests/agent_loop.rs`: a timeout ends the turn after one call, keeping the history
+  and showing the message; a non-timeout transport error is still retried; the message names
+  where the model stalled.
+
+The workspace tests, clippy and rustfmt pass. The guide (§2 "Model speed and the reply time
+limit") and the website guide now say that the limit is hard. They give the two ways a call
+hits it and the rule of thumb that prompt speed × the limit is the largest prompt a model can
+start on, and they explain how to raise the limit in Zed.

@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use super::ablation;
 use super::chat::DynBackend;
-use super::chat::{ChatBackend, StreamPiece};
+use super::chat::{ChatBackend, ChatError, StreamPiece};
 use super::corrector::{self, Verdict};
 use super::face::{self, ToolFace, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
@@ -1096,6 +1096,30 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         dedupe_trailing_assistant(&mut messages);
                         save!();
                         return Ok(messages);
+                    }
+                    // A model that sends nothing within the read timeout would do the same
+                    // with the same request: the turn ends with a message, the work so far
+                    // kept (bead boubou-yqu).
+                    if let ChatError::Timeout { mid_reply } = e {
+                        let secs = crate::ollama::api_timeout().as_secs();
+                        log!(
+                            "[{i}] ⏱ reply timeout {}: nothing for {secs}s, turn ended, not resent",
+                            if mid_reply {
+                                "mid-reply"
+                            } else {
+                                "before the first token"
+                            }
+                        );
+                        sink(AgentEvent::Error(format!(
+                            "No reply from {model} within {secs} s"
+                        )));
+                        sink(AgentEvent::Text(reply_timeout_note(
+                            model, secs, mid_reply, est as u64,
+                        )));
+                        dedupe_trailing_assistant(&mut messages);
+                        session_end = Some("timeout");
+                        exhausted = false;
+                        break;
                     }
                     let low = e.lower_text();
                     // What a repaired 4xx had wrong, for the retry log line.
@@ -2475,6 +2499,31 @@ fn compact<B: ChatBackend>(
         });
     }
     c.messages
+}
+
+/// What the user is told when the model sent nothing within the read timeout (bead
+/// boubou-yqu): where it stalled, and what can be changed. `prompt_tokens` is the pre-call
+/// estimate.
+pub fn reply_timeout_note(model: &str, secs: u64, mid_reply: bool, prompt_tokens: u64) -> String {
+    let stall = if mid_reply {
+        "partway through its reply. A large tool call, such as a whole file, is not streamed \
+         until it is complete, so a slow model writing one can take longer than the limit. \
+         Asking for the work in smaller pieces (a file section by section) helps."
+            .to_string()
+    } else {
+        format!(
+            "before its first token. The prompt (~{prompt_tokens} tokens) is processed before \
+             anything is sent, and at this model's speed that may take longer than the limit."
+        )
+    };
+    format!(
+        "\n\n⏱ Stopped: {model} sent nothing for {secs} s, {stall}\n\n\
+         This is the reply time limit, so the turn ends here rather than sending the same \
+         request again. To give the model longer, set AGENT_APITIMEOUT (seconds) in the \
+         agent's environment (in Zed, an \"env\" entry under the agent server); or use a \
+         faster model or a smaller context. The work so far is kept: a follow-up carries on \
+         from here."
+    )
 }
 
 /// Whether a rebuilt system prompt kept the old one's text, and if not where it first

@@ -341,6 +341,17 @@ pub struct Client {
     http: reqwest::Client,
 }
 
+/// A read timeout is the model taking longer than `AGENT_APITIMEOUT` to send anything, which
+/// the loop ends the turn on; any other transport failure stays an HTTP error, which it
+/// retries (bead boubou-yqu).
+fn timeout_or_http(e: reqwest::Error, mid_reply: bool) -> Error {
+    if e.is_timeout() {
+        Error::Timeout { mid_reply }
+    } else {
+        Error::Http(e)
+    }
+}
+
 impl Client {
     /// A client with the socket semantics of Mingbird's `urlopen(timeout=API_TIMEOUT_OPEN)`:
     /// the connect and every single read are bounded by [`api_timeout`], the whole request is
@@ -481,7 +492,8 @@ impl Client {
             .post(format!("{}/api/chat", self.base))
             .json(req)
             .send()
-            .await?;
+            .await
+            .map_err(|e| timeout_or_http(e, false))?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -490,10 +502,12 @@ impl Client {
 
         let mut stream = resp.bytes_stream();
         let mut dec = NdjsonDecoder::default();
+        let mut chunks = false;
         while let Some(bytes) = stream.next().await {
-            dec.push(&bytes?);
+            dec.push(&bytes.map_err(|e| timeout_or_http(e, chunks))?);
             while let Some(chunk) = dec.next_value::<ChatChunk>() {
                 let chunk = chunk?;
+                chunks = true;
                 let go_on = on_chunk(&chunk);
                 if chunk.done || !go_on {
                     return Ok(Some(chunk));
