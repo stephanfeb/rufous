@@ -412,6 +412,16 @@ pub fn task_original_text(messages: &[Message], max_chars: usize) -> String {
     String::new()
 }
 
+/// Every real user input in the history, oldest first: user messages that are not harness
+/// notes or the compaction summary (bead boubou-g11).
+pub fn instruction_texts(messages: &[Message]) -> Vec<&str> {
+    messages
+        .iter()
+        .filter(|m| m.role == Role::User && !is_harness_note(&m.content))
+        .map(|m| m.content.as_str())
+        .collect()
+}
+
 /// `_task_routing_text`: latest real user input for category routing (no truncation).
 pub fn task_routing_text(messages: &[Message]) -> String {
     messages

@@ -937,10 +937,39 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 turn.prompt.name()
             );
         }
-        // The tool face: the chat tool set on the question route, category routing on the
-        // task's text otherwise.
-        let cats: Option<BTreeSet<String>> = (turn.route != Route::Question)
-            .then(|| face::route_categories(&qa::task_routing_text(&messages)));
+        // The tool face: the chat tool set on the question route, category routing otherwise,
+        // over every instruction of the session so a follow-up keeps the tools the previous
+        // turn was sent (bead boubou-g11).
+        let cats: Option<BTreeSet<String>> = (turn.route != Route::Question).then(|| {
+            let own = face::route_categories(&qa::task_routing_text(&messages));
+            if params.ablated(ablation::SESSION_FACE) {
+                return own;
+            }
+            let instructions = qa::instruction_texts(&messages);
+            let earlier =
+                face::session_categories(&instructions[..instructions.len().saturating_sub(1)]);
+            // Files and code are offered whatever the routing, so only the routed rest is news.
+            let routed = |a: &BTreeSet<String>, b: &BTreeSet<String>| -> String {
+                a.difference(b)
+                    .filter(|c| {
+                        ![crate::mcp::CAT_FILES, crate::mcp::CAT_CODE].contains(&c.as_str())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            if !earlier.is_empty() {
+                let kept = routed(&earlier, &own);
+                if !kept.is_empty() {
+                    log!("[face] tools kept from earlier instructions: {kept}");
+                }
+                let added = routed(&own, &earlier);
+                if !added.is_empty() {
+                    log!("[face] +{added} from this instruction");
+                }
+            }
+            own.union(&earlier).cloned().collect()
+        });
         // Parallel dispatch hook (harness layer; Q&A, children and editor turns skip it, the
         // hook itself re-checks the child, kill-switch and receipt gates). A fresh task with a
         // plan already on disk dispatches here; a resumed run (tool results in the history)

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use rufous_kernel::agent::face::{route_categories, ToolFace};
+use rufous_kernel::agent::face::{route_categories, session_categories, ToolFace};
 use rufous_kernel::mcp::{CAT_CODE, CAT_FILES, CAT_WEB};
 use serde_json::Value;
 
@@ -84,4 +84,43 @@ fn file_and_command_tools_are_offered_whatever_the_routing() {
     let c = route_categories("Fix the typos in the minutes and save the document");
     let n = names(&face.tools_for_categories(&c));
     assert!(n.contains(&"run_bash".to_string()) && !n.contains(&"web_search".to_string()));
+}
+
+#[test]
+fn a_session_keeps_every_category_its_instructions_routed_to() {
+    // bead boubou-g11, acp_1104_132038: a keyworded follow-up dropped the web tools and
+    // 'proceed' brought them back, each costing a full prefill.
+    let turns = [
+        "Which of the beads are complete and can be closed ?",
+        "Refactor the python module into two files",
+        "proceed",
+    ];
+    assert!(!route_categories(turns[1]).contains(CAT_WEB));
+    for n in 1..=turns.len() {
+        let c = session_categories(&turns[..n]);
+        assert!(c.contains(CAT_WEB) && c.contains(CAT_FILES), "{n}: {c:?}");
+    }
+    assert!(session_categories(&turns[1..2]).contains(CAT_CODE));
+    assert!(session_categories::<&str>(&[]).is_empty());
+}
+
+#[test]
+fn harness_notes_and_the_summary_are_not_instructions() {
+    use rufous_kernel::guards::qa::{instruction_texts, CONTEXT_SUMMARY_MARK};
+    use rufous_kernel::ollama::Message;
+    let history = vec![
+        Message::system("sys"),
+        Message::user("Refactor the python module"),
+        Message::assistant("ok"),
+        Message::user("⚠️ Plan progress: search the web next"),
+        Message::user(format!(
+            "{CONTEXT_SUMMARY_MARK} the user asked to research a topic"
+        )),
+        Message::tool_output("web search results"),
+        Message::user("proceed"),
+    ];
+    assert_eq!(
+        instruction_texts(&history),
+        vec!["Refactor the python module", "proceed"]
+    );
 }

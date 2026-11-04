@@ -224,6 +224,17 @@ pub fn route_categories(text: &str) -> BTreeSet<String> {
     cats
 }
 
+/// A session's categories: the union of [`route_categories`] over its instructions, each
+/// routed as it would be alone (default included). A follow-up can add a category but never
+/// drop one, so the tool set sent, which templates render ahead of the history, stays the
+/// same from turn to turn and the server keeps its prefix cache (bead boubou-g11).
+pub fn session_categories<S: AsRef<str>>(instructions: &[S]) -> BTreeSet<String> {
+    instructions
+        .iter()
+        .flat_map(|t| route_categories(t.as_ref()))
+        .collect()
+}
+
 fn schema_map() -> &'static BTreeMap<String, Value> {
     static MAP: LazyLock<BTreeMap<String, Value>> = LazyLock::new(|| {
         core_tools()

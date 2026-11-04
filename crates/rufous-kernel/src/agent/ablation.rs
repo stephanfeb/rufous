@@ -53,6 +53,9 @@ pub const SCOPE_GATE: &str = "scope_gate";
 /// Re-attribution (bead boubou-alj): an earlier turn's reply after a write the user
 /// declined is sent to the model as a harness ledger line instead of its own words.
 pub const REATTRIBUTE: &str = "reattribute";
+/// Session tool face (bead boubou-g11): off, a turn's categories come from its own
+/// instruction alone, so a follow-up can change the tools sent and lose the prefix cache.
+pub const SESSION_FACE: &str = "session_face";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -70,6 +73,7 @@ pub const KERNEL: &[&str] = &[
     ENV_BLOCK,
     SCOPE_GATE,
     REATTRIBUTE,
+    SESSION_FACE,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

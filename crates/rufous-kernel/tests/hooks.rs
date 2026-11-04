@@ -431,7 +431,7 @@ fn a_follow_up_turn_compares_its_first_request_with_the_previous_turn() {
         let mut l = logs.lock().expect("lock");
         let out = l
             .iter()
-            .filter(|x| x.contains("[prefix]"))
+            .filter(|x| x.contains("[prefix]") || x.starts_with("[face]"))
             .cloned()
             .collect();
         l.clear();
@@ -445,15 +445,24 @@ fn a_follow_up_turn_compares_its_first_request_with_the_previous_turn() {
     out.push(Message::user("Tidy the notes again"));
     let mut out = turn("Tidied.", out);
     assert_eq!(prefix_lines(), Vec::<String>::new());
-    // One with no category keyword gets the default face, another tool set: the first call
-    // says so (the readings of 2026-11-04 suspect this for full prefills on follow-ups).
+    // One with no category keyword gets the default face, which adds the web tools: the
+    // first call says so, once (bead boubou-g11: a session's tools only grow).
     out.push(Message::user("Now sort them"));
     let mut out = turn("Sorted.", out);
     let l = prefix_lines();
-    assert_eq!(l.len(), 1, "{l:?}");
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert_eq!(l[0], "[face] +web from this instruction");
     assert!(
-        l[0].starts_with("[0] [prefix] since the previous turn: tools changed: +"),
+        l[1].starts_with("[0] [prefix] since the previous turn: tools changed: +")
+            && l[1].ends_with(" −"),
         "{l:?}"
+    );
+    // Back to the first wording: the web tools stay, so the request only appends.
+    out.push(Message::user("Tidy the notes once more"));
+    let mut out = turn("Tidied again.", out);
+    assert_eq!(
+        prefix_lines(),
+        vec!["[face] tools kept from earlier instructions: web".to_string()]
     );
     // A session saved before the sidecar existed says the reading is missing.
     std::fs::remove_file(&path).expect("rm");
