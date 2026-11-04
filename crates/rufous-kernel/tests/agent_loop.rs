@@ -3397,3 +3397,251 @@ fn the_timeout_note_says_where_the_model_stalled() {
     let mid = reply_timeout_note("m", 240, true, 23000);
     assert!(mid.contains("smaller pieces") && !mid.contains("~23000"));
 }
+
+// Plan hold (bead boubou-ear): Gate 5 at the text ending. A reply that ends the turn while
+// the plan this turn made still has open items is held, at most twice, the second time only
+// after progress; a plan the turn did not change, a failure report and the ablation never
+// hold. The scripted model writes the plan file itself, standing in for the todo tool.
+
+fn plan_file(d: &Path, items: &[(&str, bool)]) {
+    let v: Vec<Value> = items
+        .iter()
+        .map(|(i, done)| json!({"item": i, "done": done}))
+        .collect();
+    std::fs::write(d.join("todo.json"), Value::from(v).to_string()).expect("plan");
+}
+
+fn run_plan_hold<F: FnMut(usize) -> ChatResponse>(
+    d: &Path,
+    ablation: &[&str],
+    f: F,
+) -> (Vec<Message>, Vec<String>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink_logs = logs.clone();
+    let mut params = RunParams::plain("gemma4:12b", d);
+    params.policy = TurnPolicy {
+        name: "coding-test",
+        gates: Gates::NONE.with(Gate::NamedWrites).with(Gate::PlanSync),
+        ..TurnPolicy::conversation()
+    };
+    params.ablation = ablation.iter().map(|s| s.to_string()).collect();
+    let tools: Vec<Call> = vec![
+        (
+            "todo",
+            json!({"action": "create", "items": ["a", "b"]}),
+            "[ ] 1. a\n[ ] 2. b",
+        ),
+        (
+            "todo",
+            json!({"action": "update", "index": 1}),
+            "[x] 1. a\n[ ] 2. b",
+        ),
+        (
+            "todo",
+            json!({"action": "update", "index": 2}),
+            "[x] 1. a\n[x] 2. b",
+        ),
+        (
+            "create_file",
+            json!({"path": "a.txt", "content": "a"}),
+            "[created a.txt]",
+        ),
+    ];
+    let mut a = Agent::new(
+        params,
+        Lens { n: 0, f, seen },
+        ScriptedTools {
+            calls: tools,
+            repeat: Vec::new(),
+            served: Vec::new(),
+        },
+    )
+    .with_sink(move |ev| {
+        if let AgentEvent::Log(l) = ev {
+            sink_logs.lock().expect("lock").push(l);
+        }
+    });
+    a.sessions_dir = d.join("sessions");
+    let msgs = a
+        .run(start("Implement a and b."), None, None)
+        .expect("loop");
+    let logs = logs.lock().expect("lock").clone();
+    (msgs, logs)
+}
+
+fn holds(msgs: &[Message]) -> Vec<&Message> {
+    user_msgs(msgs, "Your plan for this task still has")
+}
+
+#[test]
+fn a_reply_with_this_turns_plan_open_is_held_until_the_plan_is_done() {
+    let d = tempfile::tempdir().expect("tmp");
+    let p = d.path().to_path_buf();
+    let (msgs, logs) = run_plan_hold(d.path(), &[], |n| match n {
+        1 => {
+            plan_file(&p, &[("a", false), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "create", "items": ["a", "b"]}))
+        }
+        2 => ChatResponse::text("I'll start with a."),
+        3 => ChatResponse::call("", "create_file", json!({"path": "a.txt", "content": "a"})),
+        4 => {
+            plan_file(&p, &[("a", true), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "update", "index": 1}))
+        }
+        5 => ChatResponse::text("a is done. Shall we move on to the next bead?"),
+        6 => {
+            plan_file(&p, &[("a", true), ("b", true)]);
+            ChatResponse::call("", "todo", json!({"action": "update", "index": 2}))
+        }
+        _ => ChatResponse::text("Both are done."),
+    });
+    let h = holds(&msgs);
+    assert_eq!(h.len(), 2, "{logs:#?}");
+    assert!(
+        h[0].content.contains("(0/2): 1. a; 2. b."),
+        "{}",
+        h[0].content
+    );
+    assert!(h[0]
+        .content
+        .contains("do not end the turn or start another task"));
+    assert!(
+        !h[0].content.contains("all=true"),
+        "no sync-everything shortcut"
+    );
+    assert!(h[1].content.contains("(1/2): 2. b."), "{}", h[1].content);
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("Both are done.")
+    );
+    assert_eq!(
+        logs.iter().filter(|l| l.contains("⚠️ plan hold (")).count(),
+        2,
+        "{logs:#?}"
+    );
+}
+
+#[test]
+fn a_hold_with_no_progress_since_the_last_one_releases_the_turn() {
+    let d = tempfile::tempdir().expect("tmp");
+    let p = d.path().to_path_buf();
+    let (msgs, logs) = run_plan_hold(d.path(), &[], |n| match n {
+        1 => {
+            plan_file(&p, &[("a", false), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "create", "items": ["a", "b"]}))
+        }
+        2 => ChatResponse::text("Planned."),
+        _ => ChatResponse::text("Planned, as I said."),
+    });
+    assert_eq!(holds(&msgs).len(), 1);
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("plan hold released: no progress since the last hold (0/2)")),
+        "{logs:#?}"
+    );
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("Planned, as I said.")
+    );
+}
+
+#[test]
+fn a_plan_the_turn_did_not_change_a_failure_report_or_the_ablation_never_hold() {
+    // A plan left open by an earlier turn: this turn answers a question.
+    let d = tempfile::tempdir().expect("tmp");
+    plan_file(d.path(), &[("a", true), ("b", false)]);
+    let (msgs, _) = run_plan_hold(d.path(), &[], |_| ChatResponse::text("It is a todo app."));
+    assert!(holds(&msgs).is_empty());
+
+    // An honest failure report ends the turn with the plan as it stands.
+    let d = tempfile::tempdir().expect("tmp");
+    let p = d.path().to_path_buf();
+    let (msgs, logs) = run_plan_hold(d.path(), &[], |n| match n {
+        1 => {
+            plan_file(&p, &[("a", false), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "create", "items": ["a", "b"]}))
+        }
+        _ => ChatResponse::text("I could not build a: the compiler is missing."),
+    });
+    assert!(holds(&msgs).is_empty());
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("waived: the reply reports a failure")),
+        "{logs:#?}"
+    );
+
+    // Ablated.
+    let d = tempfile::tempdir().expect("tmp");
+    let p = d.path().to_path_buf();
+    let (msgs, _) = run_plan_hold(d.path(), &["plan_hold"], |n| match n {
+        1 => {
+            plan_file(&p, &[("a", false), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "create", "items": ["a", "b"]}))
+        }
+        _ => ChatResponse::text("Planned."),
+    });
+    assert!(holds(&msgs).is_empty());
+}
+
+#[test]
+fn a_todo_update_that_changes_nothing_does_not_reset_the_stale_plan_count() {
+    // bead boubou-uzl: re-ticking a done item satisfied the stale-plan counter.
+    let d = tempfile::tempdir().expect("tmp");
+    let p = d.path().to_path_buf();
+    let (msgs, _) = run_plan_hold(d.path(), &["plan_hold"], |n| match n {
+        1 => {
+            plan_file(&p, &[("a", true), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "update", "index": 1}))
+        }
+        2 | 3 | 5 | 6 => ChatResponse::call(
+            "",
+            "create_file",
+            json!({"path": "a.txt", "content": "a".repeat(n)}),
+        ),
+        // The same plan written again: a no-op update.
+        4 => {
+            plan_file(&p, &[("a", true), ("b", false)]);
+            ChatResponse::call("", "todo", json!({"action": "update", "index": 1}))
+        }
+        _ => ChatResponse::text("Done."),
+    });
+    assert_eq!(
+        user_msgs(&msgs, "Plan progress reminder").len(),
+        1,
+        "four producing calls with only a no-op update between them"
+    );
+}
+
+#[test]
+fn plan_sync_check_passes_holds_and_waives() {
+    use rufous_kernel::agent::run::{plan_hold_note, plan_sync_check, PlanCheck};
+    use rufous_kernel::guards::integrity::CommandRecord;
+    use rufous_kernel::todo::TodoItem;
+    let item = |s: &str, done: bool| TodoItem {
+        item: s.to_string(),
+        done,
+    };
+    let open = vec![item("a", true), item("b", false), item("c", false)];
+    let done = vec![item("a", true)];
+    assert_eq!(plan_sync_check(&[], "ok", &[]), PlanCheck::Pass);
+    assert_eq!(plan_sync_check(&done, "ok", &[]), PlanCheck::Pass);
+    assert_eq!(plan_sync_check(&open, "All done.", &[]), PlanCheck::Hold);
+    let passed = [CommandRecord::from_result(
+        "pytest -q",
+        "[exit 0]\n3 passed",
+    )];
+    assert!(matches!(
+        plan_sync_check(&open, "All done.", &passed),
+        PlanCheck::Waived(_)
+    ));
+    // A build is not a check: no waiver.
+    let built = [CommandRecord::from_result(
+        "npm run build",
+        "[exit 0]\nbuilt",
+    )];
+    assert_eq!(plan_sync_check(&open, "All done.", &built), PlanCheck::Hold);
+    let note = plan_hold_note(&open);
+    assert!(note.contains("2 open item(s) (1/3): 2. b; 3. c."), "{note}");
+    assert!(note.contains("remove it with a one-line reason if it goes beyond the instruction"));
+}

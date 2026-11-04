@@ -48,7 +48,7 @@ use crate::ollama::{Message, Role, ToolCall};
 use crate::ollama_proc::OllamaProc;
 use crate::parallel::{env_snapshot, DispatchHook, HookEvent, ParallelConfig};
 use crate::skills::{Skill, SkillSet};
-use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress};
+use crate::todo::{format_todo_lines, load_todo, load_todo_str, todo_progress, TodoItem};
 use crate::tools::{is_mcp_tool, is_well_formed_tool_name, required_args, resolve_alias};
 use crate::{text, Error, Result};
 
@@ -841,6 +841,14 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut todo_stale = 0;
         let mut todo_nudge_warns = 0;
         let mut todo_gate_warns = 0;
+        // The plan as this turn found it, and as it last stood (bead boubou-ear): a plan
+        // whose content changed this turn is this task's plan; a todo call that changes
+        // nothing is not progress (bead boubou-uzl).
+        let plan_at_start = load_todo(hdir);
+        let mut plan_seen = plan_at_start.clone();
+        let mut producing_calls = 0usize;
+        let mut plan_holds = 0;
+        let mut plan_hold_mark: Option<(Vec<TodoItem>, usize)> = None;
         const TODO_STALE_NUDGE: usize = 4;
         let mut idle_notes: u32 = 0;
         let mut qa_cap_blocks: u32 = 0;
@@ -1487,6 +1495,38 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             continue;
                         }
                     }
+                    // Gate 5 at the text ending (bead boubou-ear): a reply that ends the turn
+                    // while this turn's own plan has open items is held, at most twice, the
+                    // second time only after progress. A plan this turn did not change never
+                    // holds it, so a question or a new instruction ends as before.
+                    if turn.gates.has(Gate::PlanSync)
+                        && !params.ablated(ablation::PLAN_HOLD)
+                        && plan_holds < 2
+                    {
+                        let plan = load_todo(hdir);
+                        if plan != plan_at_start {
+                            let (t_done, t_all) = todo_progress(&plan);
+                            let progressed = plan_hold_mark
+                                .as_ref()
+                                .is_none_or(|(p, n)| *p != plan || *n != producing_calls);
+                            match plan_sync_check(&plan, &content, &cmd_records) {
+                                PlanCheck::Pass => {}
+                                PlanCheck::Waived(why) => {
+                                    log!("[{i}] plan open ({t_done}/{t_all}) at the text ending; waived: {why}");
+                                }
+                                PlanCheck::Hold if !progressed => {
+                                    log!("[{i}] plan hold released: no progress since the last hold ({t_done}/{t_all})");
+                                }
+                                PlanCheck::Hold => {
+                                    plan_holds += 1;
+                                    plan_hold_mark = Some((plan.clone(), producing_calls));
+                                    log!("[{i}] ⚠️ plan hold ({t_done}/{t_all}), reply held");
+                                    messages.push(Message::user(plan_hold_note(&plan)));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     // The reply is the turn's answer: no note, no forced finish, nothing
                     // added to the history the next turn will see.
                     log!("[{i}] text reply ends the turn ({})", policy.name);
@@ -1722,11 +1762,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     || mcp_producing
                 {
                     productive_used = true;
+                    producing_calls += 1;
                 }
                 if PRODUCTIVE.contains(&n) || mcp_producing {
                     todo_stale += 1;
                 } else if n == "todo" {
-                    todo_stale = 0;
+                    let now = load_todo(hdir);
+                    if now != plan_seen {
+                        plan_seen = now;
+                        todo_stale = 0;
+                    }
                 }
                 for note in tools.take_scope_notes() {
                     log!("[{i}] ⚠️ scope gate {note}");
@@ -2001,34 +2046,31 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     // correct, verified result already on disk. Bookkeeping never outranks a
                     // verified deliverable; the todo is synced for it instead.
                     if turn.gates.has(Gate::PlanSync) && todo_gate_warns < 2 {
-                        let (t_done, t_all) = todo_progress(&load_todo(hdir));
-                        if t_all > 0 && t_done < t_all && integrity::verified_at_end(&cmd_records) {
-                            // A passing check says the work is done, not that every planned
-                            // step was taken: the plan is the model's record and stays as it
-                            // wrote it (the harness used to tick everything, falsifying it).
-                            log!("[{i}] plan out of sync ({t_done}/{t_all}) but the last command was a passing check; finish allowed, plan left as is");
-                            todo_gate_warns = 2;
-                        } else if t_all > 0
-                            && t_done < t_all
-                            && integrity::admits_failure_about(&summary, "")
-                        {
-                            // An honest failure report must not be bounced into ticking steps
-                            // that did not happen (loop probe t02/t03: four refusals, then
-                            // the dead-loop guard). The plan stays as it is.
-                            log!("[{i}] plan out of sync ({t_done}/{t_all}) but the summary reports a failure; finish allowed, plan left as is");
-                            todo_gate_warns = 2;
-                        } else if t_all > 0 && t_done < t_all {
-                            todo_gate_warns += 1;
-                            log!("[{i}] ⚠️ plan out of sync ({t_done}/{t_all}), finish rejected");
-                            messages.push(Message::user(format!(
-                                "⚠️ Your finish was rejected: the plan (todo) still has {} item(s) not marked done ({t_done}/{t_all}).\nCurrent plan:\n{}\nTick off the completed steps first: todo(action=update, index=step number); if everything is done, sync in one go: todo(action=update, all=true). If steps remain undone, carry on and finish afterwards. When you finish again, summarise the outcome for the user in two or three sentences in summary (what was done, what the artefacts are).",
-                                t_all - t_done,
-                                load_todo_str(hdir)
-                            )));
-                            messages.push(Message::tool_output(
-                                "[finish deferred: sync the plan with actual progress (todo update) first, then finish.]",
-                            ));
-                            continue;
+                        let plan = load_todo(hdir);
+                        let (t_done, t_all) = todo_progress(&plan);
+                        match plan_sync_check(&plan, &summary, &cmd_records) {
+                            PlanCheck::Pass => {}
+                            PlanCheck::Waived(why) => {
+                                // The plan is the model's record and stays as it wrote it
+                                // (the harness used to tick everything, falsifying it).
+                                log!("[{i}] plan out of sync ({t_done}/{t_all}) but {why}; finish allowed, plan left as is");
+                                todo_gate_warns = 2;
+                            }
+                            PlanCheck::Hold => {
+                                todo_gate_warns += 1;
+                                log!(
+                                    "[{i}] ⚠️ plan out of sync ({t_done}/{t_all}), finish rejected"
+                                );
+                                messages.push(Message::user(format!(
+                                    "⚠️ Your finish was rejected: the plan (todo) still has {} item(s) not marked done ({t_done}/{t_all}).\nCurrent plan:\n{}\nTick off the steps that are done: todo(action=update, index=step number). If steps remain undone, carry on and finish afterwards; remove a step that goes beyond the task. When you finish again, summarise the outcome for the user in two or three sentences in summary (what was done, what the artefacts are).",
+                                    t_all - t_done,
+                                    load_todo_str(hdir)
+                                )));
+                                messages.push(Message::tool_output(
+                                    "[finish deferred: sync the plan with actual progress (todo update) first, then finish.]",
+                                ));
+                                continue;
+                            }
                         }
                     }
                     // Gate 6: once, re-inject the original task for a self-check. Not when a
@@ -2595,6 +2637,58 @@ pub fn prompt_change(old: &str, new: &str) -> String {
         "system prompt changed at char {at} of {o}→{n}: …{}… ⇢ …{}…",
         window(old),
         window(new)
+    )
+}
+
+/// What Gate 5 says about a plan at the end of a turn (bead boubou-ear).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanCheck {
+    /// No plan, or every item done.
+    Pass,
+    /// Open items, but the end stands: the reason, for the log.
+    Waived(&'static str),
+    /// Open items and nothing waives them.
+    Hold,
+}
+
+/// Gate 5 (plan sync), for `finish` and for the text reply that ends a turn. Two waivers
+/// the probes showed were needed: a passing check last says the work is done even if not
+/// every planned step was taken (the model gave up on finish after two refusals with a
+/// verified result on disk), and an honest failure report must not be bounced into ticking
+/// steps that did not happen (loop probe t02/t03).
+pub fn plan_sync_check(
+    plan: &[TodoItem],
+    reply: &str,
+    cmds: &[integrity::CommandRecord],
+) -> PlanCheck {
+    let (done, all) = todo_progress(plan);
+    if all == 0 || done == all {
+        PlanCheck::Pass
+    } else if integrity::verified_at_end(cmds) {
+        PlanCheck::Waived("the last command was a passing check")
+    } else if integrity::admits_failure_about(reply, "") {
+        PlanCheck::Waived("the reply reports a failure")
+    } else {
+        PlanCheck::Hold
+    }
+}
+
+/// The note that holds a reply ending a turn with this turn's plan still open. It names
+/// only this plan's open items and says to remove one that goes beyond the instruction, so
+/// it never pushes the model into another task (bead boubou-ear).
+pub fn plan_hold_note(plan: &[TodoItem]) -> String {
+    let (done, all) = todo_progress(plan);
+    let open: Vec<String> = plan
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| !x.done)
+        .take(3)
+        .map(|(k, x)| format!("{}. {}", k + 1, text::head(&x.item, 80)))
+        .collect();
+    format!(
+        "⚠️ Your plan for this task still has {} open item(s) ({done}/{all}): {}. The task is not finished, so do not end the turn or start another task. For each open item: do it if the instruction asked for it, tick it if it is already done (todo(action=update, index=…)), or remove it with a one-line reason if it goes beyond the instruction (for example claiming or starting another task). Then reply.",
+        all - done,
+        open.join("; ")
     )
 }
 

@@ -11,7 +11,7 @@
 //! the reply dropped the conversation's standing instructions (bead boubou-twe). Further
 //! differences are made here, with the test stating them (`docs/refactor.md`, step 10).
 
-use rufous_kernel::agent::{Prompt, TurnPolicy};
+use rufous_kernel::agent::{Gate, Gates, Prompt, TurnPolicy};
 use rufous_kernel::skills::Skill;
 
 /// The task prefill this harness runs. `{PLATFORM_LINE}` and `{USER_HOME}` are filled by
@@ -31,11 +31,13 @@ RULES:
 - Be concise in text; put large content in tool arguments."#;
 
 /// The `general` preset: [`TurnPolicy::conversation`] under this harness's name, on its own
-/// task prefill.
+/// task prefill, with one gate: the plan this turn made must not be left open (bead
+/// boubou-ear).
 pub const fn policy() -> TurnPolicy {
     TurnPolicy {
         name: "general",
         prompt: Prompt::Task(TASK_PROMPT),
+        gates: Gates::NONE.with(Gate::PlanSync),
         ..TurnPolicy::conversation()
     }
 }

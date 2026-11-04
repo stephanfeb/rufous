@@ -56,6 +56,9 @@ pub const REATTRIBUTE: &str = "reattribute";
 /// Session tool face (bead boubou-g11): off, a turn's categories come from its own
 /// instruction alone, so a follow-up can change the tools sent and lose the prefix cache.
 pub const SESSION_FACE: &str = "session_face";
+/// The plan hold (bead boubou-ear): off, a text reply ends the turn even while the plan
+/// this turn made still has open items (Gate 5 then runs at `finish` only).
+pub const PLAN_HOLD: &str = "plan_hold";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -74,6 +77,7 @@ pub const KERNEL: &[&str] = &[
     SCOPE_GATE,
     REATTRIBUTE,
     SESSION_FACE,
+    PLAN_HOLD,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

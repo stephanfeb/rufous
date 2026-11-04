@@ -4,17 +4,20 @@
 
 use rufous_general::harness;
 use rufous_kernel::agent::prompt::TASK_BASE;
-use rufous_kernel::agent::{Prompt, TurnPolicy};
+use rufous_kernel::agent::{Gate, Gates, Prompt, TurnPolicy};
 
 #[test]
 fn the_preset_is_the_kernel_conversation_under_this_name_and_prompt() {
     let p = harness::policy();
     assert_eq!(p.name, "general");
     assert_eq!(p.prompt, Prompt::Task(harness::TASK_PROMPT));
+    // The plan hold (bead boubou-ear): a turn does not end with its own plan still open.
+    assert_eq!(p.gates, Gates::NONE.with(Gate::PlanSync));
     assert_eq!(
         TurnPolicy {
             name: "conversation",
             prompt: Prompt::Task(TASK_BASE),
+            gates: Gates::NONE,
             ..p
         },
         TurnPolicy::conversation(),

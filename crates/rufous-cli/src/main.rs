@@ -1063,8 +1063,12 @@ mod tests {
             },
             c
         );
-        assert_eq!(c.gates, Gates::NONE.with(Gate::NamedWrites));
-        assert_eq!(g.gates, Gates::NONE);
+        // Since bead boubou-ear both hold a turn that ends with its own plan still open.
+        assert_eq!(
+            c.gates,
+            Gates::NONE.with(Gate::NamedWrites).with(Gate::PlanSync)
+        );
+        assert_eq!(g.gates, Gates::NONE.with(Gate::PlanSync));
         assert_eq!(
             rufous_general::harness::TASK_PROMPT,
             rufous_coding::harness::TASK_PROMPT

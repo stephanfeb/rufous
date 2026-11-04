@@ -31,13 +31,14 @@ RULES:
 - Be concise in text; put large content in tool arguments."#;
 
 /// The `coding` preset: [`TurnPolicy::conversation`] under this harness's name, on its own
-/// task prefill, with one gate: a file the instruction asks to write must have been
-/// written before the turn ends (bead boubou-78s; the plan tool stood in for tasks.md).
+/// task prefill, with two gates: a file the instruction asks to write must have been
+/// written before the turn ends (bead boubou-78s; the plan tool stood in for tasks.md), and
+/// the plan this turn made must not be left open (bead boubou-ear).
 pub const fn policy() -> TurnPolicy {
     TurnPolicy {
         name: "coding",
         prompt: Prompt::Task(TASK_PROMPT),
-        gates: Gates::NONE.with(Gate::NamedWrites),
+        gates: Gates::NONE.with(Gate::NamedWrites).with(Gate::PlanSync),
         ..TurnPolicy::conversation()
     }
 }

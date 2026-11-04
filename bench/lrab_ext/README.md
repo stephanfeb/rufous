@@ -39,7 +39,9 @@ first source-file write with `[scope gate: …]`; a unit test keeps every bench 
 and deliverables clear of that, so a cell loss with that line in its log is a bug, not a
 measurement. `session_face` (2026-11-04, bead boubou-g11) is in the list: off, a turn's tool
 categories come from its own instruction alone instead of every instruction of the session,
-so a follow-up can change the tools sent (`[prefix] since the previous turn: tools changed`).
+so a follow-up can change the tools sent (`[prefix] since the previous turn: tools changed`). `plan_hold` (2026-11-05, bead boubou-ear) is in the list: off,
+a text reply ends the turn even while the plan the turn made has open items (Gate 5 runs at
+`finish` only, as before).
 
 No mean claim from one run per cell: on 2026-10-31 five coding cells re-run under one
 configuration moved from 0.70 to 0.47. `--runs 3` scores every cell three times (`_r0`…`_r2`),
