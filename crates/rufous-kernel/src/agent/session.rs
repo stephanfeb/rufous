@@ -239,6 +239,24 @@ pub fn load_checkpoint_from(p: &Path) -> Option<Vec<Message>> {
     }
 }
 
+/// `<sessions>/<name>.request.json`: the digest of the last request sent, so the next
+/// turn's first call can be compared with it (bead boubou-xwi).
+pub fn request_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.request.json"))
+}
+
+/// Best effort, like the decider sidecar: a failure to write a measurement never touches
+/// the run.
+pub fn save_request(dir: &Path, name: &str, digest: &super::run::RequestDigest) {
+    let _ = std::fs::create_dir_all(dir);
+    let _ = atomic_write_json(&request_path(dir, name), digest);
+}
+
+pub fn load_request(dir: &Path, name: &str) -> Option<super::run::RequestDigest> {
+    let raw = std::fs::read_to_string(request_path(dir, name)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// The decider sidecar of a session.
 pub fn decisions_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.decisions.jsonl"))

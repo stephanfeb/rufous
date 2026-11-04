@@ -408,3 +408,59 @@ fn a_follow_up_turn_keeps_the_session_context_without_firing_the_hooks() {
         None
     );
 }
+
+#[test]
+fn a_follow_up_turn_compares_its_first_request_with_the_previous_turn() {
+    // bead boubou-xwi: ACP builds an agent per turn, so the in-run prefix diff never saw a
+    // turn's first call; the last request now survives in `<name>.request.json`.
+    let d = tempfile::tempdir().expect("tmp");
+    let wd = d.path();
+    let sessions = wd.join("sessions");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let turn = |reply: &str, out: Vec<Message>| {
+        let mut a = agent(wd, vec![ChatResponse::text(reply)], logs.clone());
+        a.sessions_dir = sessions.clone();
+        let m = if out.is_empty() {
+            a.task_messages("Tidy the notes")
+        } else {
+            out
+        };
+        a.run(m, Some("prefix_turns"), None).expect("turn")
+    };
+    let prefix_lines = || -> Vec<String> {
+        let mut l = logs.lock().expect("lock");
+        let out = l
+            .iter()
+            .filter(|x| x.contains("[prefix]"))
+            .cloned()
+            .collect();
+        l.clear();
+        out
+    };
+    let mut out = turn("Done.", Vec::new());
+    let path = rufous_kernel::agent::session::request_path(&sessions, "prefix_turns");
+    assert!(path.exists(), "the first turn leaves its last request");
+    assert_eq!(prefix_lines(), Vec::<String>::new());
+    // A follow-up routed to the same tools only appends: nothing to say.
+    out.push(Message::user("Tidy the notes again"));
+    let mut out = turn("Tidied.", out);
+    assert_eq!(prefix_lines(), Vec::<String>::new());
+    // One with no category keyword gets the default face, another tool set: the first call
+    // says so (the readings of 2026-11-04 suspect this for full prefills on follow-ups).
+    out.push(Message::user("Now sort them"));
+    let mut out = turn("Sorted.", out);
+    let l = prefix_lines();
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert!(
+        l[0].starts_with("[0] [prefix] since the previous turn: tools changed: +"),
+        "{l:?}"
+    );
+    // A session saved before the sidecar existed says the reading is missing.
+    std::fs::remove_file(&path).expect("rm");
+    out.push(Message::user("Thanks"));
+    turn("You're welcome.", out);
+    assert_eq!(
+        prefix_lines(),
+        vec!["[prefix] no request recorded for the previous turn".to_string()]
+    );
+}

@@ -822,8 +822,15 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut named_gate_warns = 0;
         let mut named_writes_warns = 0;
         let mut reattributed_logged = false;
-        // The previous request as sent, for the prefix diff (bead boubou-xwi).
-        let mut last_request: Option<(Vec<String>, Vec<Message>)> = None;
+        // The previous request as sent, for the prefix diff (bead boubou-xwi). A continued
+        // session starts from the previous turn's last request, kept in its sidecar.
+        let continued_from = session.filter(|_| messages.iter().any(|m| m.role == Role::Assistant));
+        let mut last_request: Option<RequestDigest> =
+            continued_from.and_then(|s| session::load_request(sessions_dir, s));
+        let mut since_previous_turn = last_request.is_some();
+        if continued_from.is_some() && last_request.is_none() {
+            log!("[prefix] no request recorded for the previous turn");
+        }
         let mut finish_reread_used = false;
         let mut plan_gate_warns = 0;
         let mut text_ladder = TextLadder::default();
@@ -1075,13 +1082,22 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 log!("[{i}] ledger: an earlier turn's reply after a declined write is sent as a ledger line");
             }
             let sent: &[Message] = view.as_deref().unwrap_or(&messages);
-            let tool_names = tool_names(&ct);
-            if let Some((tools, msgs)) = &last_request {
-                for line in prefix_change(tools, msgs, &tool_names, sent) {
-                    log!("[{i}] [prefix] {line}");
+            let digest = RequestDigest::new(&ct, sent);
+            if let Some(prev) = &last_request {
+                let since = if since_previous_turn {
+                    "since the previous turn: "
+                } else {
+                    ""
+                };
+                for line in prefix_change(prev, &digest) {
+                    log!("[{i}] [prefix] {since}{line}");
                 }
             }
-            last_request = Some((tool_names, sent.to_vec()));
+            since_previous_turn = false;
+            if let Some(s) = session {
+                session::save_request(sessions_dir, s, &digest);
+            }
+            last_request = Some(digest);
             let r = match backend.chat(model, sent, &ct, &mut |p| match p {
                 StreamPiece::Token(t) => sink(AgentEvent::Text(t.to_string())),
                 StreamPiece::Think(t) => sink(AgentEvent::Thinking(t.to_string())),
@@ -2559,16 +2575,77 @@ fn tool_names(defs: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// One sent message as the prefix diff keeps it: hashes, not the message (bead boubou-xwi).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MessageDigest {
+    /// Over the serialised message, so thinking, calls and images count.
+    pub hash: String,
+    /// Over the content alone, for the "same text" remark.
+    pub text_hash: String,
+    /// Role, the head of the text and the tools it calls, for the log line.
+    pub excerpt: String,
+}
+
+/// A request as sent, kept between calls and, through the session's `.request.json`
+/// sidecar, between turns, so a turn's first call is compared with the previous turn's
+/// last one (bead boubou-xwi).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RequestDigest {
+    pub tools: Vec<String>,
+    /// Over the serialised definitions: same names with another description or schema.
+    pub tools_hash: String,
+    pub msgs: Vec<MessageDigest>,
+}
+
+fn sha1_hex(s: &str) -> String {
+    use sha1::{Digest, Sha1};
+    Sha1::digest(s.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+impl RequestDigest {
+    pub fn new(tool_defs: &[Value], msgs: &[Message]) -> Self {
+        let excerpt = |m: &Message| {
+            let calls: Vec<&str> = m
+                .tool_calls
+                .iter()
+                .map(|t| t.function.name.as_str())
+                .collect();
+            format!(
+                "{} {}{}",
+                m.role.as_str(),
+                text::head(&m.content, 80).replace('\n', "⏎"),
+                if calls.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [calls {}]", calls.join(","))
+                }
+            )
+        };
+        Self {
+            tools: tool_names(tool_defs),
+            tools_hash: sha1_hex(&Value::from(tool_defs.to_vec()).to_string()),
+            msgs: msgs
+                .iter()
+                .map(|m| MessageDigest {
+                    hash: sha1_hex(&serde_json::to_string(m).unwrap_or_default()),
+                    text_hash: sha1_hex(&m.content),
+                    excerpt: excerpt(m),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Where a request stops extending the previous one: a changed tool set, or the first
 /// earlier message that differs. The server reuses its cache only up to there, so whatever
 /// follows is processed again (bead boubou-xwi). Empty when the new request only appends.
-pub fn prefix_change(
-    old_tools: &[String],
-    old: &[Message],
-    tools: &[String],
-    new: &[Message],
-) -> Vec<String> {
+pub fn prefix_change(old: &RequestDigest, new: &RequestDigest) -> Vec<String> {
     let mut out = Vec::new();
+    let (old_tools, tools) = (&old.tools, &new.tools);
     if old_tools != tools {
         let added: Vec<&str> = tools
             .iter()
@@ -2585,29 +2662,15 @@ pub fn prefix_change(
         } else {
             format!("tools changed: +{} −{}", added.join(","), gone.join(","))
         });
+    } else if old.tools_hash != new.tools_hash {
+        out.push("tools changed: same names, descriptions or schemas differ".to_string());
     }
-    if let Some(k) = (0..old.len()).find(|&k| new.get(k) != Some(&old[k])) {
-        let excerpt = |m: Option<&Message>| match m {
-            None => "(gone)".to_string(),
-            Some(m) => {
-                let calls: Vec<&str> = m
-                    .tool_calls
-                    .iter()
-                    .map(|t| t.function.name.as_str())
-                    .collect();
-                format!(
-                    "{} {}{}",
-                    m.role.as_str(),
-                    text::head(&m.content, 80).replace('\n', "⏎"),
-                    if calls.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [calls {}]", calls.join(","))
-                    }
-                )
-            }
-        };
-        let same_text = new.get(k).is_some_and(|m| m.content == old[k].content);
+    let (old, new) = (&old.msgs, &new.msgs);
+    if let Some(k) = (0..old.len()).find(|&k| new.get(k).map(|m| &m.hash) != Some(&old[k].hash)) {
+        fn excerpt(m: Option<&MessageDigest>) -> &str {
+            m.map_or("(gone)", |m| m.excerpt.as_str())
+        }
+        let same_text = new.get(k).is_some_and(|m| m.text_hash == old[k].text_hash);
         out.push(format!(
             "request differs from the previous at message {k} of {} ({} ⇢ {}){}",
             new.len(),
