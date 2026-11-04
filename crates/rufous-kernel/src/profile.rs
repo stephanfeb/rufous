@@ -189,6 +189,40 @@ pub fn family_of(model: &str) -> String {
     base.trim().to_lowercase()
 }
 
+/// The Ollama-style tag for a model id that has none (bead boubou-eie): LM Studio and
+/// Hugging Face name a model `org/name-size[-variant][@quant]`, so `google/gemma-4-12b`
+/// becomes `gemma4:12b` and `qwen/qwen3.5-9b@q4_k_m` becomes `qwen3.5:9b`. A bare version
+/// number joins the name before it (`gemma` `4` → `gemma4`, as Ollama spells it); the
+/// first size token (`12b`, `e2b`, `0.6b`, `270m`) ends the name and variant words after
+/// it (`it`, `qat`, `mlx`, …) are dropped. An id with a `:` already is a tag, and an id
+/// with no size token is returned lower-cased as it was.
+pub fn ollama_tag(model: &str) -> String {
+    let tag = model.trim().to_lowercase();
+    if tag.contains(':') {
+        return tag;
+    }
+    let base = tag.rsplit('/').next().unwrap_or(&tag);
+    let base = base.split('@').next().unwrap_or(base);
+    let tokens: Vec<&str> = base.split(['-', '_']).filter(|t| !t.is_empty()).collect();
+    let is_size = |t: &str| {
+        let t = t.strip_prefix('e').unwrap_or(t);
+        t.strip_suffix(['b', 'm'])
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    };
+    let is_version = |t: &str| t.chars().all(|c| c.is_ascii_digit() || c == '.');
+    let Some(at) = tokens.iter().position(|t| is_size(t)).filter(|&i| i > 0) else {
+        return tag;
+    };
+    let mut name = String::new();
+    for t in &tokens[..at] {
+        if !name.is_empty() && !is_version(t) {
+            name.push('-');
+        }
+        name.push_str(t);
+    }
+    format!("{name}:{}", tokens[at])
+}
+
 /// Resolve the profile for `model` from the built-in table alone.
 pub fn builtin_for(model: &str) -> ModelProfile {
     resolve(model, &BTreeMap::new())
@@ -197,7 +231,8 @@ pub fn builtin_for(model: &str) -> ModelProfile {
 /// Resolve the profile for `model`: built-ins, then the user's overrides (family, then
 /// exact tag) on top.
 pub fn resolve(model: &str, overrides: &BTreeMap<String, ProfileOverride>) -> ModelProfile {
-    let tag = model.trim().to_lowercase();
+    let raw = model.trim().to_lowercase();
+    let tag = ollama_tag(&raw);
     let family = family_of(&tag);
     let mut p = ModelProfile::default();
     for (key, o) in builtin() {
@@ -205,7 +240,12 @@ pub fn resolve(model: &str, overrides: &BTreeMap<String, ProfileOverride>) -> Mo
             o.apply_to(&mut p, key);
         }
     }
-    for key in [family.as_str(), tag.as_str()] {
+    // An override keyed by the id as the user wrote it (an LM Studio id) applies too.
+    let mut keys = vec![family.as_str(), tag.as_str()];
+    if raw != tag {
+        keys.push(raw.as_str());
+    }
+    for key in keys {
         if let Some(o) = overrides.get(key) {
             o.apply_to(&mut p, &format!("{key} (config)"));
         }
@@ -264,6 +304,42 @@ mod tests {
             "qwen3-8b-gguf"
         );
         assert_eq!(family_of("llama3.1"), "llama3.1");
+    }
+
+    #[test]
+    fn lm_studio_ids_resolve_to_the_ollama_profiles() {
+        for (id, tag) in [
+            ("google/gemma-4-12b", "gemma4:12b"),
+            ("lmstudio-community/gemma-4-e2b-it@q4_k_m", "gemma4:e2b"),
+            ("qwen/qwen3.5-9b", "qwen3.5:9b"),
+            ("Qwen3.5-9B-MLX-4bit", "qwen3.5:9b"),
+            ("meta-llama/llama-3.1-8b-instruct", "llama3.1:8b"),
+            ("gemma4:12b", "gemma4:12b"),
+            (
+                "hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M",
+                "hf.co/unsloth/qwen3-8b-gguf:q4_k_m",
+            ),
+            ("mistral-nemo", "mistral-nemo"),
+        ] {
+            assert_eq!(ollama_tag(id), tag, "{id}");
+        }
+        let p = builtin_for("google/gemma-4-12b");
+        assert_eq!(p, builtin_for("gemma4:12b"));
+        assert!(p.finish_prose_rescue);
+        assert_eq!(
+            builtin_for("lmstudio-community/gemma-4-e2b-it").name,
+            "gemma4:e2b"
+        );
+        // An override keyed by the LM Studio id itself still applies.
+        let mut o = BTreeMap::new();
+        o.insert(
+            "google/gemma-4-12b".to_string(),
+            ProfileOverride {
+                temperature: Some(0.3),
+                ..Default::default()
+            },
+        );
+        assert_eq!(resolve("google/gemma-4-12b", &o).temperature, Some(0.3));
     }
 
     #[test]
