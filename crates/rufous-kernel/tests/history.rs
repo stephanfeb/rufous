@@ -124,6 +124,64 @@ fn l1_truncates_old_tool_output_only() {
 }
 
 #[test]
+fn l1_twice_leaves_what_it_already_cut_byte_identical() {
+    // Bead boubou-4e1: a cut result is longer than the cap, so a second L1 used to cut it
+    // again and rewrite its length, changing every earlier message for the server's cache.
+    let mut v = vec![Message::system("SYS"), Message::user("task")];
+    v.push(Message::assistant_call(
+        "read_file",
+        json!({"path": "a.txt"}),
+    ));
+    v.push(Message::tool_output("x".repeat(5000)));
+    v.push(Message::assistant("next"));
+    v.push(Message::tool_output("y".repeat(500)));
+    let once = compact_history(&mut Broken, "m", v, 1, None, None, &mut |_| {}).messages;
+    assert!(once[3].content.contains("originally 5000 chars"));
+    let mut again = once.clone();
+    again.push(Message::assistant("more"));
+    again.push(Message::tool_output("z".repeat(500)));
+    let twice = compact_history(&mut Broken, "m", again, 1, None, None, &mut |_| {}).messages;
+    assert_eq!(twice[..4], once[..4], "what the first L1 cut is unchanged");
+    assert!(
+        twice[5].content.contains("originally 500 chars"),
+        "the new result is cut"
+    );
+}
+
+#[test]
+fn l1_shortens_old_call_arguments_but_not_the_last_two_messages() {
+    let big = "line\n".repeat(400);
+    let mut v = vec![Message::system("SYS"), Message::user("task")];
+    v.push(Message::assistant_call(
+        "create_file",
+        json!({"path": "app.js", "content": big}),
+    ));
+    v.push(Message::tool_output("[created app.js]"));
+    v.push(Message::assistant("next"));
+    v.push(Message::assistant_call(
+        "create_file",
+        json!({"path": "b.js", "content": big}),
+    ));
+    v.push(Message::tool_output("[created b.js]"));
+    let mut log = Vec::new();
+    let c = compact_history(&mut Broken, "m", v, 1, None, None, &mut |s| log.push(s));
+    let old = &c.messages[2].tool_calls[0].function.arguments;
+    assert_eq!(old["path"], "app.js", "short arguments stay");
+    assert!(old["content"]
+        .as_str()
+        .expect("string arg")
+        .ends_with("(2000 chars)"));
+    let recent = &c.messages[5].tool_calls[0].function.arguments;
+    assert_eq!(recent["content"].as_str().expect("string arg").len(), 2000);
+    assert!(
+        log.iter().any(|l| l
+            .starts_with("[context compaction L1: truncated old tool outputs and arguments, ~")
+            && l.contains(" → ~")),
+        "{log:?}"
+    );
+}
+
+#[test]
 fn failed_summary_leaves_history_untouched_and_logs() {
     let mut log = Vec::new();
     let input = msgs(8);

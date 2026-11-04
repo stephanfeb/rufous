@@ -226,25 +226,34 @@ pub fn prune_history(messages: &mut [Message], keep: usize) -> usize {
         if let Some((a, _)) = owner[i] {
             let m = &mut messages[a];
             m.thinking = None;
-            for tc in &mut m.tool_calls {
-                if let Some(obj) = tc.function.arguments.as_object_mut() {
-                    for v in obj.values_mut() {
-                        if let Some(s) = v.as_str() {
-                            let len = text::clen(s);
-                            if len > PRUNE_ARG_MAX {
-                                *v = Value::String(format!(
-                                    "{}… ({len} chars)",
-                                    text::head(s, PRUNE_ARG_MAX / 2)
-                                ));
-                            }
-                        }
+            shorten_call_args(m);
+        }
+    }
+    pruned
+}
+
+/// Shorten every long string argument of a message's tool calls to its head and its length.
+/// Idempotent: a shortened argument is under the cap, so a second pass leaves it as it is.
+fn shorten_call_args(m: &mut Message) {
+    for tc in &mut m.tool_calls {
+        if let Some(obj) = tc.function.arguments.as_object_mut() {
+            for v in obj.values_mut() {
+                if let Some(s) = v.as_str() {
+                    let len = text::clen(s);
+                    if len > PRUNE_ARG_MAX {
+                        *v = Value::String(format!(
+                            "{}… ({len} chars)",
+                            text::head(s, PRUNE_ARG_MAX / 2)
+                        ));
                     }
                 }
             }
         }
     }
-    pruned
 }
+
+/// What L1 puts after the head of a tool result it cut; also its idempotence marker.
+pub const L1_MARK: &str = "… (truncated, originally ";
 
 const SUMMARY_SYSTEM_L2: &str =
     "Compress this into a summary of at most 150 words in English. Keep the goal, key file names, decisions made, errors and unfinished items; drop old logs and full texts already read.";
@@ -295,7 +304,8 @@ fn summarise<B: ChatBackend>(
 
 /// `compact_history`: tiered compaction.
 ///
-/// - L1: truncate old tool outputs to 120 chars, keep every role, keep the last 2 as is.
+/// - L1: truncate old tool outputs to 120 chars and old call arguments to 80, keep every
+///   role, keep the last 2 as is; idempotent.
 /// - L2: summarise everything between the system message and the last 5 messages.
 /// - L3: summarise everything between the system message and the last 3 messages.
 ///
@@ -321,22 +331,31 @@ pub fn compact_history<B: ChatBackend>(
     }
     if level <= 1 {
         const MAX_TOOL: usize = 120;
+        let was = estimate_messages_tokens(&messages, &[]);
         let mut out = Vec::with_capacity(n);
         for (i, mut m) in messages.into_iter().enumerate() {
             let is_recent = i >= n - 2;
-            if i > 0 && m.role == Role::Tool && !is_recent {
+            // A result L1 already cut stays byte-identical: cutting it again would rewrite
+            // its length and every earlier message's text, and the server would prefill the
+            // history from there (bead boubou-4e1).
+            if i > 0 && m.role == Role::Tool && !is_recent && !m.content.contains(L1_MARK) {
                 let len = text::clen(&m.content);
                 if len > MAX_TOOL {
-                    m.content = format!(
-                        "{}… (truncated, originally {} chars)",
-                        text::head(&m.content, MAX_TOOL),
-                        len
-                    );
+                    m.content =
+                        format!("{}{L1_MARK}{len} chars)", text::head(&m.content, MAX_TOOL));
                 }
+            }
+            // The bulk of a coding session is often in the calls, not the results: whole
+            // files sent as create_file content or `cat > … << EOF` (bead boubou-4e1).
+            if i > 0 && m.role == Role::Assistant && !is_recent {
+                shorten_call_args(&mut m);
             }
             out.push(m);
         }
-        log("[context compaction L1: truncated old tool outputs]".to_string());
+        let now = estimate_messages_tokens(&out, &[]);
+        log(format!(
+            "[context compaction L1: truncated old tool outputs and arguments, ~{was} → ~{now} tokens]"
+        ));
         return unchanged(out);
     }
     let (keep_tail, system) = if level <= 2 {

@@ -3310,3 +3310,36 @@ v0.3.2 adds the following since v0.3.1:
   announced once per session, and shadow mode only logs it (boubou-xki).
 - The desktop app uses the rufous hummingbird icon. The guide says that task items should carry
   "Done when" and "Out of scope", and that only work that has an item should be asked for.
+
+## 2026-11-03: compaction hysteresis (boubou-4e1)
+
+Session acp_1103_083226 (qwen3.5:9b, ctx 65536) spent 671 of its 1506 s of prompt time in the
+calls straight after a compaction. L1 fired four times in ten minutes, and each repeat cost
+83–118 s. The code showed three reasons:
+- The ladder re-armed under 60 %, the same mark that triggers L1.
+- L1 cut only tool results, while most of this session's bulk sat in the calls' arguments (whole
+  files as `create_file` content or `cat > … << EOF`). So L1 took 60 % only to 51 %.
+- L1 was not idempotent. A cut result is still longer than the 120-char cap, so the next L1 cut it
+  again and rewrote "originally N chars". Every earlier message changed text, and the server
+  re-prefilled from near the start.
+
+Changes:
+- L1 leaves a result it has already cut byte-identical (`L1_MARK`).
+- L1 shortens long string arguments of old tool calls to 80 chars plus their length. This is the
+  rule pruning already used, now in `shorten_call_args`, and the last two messages still stay
+  as they are.
+- The ladder re-arms only under 45 % (`REARM_AT`). An L1 that leaves 51 % is followed by L2 at
+  75 %, not by another L1.
+- The L1 line logs the estimated history size before and after: `[context compaction L1:
+  truncated old tool outputs and arguments, ~X → ~Y tokens]`. `bench/process_metrics.py` still
+  counts it.
+
+Three tests:
+- L1 run twice leaves what it already cut unchanged.
+- Old call arguments are shortened, but not those in the last two messages.
+- The ladder does not re-arm at 51 % and does at 44 %.
+
+The workspace tests, clippy, rustfmt and the bench's Python tests pass. Not measured yet: the
+number of compactions and the post-compaction prompt seconds over at least 3 real sessions that
+reach 60 %, and one bench arm that compacts (n ≥ 3), to check that shortening old arguments
+costs no score.

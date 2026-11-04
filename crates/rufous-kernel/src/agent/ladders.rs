@@ -440,8 +440,13 @@ impl CallLadders {
     }
 }
 
+/// Fraction of the window under which the ladder re-arms. Below the L1 mark, so an L1 that
+/// leaves the context at 51 % does not fire again a few thousand tokens later (bead
+/// boubou-4e1: four L1s in ten minutes, each a full re-prefill).
+pub const REARM_AT: f64 = 0.45;
+
 /// The compaction ladder: three levels over the context window (60, 75 and 90 % of it),
-/// each armed once until the real prompt count falls back under 60 %.
+/// each armed once until the real prompt count falls back under [`REARM_AT`].
 #[derive(Debug, Default)]
 pub struct Compaction {
     level: u8,
@@ -462,10 +467,10 @@ impl Compaction {
         }
     }
 
-    /// The real prompt count after a call: under 60 % the ladder is re-armed; then as
-    /// [`Self::due`].
+    /// The real prompt count after a call: under [`REARM_AT`] the ladder is re-armed; then
+    /// as [`Self::due`].
     pub fn observe(&mut self, prompt_tokens: f64, budget: f64) -> Option<u8> {
-        if prompt_tokens < budget * 0.60 {
+        if prompt_tokens < budget * REARM_AT {
             self.level = 0;
         }
         self.due(prompt_tokens, budget)
@@ -873,8 +878,10 @@ mod tests {
         assert_eq!(c.due(91.0, 100.0), Some(3));
         c.compacted(3);
         assert_eq!(c.observe(95.0, 100.0), None, "nothing above three");
-        assert_eq!(c.observe(40.0, 100.0), None);
-        assert_eq!(c.due(61.0, 100.0), Some(1), "re-armed under 60 %");
+        assert_eq!(c.observe(51.0, 100.0), None);
+        assert_eq!(c.due(61.0, 100.0), None, "51 % is not low enough to re-arm");
+        assert_eq!(c.observe(44.0, 100.0), None);
+        assert_eq!(c.due(61.0, 100.0), Some(1), "re-armed under 45 %");
         assert_eq!(c.bump(), Some(1));
         assert_eq!(c.bump(), Some(2));
         assert_eq!(c.bump(), Some(3));
