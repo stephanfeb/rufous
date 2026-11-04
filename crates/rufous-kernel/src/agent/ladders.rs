@@ -973,3 +973,273 @@ mod tests {
         assert_eq!(l.on_failed("run_bash", "b"), 1);
     }
 }
+
+/// The circling ladder (bead boubou-m5d): a turn that goes round in circles ends with a
+/// report to the user instead of running on for hours. It counts the turn's tool calls and,
+/// per command, how many runs in a row failed with the same exit code. Successful runs never
+/// count: rebuilding after every edit is a normal loop (the Zed logs of 11-02..11-05 had
+/// 11 `./gradlew clean` runs with exit 0 in a good turn and in a bad one alike). The call
+/// count is what separated them (bad turns 81-111 calls, good ones at most 57).
+#[derive(Debug, Default)]
+pub struct CirclingLadder {
+    calls: usize,
+    /// Per command key: the last exit code and how many runs in a row failed with it.
+    streaks: HashMap<String, (i32, usize)>,
+    /// Keys whose failing streak reached [`CIRCLING_HYPOTHESIS_STREAK`].
+    stuck: BTreeSet<String>,
+    stage: u8,
+    /// The longest failing streak: key, exit code, length, last output line.
+    worst: Option<(String, i32, usize, String)>,
+}
+
+/// Calls in a turn that draw the hypothesis note.
+pub const CIRCLING_HYPOTHESIS_CALLS: usize = 60;
+/// Calls in a turn that stop it at a checkpoint.
+pub const CIRCLING_CHECKPOINT_CALLS: usize = 80;
+/// One command failing the same way this many times in a row draws the hypothesis note.
+pub const CIRCLING_HYPOTHESIS_STREAK: usize = 8;
+/// ... and this many, after the note, stops the turn at a checkpoint.
+pub const CIRCLING_CHECKPOINT_STREAK: usize = 12;
+
+/// What the circling ladder calls for after a call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Circling {
+    Quiet,
+    /// Stage 1, once a turn: ask for a hypothesis and the check that would confirm it.
+    Hypothesis {
+        why: String,
+    },
+    /// Stage 2: ask for a report and refuse further tool calls this turn.
+    Checkpoint {
+        why: String,
+    },
+}
+
+/// The command a shell call ran, as the circling ladder counts it: the `cd dir &&` prefix
+/// and `VAR=x` assignments stripped, flags dropped, the first two words kept, so
+/// `./gradlew clean build --info` and `./gradlew clean run` are one command. `None` for a
+/// command that writes a file (heredoc, redirect, `tee`): writing files is work, not a check.
+pub fn command_key(command: &str) -> Option<String> {
+    let probe = command
+        .replace("2>&1", "")
+        .replace("2>/dev/null", "")
+        .replace(">/dev/null", "")
+        .replace("> /dev/null", "");
+    if probe.contains("<<") || probe.contains('>') || probe.split_whitespace().any(|w| w == "tee") {
+        return None;
+    }
+    let mut s = command.trim();
+    if let Some(rest) = s.strip_prefix("cd ") {
+        if let Some(at) = rest.find("&&").or_else(|| rest.find(';')) {
+            s = rest[at..].trim_start_matches(['&', ';']).trim();
+        }
+    }
+    let words: Vec<&str> = s
+        .split_whitespace()
+        .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+        .filter(|w| !w.starts_with('-') && !w.contains(['>', '<', '|']))
+        .take_while(|w| !w.starts_with(['&', ';']))
+        .take(2)
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+impl CirclingLadder {
+    /// Feed one finished tool call: for a shell call its command, exit code and output;
+    /// `scope_denied` when the scope gate's Deny came back.
+    pub fn on_call(
+        &mut self,
+        shell: Option<(&str, Option<i32>, &str)>,
+        scope_denied: bool,
+    ) -> Circling {
+        self.calls += 1;
+        let mut streak: Option<(String, i32, usize)> = None;
+        if let Some((cmd, Some(exit), out)) = shell {
+            if let Some(key) = command_key(cmd) {
+                let e = self.streaks.entry(key.clone()).or_insert((0, 0));
+                *e = if exit == 0 {
+                    (0, 0)
+                } else if e.0 == exit {
+                    (exit, e.1 + 1)
+                } else {
+                    (exit, 1)
+                };
+                let n = e.1;
+                if n > 0 {
+                    if n >= CIRCLING_HYPOTHESIS_STREAK {
+                        self.stuck.insert(key.clone());
+                    }
+                    if self.worst.as_ref().is_none_or(|w| n >= w.2) {
+                        let last = out
+                            .lines()
+                            .rev()
+                            .map(str::trim)
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("");
+                        self.worst = Some((
+                            key.clone(),
+                            exit,
+                            n,
+                            crate::text::head(last, 120).to_string(),
+                        ));
+                    }
+                    streak = Some((key, exit, n));
+                }
+            }
+        }
+        if self.stage >= 2 {
+            return Circling::Quiet;
+        }
+        let failing = |s: &(String, i32, usize)| {
+            format!("`{}` failed with exit {} {} times in a row", s.0, s.1, s.2)
+        };
+        let stop = if scope_denied {
+            Some("the instruction did not ask for that call".to_string())
+        } else if self.calls >= CIRCLING_CHECKPOINT_CALLS {
+            Some(format!("{} tool calls this turn", self.calls))
+        } else if self.stage == 1 {
+            streak
+                .as_ref()
+                .filter(|s| s.2 >= CIRCLING_CHECKPOINT_STREAK)
+                .map(failing)
+                .or_else(|| {
+                    (self.stuck.len() >= 2).then(|| {
+                        format!(
+                            "{} different commands each failed {CIRCLING_HYPOTHESIS_STREAK} times in a row",
+                            self.stuck.len()
+                        )
+                    })
+                })
+        } else {
+            None
+        };
+        if let Some(why) = stop {
+            self.stage = 2;
+            return Circling::Checkpoint { why };
+        }
+        if self.stage == 0 {
+            let why = streak
+                .as_ref()
+                .filter(|s| s.2 >= CIRCLING_HYPOTHESIS_STREAK)
+                .map(failing)
+                .or_else(|| {
+                    (self.calls >= CIRCLING_HYPOTHESIS_CALLS)
+                        .then(|| format!("{} tool calls this turn", self.calls))
+                });
+            if let Some(why) = why {
+                self.stage = 1;
+                return Circling::Hypothesis { why };
+            }
+        }
+        Circling::Quiet
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls
+    }
+
+    /// The longest failing streak: key, exit code, length, last output line.
+    pub fn worst(&self) -> Option<&(String, i32, usize, String)> {
+        self.worst.as_ref()
+    }
+
+    pub fn hypothesis_note(why: &str) -> String {
+        format!("⚠️ {why}. Before the next call, write in one or two lines where the task stands: your hypothesis about what still blocks it, and the one check that would show it is done. Then run that check.")
+    }
+
+    pub fn checkpoint_note(why: &str) -> String {
+        format!("⚠️ Stop here ({why}). Report to the user in a few lines: what you tried, what the checks showed, what is still unknown, and what you would try next. No more tool calls this turn; the user will say how to go on.")
+    }
+
+    pub const REFUSAL: &'static str =
+        "[checkpoint: report to the user in text; no more tool calls this turn]";
+}
+
+#[cfg(test)]
+mod circling_tests {
+    use super::*;
+
+    #[test]
+    fn command_key_strips_the_cd_prefix_flags_and_variants() {
+        assert_eq!(
+            command_key("cd /a/b && ./gradlew clean build --info 2>&1 | tail -20").as_deref(),
+            Some("./gradlew clean")
+        );
+        assert_eq!(
+            command_key("JAVA_HOME=/x ./gradlew clean run").as_deref(),
+            Some("./gradlew clean")
+        );
+        assert_eq!(command_key("npm run build").as_deref(), Some("npm run"));
+        assert_eq!(command_key("cat > a.txt << EOF\nx\nEOF"), None, "a write");
+        assert_eq!(command_key("echo hi | tee out.log"), None, "a write");
+        assert_eq!(
+            command_key("pytest -q 2>/dev/null").as_deref(),
+            Some("pytest")
+        );
+    }
+
+    #[test]
+    fn calls_alone_draw_the_note_at_60_and_the_checkpoint_at_80() {
+        let mut c = CirclingLadder::default();
+        let mut seen = Vec::new();
+        for _ in 0..85 {
+            let step = c.on_call(None, false);
+            if step != Circling::Quiet {
+                seen.push((c.calls(), step));
+            }
+        }
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(matches!(&seen[0], (60, Circling::Hypothesis { .. })));
+        assert!(
+            matches!(&seen[1], (80, Circling::Checkpoint { why }) if why == "80 tool calls this turn")
+        );
+    }
+
+    #[test]
+    fn a_failing_streak_draws_the_note_at_8_and_stops_at_12_but_successes_never_count() {
+        let mut ok = CirclingLadder::default();
+        for k in 0..30 {
+            let cmd = format!("./gradlew clean build --x{k}");
+            assert_eq!(
+                ok.on_call(Some((&cmd, Some(0), "BUILD SUCCESSFUL")), false),
+                Circling::Quiet
+            );
+        }
+        let mut c = CirclingLadder::default();
+        let mut steps = Vec::new();
+        for k in 1..=12 {
+            let cmd = format!("./gradlew clean run --x{k}");
+            steps.push(c.on_call(Some((&cmd, Some(1), "FAILURE: Build failed\n")), false));
+        }
+        assert_eq!(
+            steps[7],
+            Circling::Hypothesis {
+                why: "`./gradlew clean` failed with exit 1 8 times in a row".into()
+            }
+        );
+        assert_eq!(
+            steps[11],
+            Circling::Checkpoint {
+                why: "`./gradlew clean` failed with exit 1 12 times in a row".into()
+            }
+        );
+        assert_eq!(
+            c.worst().map(|w| (w.2, w.3.as_str())),
+            Some((12, "FAILURE: Build failed"))
+        );
+        // A success in between resets the streak.
+        let mut r = CirclingLadder::default();
+        for k in 0..20 {
+            let exit = if k == 7 { 0 } else { 1 };
+            let step = r.on_call(Some((&format!("make test{k}"), Some(exit), "")), false);
+            assert!(!matches!(step, Circling::Checkpoint { .. }), "{k}");
+        }
+    }
+
+    #[test]
+    fn a_scope_gate_deny_stops_at_once() {
+        let mut c = CirclingLadder::default();
+        assert!(matches!(c.on_call(None, true), Circling::Checkpoint { .. }));
+        assert_eq!(c.on_call(None, true), Circling::Quiet, "once");
+    }
+}

@@ -3645,3 +3645,209 @@ fn plan_sync_check_passes_holds_and_waives() {
     assert!(note.contains("2 open item(s) (1/3): 2. b; 3. c."), "{note}");
     assert!(note.contains("remove it with a one-line reason if it goes beyond the instruction"));
 }
+
+// Circling ladder (bead boubou-m5d): past 60 calls a hypothesis note, past 80 a checkpoint;
+// after it, tool calls are refused, and after two refusals the harness's own report ends the
+// turn. A text reply after the checkpoint ends the turn with no hold. Off for unattended
+// runs and under the ablation.
+
+struct FailingShell;
+
+impl ToolRunner for FailingShell {
+    fn run_tool(&mut self, name: &str, _args: &Value) -> String {
+        if name == "run_bash" {
+            "[exit 1]\nSTDERR:\nerror: build failed".to_string()
+        } else if name == "create_file" {
+            "[created a.txt]".to_string()
+        } else {
+            "[tool error: not scripted]".to_string()
+        }
+    }
+}
+
+fn run_circling<F: FnMut(usize) -> ChatResponse>(
+    d: &Path,
+    policy: TurnPolicy,
+    ablation: &[&str],
+    f: F,
+) -> (Vec<Message>, Vec<String>, String) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let text = Arc::new(Mutex::new(String::new()));
+    let (sink_logs, sink_text) = (logs.clone(), text.clone());
+    let mut params = RunParams::plain("gemma4:12b", d);
+    params.policy = policy;
+    params.ablation = ["anti_loop", "corrector"]
+        .iter()
+        .chain(ablation)
+        .map(|s| s.to_string())
+        .collect();
+    let mut a =
+        Agent::new(params, Lens { n: 0, f, seen }, FailingShell).with_sink(move |ev| match ev {
+            AgentEvent::Log(l) => sink_logs.lock().expect("lock").push(l),
+            AgentEvent::Text(t) => sink_text.lock().expect("lock").push_str(&t),
+            _ => {}
+        });
+    a.sessions_dir = d.join("sessions");
+    let msgs = a
+        .run(start("Make the app build."), None, None)
+        .expect("loop");
+    let logs = logs.lock().expect("lock").clone();
+    let text = text.lock().expect("lock").clone();
+    (msgs, logs, text)
+}
+
+fn varied_build(n: usize) -> ChatResponse {
+    ChatResponse::call(
+        "",
+        "run_bash",
+        json!({"command": format!("./gradlew clean build --attempt {n}")}),
+    )
+}
+
+#[test]
+fn a_turn_that_keeps_failing_is_asked_for_a_hypothesis_then_stopped_with_a_report() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, logs, text) = run_circling(d.path(), TurnPolicy::conversation(), &[], varied_build);
+    let notes = |needle: &str| user_msgs(&msgs, needle).len();
+    assert_eq!(notes("Before the next call, write in one or two lines"), 1);
+    assert_eq!(notes("⚠️ Stop here ("), 1);
+    assert!(
+        logs.iter().any(|l| l
+            .contains("[circling] stage 1: `./gradlew clean` failed with exit 1 8 times in a row")),
+        "{logs:#?}"
+    );
+    assert!(
+        logs.iter().any(|l| l.contains(
+            "[circling] checkpoint: `./gradlew clean` failed with exit 1 12 times in a row"
+        )),
+        "{logs:#?}"
+    );
+    let refused = msgs
+        .iter()
+        .filter(|m| m.content.starts_with("[checkpoint: report to the user"))
+        .count();
+    assert_eq!(refused, 2);
+    let last = msgs.last().expect("last");
+    assert_eq!(last.role, Role::Assistant);
+    assert!(
+        last.content.starts_with("Stopped after 12 tool calls"),
+        "{}",
+        last.content
+    );
+    assert!(
+        last.content.contains(
+            "`./gradlew clean` exited 1 12 times in a row (last output: error: build failed)"
+        ),
+        "{}",
+        last.content
+    );
+    assert!(
+        text.contains("Stopped after 12 tool calls"),
+        "the user sees the report"
+    );
+}
+
+#[test]
+fn a_text_reply_after_the_checkpoint_ends_the_turn_without_a_hold() {
+    let d = tempfile::tempdir().expect("tmp");
+    let p = d.path().to_path_buf();
+    let policy = TurnPolicy {
+        name: "coding-test",
+        gates: Gates::NONE.with(Gate::NamedWrites).with(Gate::PlanSync),
+        ..TurnPolicy::conversation()
+    };
+    let (msgs, logs, _) = run_circling(d.path(), policy, &[], |n| match n {
+        1 => {
+            plan_file(&p, &[("build", false)]);
+            ChatResponse::call("", "todo", json!({"action": "create", "items": ["build"]}))
+        }
+        2..=13 => varied_build(n),
+        _ => {
+            ChatResponse::text("Tried 12 builds; the compiler cannot find module x. Unknown: why.")
+        }
+    });
+    assert!(
+        holds(&msgs).is_empty(),
+        "the plan hold does not hold a checkpoint report"
+    );
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("[circling] the report ends the turn")),
+        "{logs:#?}"
+    );
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("Tried 12 builds; the compiler cannot find module x. Unknown: why.")
+    );
+}
+
+#[test]
+fn unattended_runs_and_the_ablation_never_circle_stop() {
+    for (policy, ablation) in [
+        (TurnPolicy::unattended(), vec![]),
+        (TurnPolicy::conversation(), vec!["checkpoint"]),
+    ] {
+        let d = tempfile::tempdir().expect("tmp");
+        let (msgs, logs, _) = run_circling(d.path(), policy, &ablation, |n| {
+            if n <= 15 {
+                varied_build(n)
+            } else {
+                ChatResponse::text("Gave up: the build keeps failing.")
+            }
+        });
+        assert!(user_msgs(&msgs, "⚠️ Stop here (").is_empty());
+        assert!(!logs.iter().any(|l| l.contains("[circling]")), "{logs:#?}");
+    }
+}
+
+struct DenyingGate;
+
+impl ToolRunner for DenyingGate {
+    fn run_tool(&mut self, _name: &str, _args: &Value) -> String {
+        "[scope gate: the instruction was: \"Make the app build.\"; this call writes code, which it did not ask for. Report what is done and stop; the user will say what comes next.]".to_string()
+    }
+}
+
+#[test]
+fn a_scope_gate_deny_goes_straight_to_the_checkpoint() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.policy = TurnPolicy::conversation();
+    params.ablation = vec!["anti_loop".into(), "corrector".into()];
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink_logs = logs.clone();
+    let backend = Lens {
+        n: 0,
+        f: |n| {
+            if n == 1 {
+                ChatResponse::call("", "create_file", json!({"path": "a.txt", "content": "x"}))
+            } else {
+                ChatResponse::text("The gate refused the write; nothing was changed.")
+            }
+        },
+        seen: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut a = Agent::new(params, backend, DenyingGate).with_sink(move |ev| {
+        if let AgentEvent::Log(l) = ev {
+            sink_logs.lock().expect("lock").push(l);
+        }
+    });
+    a.sessions_dir = d.path().join("sessions");
+    let msgs = a
+        .run(start("Make the app build."), None, None)
+        .expect("loop");
+    let logs = logs.lock().expect("lock").clone();
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("[circling] checkpoint: the instruction did not ask for that call")),
+        "{logs:#?}"
+    );
+    assert!(logs
+        .iter()
+        .any(|l| l.contains("[circling] the report ends the turn")));
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("The gate refused the write; nothing was changed.")
+    );
+}

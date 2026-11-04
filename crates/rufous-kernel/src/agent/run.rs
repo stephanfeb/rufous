@@ -26,8 +26,8 @@ use super::history::{
     estimate_messages_tokens, prune_history, workdir_files_text, PRUNE_AT,
 };
 use super::ladders::{
-    CallLadders, ChatFailure, Compaction, CorrectorLedger, EmptyVerdict, Failure, Recall, Retry,
-    RetryLadder, Streak, Talk, TalkVerdict, TextLadder,
+    CallLadders, ChatFailure, Circling, CirclingLadder, Compaction, CorrectorLedger, EmptyVerdict,
+    Failure, Recall, Retry, RetryLadder, Streak, Talk, TalkVerdict, TextLadder,
 };
 use super::openai::OpenAiBackend;
 use super::policy::{Gate, Prompt, Route};
@@ -849,6 +849,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut producing_calls = 0usize;
         let mut plan_holds = 0;
         let mut plan_hold_mark: Option<(Vec<TodoItem>, usize)> = None;
+        // The circling ladder (bead boubou-m5d); `Some(refused calls)` once at a checkpoint.
+        let circling_on = policy.checkpoint && !params.ablated(ablation::CHECKPOINT);
+        let mut circling = CirclingLadder::default();
+        let mut checkpoint_refusals: Option<usize> = None;
         const TODO_STALE_NUDGE: usize = 4;
         let mut idle_notes: u32 = 0;
         let mut qa_cap_blocks: u32 = 0;
@@ -1402,6 +1406,24 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             reply.tool_calls = tcs.clone();
             messages.push(reply);
             session::write_checkpoint_to(&ckpt_path, &messages);
+            // After a checkpoint no call runs: each is refused, and after two refusals the
+            // harness reports what the turn recorded and ends it (bead boubou-m5d).
+            if let Some(refused) = checkpoint_refusals.as_mut().filter(|_| !tcs.is_empty()) {
+                for _ in &tcs {
+                    messages.push(Message::tool_output(CirclingLadder::REFUSAL));
+                }
+                *refused += 1;
+                log!("[{i}] [circling] tool call refused after the checkpoint ({refused})");
+                if *refused >= 2 {
+                    let report = circling_report(&circling, &cmd_records, t0.elapsed());
+                    log!("[{i}] [circling] harness report after 2 refused calls");
+                    sink(AgentEvent::Text(report.clone()));
+                    messages.push(Message::assistant(report));
+                    exhausted = false;
+                    break;
+                }
+                continue;
+            }
 
             if tcs.is_empty() {
                 // ---- text-only turn ----
@@ -1466,6 +1488,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     continue;
                 }
                 let verdict = text_ladder.on_text(&content);
+                if policy.text_ends_turn && checkpoint_refusals.is_some() {
+                    // The report the checkpoint asked for: no hook or gate holds it.
+                    log!("[{i}] [circling] the report ends the turn");
+                    exhausted = false;
+                    break;
+                }
                 if policy.text_ends_turn {
                     if let Some(reason) = stop_hook!() {
                         log!("[{i}] a Stop hook holds the turn open: {reason}");
@@ -2454,9 +2482,30 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     && n == "todo"
                     && args.get("action").and_then(Value::as_str) == Some("create")
                     && todo_progress(&load_todo(hdir)).1 > 0;
+                let circling_step = if circling_on && turn.working {
+                    let shell = cmd_records
+                        .last()
+                        .filter(|r| n == "run_bash" && r.kind == integrity::ActionKind::Shell)
+                        .map(|r| (r.command.as_str(), r.exit, res.as_str()));
+                    circling.on_call(shell, res.starts_with("[scope gate:"))
+                } else {
+                    Circling::Quiet
+                };
                 messages.push(Message::tool_output(res));
                 if let Some(note) = after_output.take() {
                     messages.push(Message::user(note));
+                }
+                match circling_step {
+                    Circling::Quiet => {}
+                    Circling::Hypothesis { why } => {
+                        log!("[{i}] [circling] stage 1: {why}");
+                        messages.push(Message::user(CirclingLadder::hypothesis_note(&why)));
+                    }
+                    Circling::Checkpoint { why } => {
+                        log!("[{i}] [circling] checkpoint: {why}");
+                        messages.push(Message::user(CirclingLadder::checkpoint_note(&why)));
+                        checkpoint_refusals = Some(0);
+                    }
                 }
                 // The plan exists now: the one chance to farm its mechanical items out.
                 if plan_just_written {
@@ -2637,6 +2686,49 @@ pub fn prompt_change(old: &str, new: &str) -> String {
         "system prompt changed at char {at} of {o}→{n}: …{}… ⇢ …{}…",
         window(old),
         window(new)
+    )
+}
+
+/// The harness's own reply when the model ignored the checkpoint twice (bead boubou-m5d):
+/// what the turn recorded, so the user is not left with nothing.
+fn circling_report(
+    c: &CirclingLadder,
+    cmds: &[integrity::CommandRecord],
+    took: Duration,
+) -> String {
+    let mut files: Vec<(String, usize)> = Vec::new();
+    for r in cmds
+        .iter()
+        .filter(|r| r.kind == integrity::ActionKind::FileWrite && r.exit.is_some())
+    {
+        let path = r.command.split_once(' ').map_or("", |(_, p)| p).to_string();
+        match files.iter_mut().find(|(p, _)| *p == path) {
+            Some((_, n)) => *n += 1,
+            None => files.push((path, 1)),
+        }
+    }
+    files.sort_by_key(|f| std::cmp::Reverse(f.1));
+    let written = if files.is_empty() {
+        "none".to_string()
+    } else {
+        files
+            .iter()
+            .take(5)
+            .map(|(p, n)| format!("{p} ×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let shells = cmds
+        .iter()
+        .filter(|r| r.kind == integrity::ActionKind::Shell)
+        .count();
+    let failing = c.worst().map_or(String::new(), |(k, e, n, last)| {
+        format!("; longest failing run: `{k}` exited {e} {n} times in a row (last output: {last})")
+    });
+    format!(
+        "Stopped after {} tool calls ({} min) without a report from the model. This turn wrote: {written}. Shell commands: {shells}{failing}. Say how to go on: what to try next, or \"continue\".",
+        c.calls(),
+        took.as_secs() / 60
     )
 }
 

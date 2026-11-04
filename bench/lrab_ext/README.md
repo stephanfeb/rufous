@@ -42,6 +42,9 @@ categories come from its own instruction alone instead of every instruction of t
 so a follow-up can change the tools sent (`[prefix] since the previous turn: tools changed`). `plan_hold` (2026-11-05, bead boubou-ear) is in the list: off,
 a text reply ends the turn even while the plan the turn made has open items (Gate 5 runs at
 `finish` only, as before).
+`checkpoint` (2026-11-05, bead boubou-m5d) is in the list: off, a conversation turn is never
+asked for a hypothesis or stopped by the circling ladder; the unattended policy (lrab runs) has it
+off anyway.
 
 No mean claim from one run per cell: on 2026-10-31 five coding cells re-run under one
 configuration moved from 0.70 to 0.47. `--runs 3` scores every cell three times (`_r0`…`_r2`),

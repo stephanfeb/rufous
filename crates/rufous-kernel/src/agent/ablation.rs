@@ -59,6 +59,9 @@ pub const SESSION_FACE: &str = "session_face";
 /// The plan hold (bead boubou-ear): off, a text reply ends the turn even while the plan
 /// this turn made still has open items (Gate 5 then runs at `finish` only).
 pub const PLAN_HOLD: &str = "plan_hold";
+/// The circling ladder (bead boubou-m5d): off, a turn runs on to the iteration cap with no
+/// hypothesis note and no checkpoint.
+pub const CHECKPOINT: &str = "checkpoint";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -78,6 +81,7 @@ pub const KERNEL: &[&str] = &[
     REATTRIBUTE,
     SESSION_FACE,
     PLAN_HOLD,
+    CHECKPOINT,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

@@ -271,6 +271,11 @@ pub struct TurnPolicy {
     /// The scope gate ([`crate::scope`]) is armed: a tracker or docs instruction asks (or,
     /// unattended, refuses) before the first call that writes code. A child never asks.
     pub scope_gate: bool,
+    /// The circling ladder (bead boubou-m5d): a turn that runs past 60 calls, or keeps
+    /// failing the same way, is asked for a hypothesis; past 80 calls, or a scope-gate Deny,
+    /// it stops at a checkpoint and reports to the user. Off for unattended runs and
+    /// children, which run long by design and have budgets.
+    pub checkpoint: bool,
 }
 
 impl TurnPolicy {
@@ -288,6 +293,7 @@ impl TurnPolicy {
             intent_routing: true,
             parallel_dispatch: true,
             scope_gate: true,
+            checkpoint: false,
         }
     }
 
@@ -312,6 +318,7 @@ impl TurnPolicy {
             intent_routing: false,
             scope_gate: false,
             parallel_dispatch: false,
+            checkpoint: false,
         }
     }
 
@@ -331,6 +338,7 @@ impl TurnPolicy {
             intent_routing: false,
             parallel_dispatch: false,
             scope_gate: true,
+            checkpoint: true,
         }
     }
 
@@ -387,13 +395,14 @@ impl TurnPolicy {
             self.gates.names().join("+")
         };
         format!(
-            "{}: text ends turn {}, finish gates {}, intent routing {}, dispatch {}, scope gate {}",
+            "{}: text ends turn {}, finish gates {}, intent routing {}, dispatch {}, scope gate {}, checkpoint {}",
             self.name,
             on_off(self.text_ends_turn),
             gates,
             on_off(self.intent_routing),
             on_off(self.parallel_dispatch),
-            on_off(self.scope_gate)
+            on_off(self.scope_gate),
+            on_off(self.checkpoint)
         )
     }
 }
@@ -485,7 +494,7 @@ mod tests {
         assert!(!t.gates.has(Gate::Tests) && !t.gates.has(Gate::Delivery));
         assert_eq!(
             p.describe(),
-            "editor: text ends turn on, finish gates named files, intent routing off, dispatch off, scope gate on"
+            "editor: text ends turn on, finish gates named files, intent routing off, dispatch off, scope gate on, checkpoint on"
         );
         // Set algebra and the child's exemption.
         assert_eq!(Gates::ALL.names().len(), Gate::ALL.len());
@@ -554,11 +563,11 @@ mod tests {
         assert!(!TurnPolicy::child().is_unattended());
         assert_eq!(
             TurnPolicy::conversation().describe(),
-            "conversation: text ends turn on, finish gates none, intent routing off, dispatch off, scope gate on"
+            "conversation: text ends turn on, finish gates none, intent routing off, dispatch off, scope gate on, checkpoint on"
         );
         assert_eq!(
             TurnPolicy::unattended().describe(),
-            "unattended: text ends turn off, finish gates all but named writes, intent routing on, dispatch on, scope gate on"
+            "unattended: text ends turn off, finish gates all but named writes, intent routing on, dispatch on, scope gate on, checkpoint off"
         );
     }
 }

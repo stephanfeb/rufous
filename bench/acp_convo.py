@@ -241,7 +241,7 @@ def is_source_path(p):
 
 # Result openings of a refused or failed call, for logs written before the status tag
 # (bead boubou-bj4); a tagged log says `⟂refused:<kind>` and the prefixes are not consulted.
-REFUSED = ("[scope gate", "[safety gate", "[blocked", "[tool error", "[child safety gate")
+REFUSED = ("[scope gate", "[safety gate", "[blocked", "[tool error", "[child safety gate", "[checkpoint")
 
 
 def split_status(result):
