@@ -1033,6 +1033,25 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             }
             own.union(&earlier).cloned().collect()
         });
+        // Host tools the instruction names (bead boubou-8c4): arm A points at them before the
+        // first call, arm B holds a reply that ends the turn without running one.
+        let instruction_now = qa::task_routing_text(&messages);
+        let mentions = face::host_mentions(&host, &instruction_now);
+        if !mentions.is_empty() {
+            log!(
+                "[host] mention: {}",
+                mentions
+                    .iter()
+                    .map(|(n, t)| format!("{n} (\"{t}\")"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if !params.ablated(ablation::HOST_MENTION_NOTE) {
+                messages.push(Message::user(face::host_mention_note(&mentions)));
+            }
+        }
+        let mut host_called = false;
+        let mut host_holds = 0usize;
         // Parallel dispatch hook (harness layer; Q&A, children and editor turns skip it, the
         // hook itself re-checks the child, kill-switch and receipt gates). A fresh task with a
         // plan already on disk dispatches here; a resumed run (tool results in the history)
@@ -1613,6 +1632,17 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             }
                         }
                     }
+                    // The host mention hold (bead boubou-8c4, arm B): once, on any route.
+                    if !mentions.is_empty()
+                        && !host_called
+                        && host_holds == 0
+                        && !params.ablated(ablation::HOST_MENTION_HOLD)
+                    {
+                        host_holds += 1;
+                        log!("[{i}] ⚠️ [host] hold: the instruction names a host tool that did not run, reply held");
+                        messages.push(Message::user(face::host_mention_hold_note(&mentions)));
+                        continue;
+                    }
                     // The claims hold (bead boubou-bcs): a reply that says this turn's code
                     // works, with nothing run after the last write to show it, is held once.
                     if claims_hold_on
@@ -1863,6 +1893,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     }
                 }
                 // A host tool runs one of the host's automations: real work whatever its name.
+                host_called |= host.contains(n);
                 let mcp_producing =
                     is_mcp_tool(n) && (face::is_mcp_producing(n) || host.contains(n));
                 if matches!(n, "create_file" | "edit_file" | "append_file" | "run_bash")

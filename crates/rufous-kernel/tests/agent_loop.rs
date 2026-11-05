@@ -4146,6 +4146,7 @@ impl ToolRunner for HostTools {
         }});
         rufous_kernel::mcp::HostFace {
             names: vec!["choreo.say_hello".into()],
+            titles: vec!["Say Hello".into()],
             defs: if self.inlined { vec![def] } else { Vec::new() },
             inlined: self.inlined,
         }
@@ -4237,4 +4238,85 @@ fn host_tools_past_the_cap_ride_on_mcp_call() {
         .iter()
         .filter(|m| m.role == Role::Tool)
         .all(|m| !m.content.contains("is not available")));
+}
+
+fn run_host_turn(
+    task: &str,
+    ablation: &[&str],
+    f: impl FnMut(usize) -> ChatResponse,
+) -> Vec<Message> {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("qwen3.5:4b", d.path());
+    // A host serves a conversation (`--policy general`): text ends the turn.
+    params.policy = TurnPolicy::conversation();
+    params.ablation = ablation.iter().map(|s| s.to_string()).collect();
+    let mut a = Agent::new(
+        params,
+        Offered {
+            n: 0,
+            offered: Arc::new(Mutex::new(Vec::new())),
+            f,
+        },
+        HostTools { inlined: true },
+    );
+    a.run(start(task), None, None).expect("loop")
+}
+
+#[test]
+fn a_named_host_tool_gets_a_note_before_the_first_call() {
+    // Arm A (bead boubou-8c4): "Say Hello" in the instruction is choreo.say_hello, in text.
+    let out = run_host_turn(
+        "What did Say Hello return for Ada?",
+        &["host_mention_hold"],
+        |n| match n {
+            1 => ChatResponse::call("", "choreo.say_hello", json!({"who": "Ada"})),
+            _ => ChatResponse::text("It returned: Hello, Ada!"),
+        },
+    );
+    let note = out
+        .iter()
+        .find(|m| m.role == Role::User && m.content.starts_with("Hint:"))
+        .expect("mention note");
+    assert!(note.content.contains("\"Say Hello\" is the app's automation choreo.say_hello"));
+    // The note sits right after the instruction, before the model's first reply.
+    let at = out.iter().position(|m| std::ptr::eq(m, note)).expect("pos");
+    assert!(out[at - 1].content.contains("What did Say Hello"));
+}
+
+#[test]
+fn a_reply_that_skips_a_named_host_tool_is_held_once() {
+    // Arm B (bead boubou-8c4): the first text reply without the call is held; the second
+    // text reply always passes.
+    let out = run_host_turn(
+        "What did Say Hello return for Ada?",
+        &["host_mention_note"],
+        |_| ChatResponse::text("I have no record of that."),
+    );
+    let holds: Vec<&Message> = out
+        .iter()
+        .filter(|m| m.role == Role::User && m.content.contains("you answered without running choreo.say_hello"))
+        .collect();
+    assert_eq!(holds.len(), 1, "{out:?}");
+    assert!(!out.iter().any(|m| m.content.starts_with("Hint:")), "arm A is off");
+}
+
+#[test]
+fn a_reply_after_the_named_host_tool_ran_is_not_held() {
+    let out = run_host_turn(
+        "What did Say Hello return for Ada?",
+        &["host_mention_note"],
+        |n| match n {
+            1 => ChatResponse::call("", "choreo.say_hello", json!({"who": "Ada"})),
+            _ => ChatResponse::text("It returned: Hello, Ada!"),
+        },
+    );
+    assert!(!out.iter().any(|m| m.content.contains("Your reply was held")));
+}
+
+#[test]
+fn a_greeting_is_not_a_mention_of_a_two_word_host_tool() {
+    let out = run_host_turn("Hello!", &[], |_| ChatResponse::text("Hi!"));
+    assert!(!out
+        .iter()
+        .any(|m| m.content.starts_with("Hint:") || m.content.contains("Your reply was held")));
 }

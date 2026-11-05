@@ -26,6 +26,8 @@ const RESULT_CHARS: usize = 4000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbedTool {
     pub name: String,
+    /// The MCP `title` (or `annotations.title`): the name a user sees.
+    pub title: Option<String>,
     pub desc: String,
     pub schema: Value,
 }
@@ -91,6 +93,11 @@ async fn list_probed(client: &Running) -> Result<Vec<ProbedTool>, String> {
         .into_iter()
         .map(|t| ProbedTool {
             name: t.name.to_string(),
+            title: t
+                .title
+                .clone()
+                .or_else(|| t.annotations.as_ref().and_then(|a| a.title.clone()))
+                .filter(|s| !s.trim().is_empty()),
             desc: head(t.description.as_deref().unwrap_or(""), super::HOST_DESC_CAP).to_string(),
             schema: super::compact_schema(&Value::Object((*t.input_schema).clone())),
         })

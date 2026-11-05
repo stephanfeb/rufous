@@ -34,6 +34,9 @@ pub const HOST_TOOL_CAP: usize = 15;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostFace {
     pub names: Vec<String>,
+    /// Display names, one per entry of `names`: the MCP title, else the tool part with `_`
+    /// read as a space (docs/host-tool-mentions.md).
+    pub titles: Vec<String>,
     /// The flattened definitions; empty when `inlined` is false.
     pub defs: Vec<Value>,
     pub inlined: bool,
@@ -76,6 +79,8 @@ fn flat_def(server: &str, t: &ManifestTool, cap: usize) -> Value {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManifestTool {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub desc: String,
     #[serde(default = "empty_schema")]
@@ -296,6 +301,7 @@ impl McpRegistry {
                                 .iter()
                                 .map(|t| ProbedTool {
                                     name: t.name.clone(),
+                                    title: t.title.clone(),
                                     desc: t.desc.clone(),
                                     schema: t.schema.clone(),
                                 })
@@ -316,6 +322,7 @@ impl McpRegistry {
                         empty_schema()
                     },
                     name: t.name,
+                    title: t.title,
                     desc: t.desc,
                 })
                 .collect();
@@ -402,23 +409,37 @@ impl McpRegistry {
             return HostFace::default();
         }
         let manifest = self.manifest(false);
-        let mut tools: Vec<(String, Value)> = hosts
+        let mut tools: Vec<(String, String, Value)> = hosts
             .iter()
             .filter_map(|s| manifest.get(*s).map(|m| (*s, m)))
             .flat_map(|(s, m)| {
-                m.tools
-                    .iter()
-                    .map(|t| (super::qualified_name(s, &t.name), flat_def(s, t, HOST_DESC_CAP)))
+                m.tools.iter().map(|t| {
+                    let title = t
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| t.name.replace(['_', '-'], " "));
+                    (
+                        super::qualified_name(s, &t.name),
+                        title,
+                        flat_def(s, t, HOST_DESC_CAP),
+                    )
+                })
             })
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
         let inlined = tools.len() <= cap;
-        let (names, defs): (Vec<String>, Vec<Value>) = tools.into_iter().unzip();
-        HostFace {
-            names,
-            defs: if inlined { defs } else { Vec::new() },
+        let mut face = HostFace {
             inlined,
+            ..HostFace::default()
+        };
+        for (name, title, def) in tools {
+            face.names.push(name);
+            face.titles.push(title);
+            if inlined {
+                face.defs.push(def);
+            }
         }
+        face
     }
 
     /// Expected parameter names of a tool, from the manifest (for argument-error hints).

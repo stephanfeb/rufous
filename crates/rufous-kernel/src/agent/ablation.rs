@@ -65,6 +65,12 @@ pub const CHECKPOINT: &str = "checkpoint";
 /// The claims hold (bead boubou-bcs): off, a conversation turn may end on "fixed" or
 /// "verified" with nothing run after its last write.
 pub const CLAIMS_HOLD: &str = "claims_hold";
+/// Host mention note, arm A of bead boubou-8c4 (docs/host-tool-mentions.md): off, an
+/// instruction that names a host tool gets no note pointing at it.
+pub const HOST_MENTION_NOTE: &str = "host_mention_note";
+/// Host mention hold, arm B of bead boubou-8c4: off, a text reply may end a turn whose
+/// instruction named a host tool that never ran.
+pub const HOST_MENTION_HOLD: &str = "host_mention_hold";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -86,6 +92,8 @@ pub const KERNEL: &[&str] = &[
     PLAN_HOLD,
     CHECKPOINT,
     CLAIMS_HOLD,
+    HOST_MENTION_NOTE,
+    HOST_MENTION_HOLD,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

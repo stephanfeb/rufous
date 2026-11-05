@@ -196,6 +196,7 @@ fn manifest_memory_and_disk_caches_skip_probing() {
     let d = tempfile::tempdir().expect("tmp");
     let tool = ProbedTool {
         name: "t".into(),
+        title: None,
         desc: "d".into(),
         schema: json!({"type": "object", "properties": {}}),
     };
@@ -217,6 +218,7 @@ fn manifest_memory_and_disk_caches_skip_probing() {
 fn probed(name: &str, desc: &str) -> ProbedTool {
     ProbedTool {
         name: name.into(),
+        title: None,
         desc: desc.into(),
         schema: json!({"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}),
     }
@@ -599,4 +601,24 @@ fn host_servers_are_assembled_whole_sorted_and_long_described_not_routed() {
     let over = reg.host_face(false, 2);
     assert!(!over.inlined && over.defs.is_empty() && over.names.len() == 3);
     assert!(reg.host_face(true, 15).is_empty());
+}
+
+#[test]
+fn a_host_tool_s_display_name_is_its_title_else_its_name_read_as_words() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut servers = McpConfig::new();
+    servers.insert(
+        "choreo".into(),
+        ServerConfig {
+            host: true,
+            ..cfg(json!({"url": "http://127.0.0.1:9/mcp"}))
+        },
+    );
+    let mut titled = probed("auto_7f3", "Weekly report");
+    titled.title = Some("Weekly Report".into());
+    let p = Scripted::new(Some(vec![probed("say_hello", "greets"), titled]));
+    let reg = McpRegistry::with_prober(d.path(), servers, Box::new(Shared(p)));
+    let host = reg.host_face(false, 15);
+    assert_eq!(host.names, vec!["choreo.auto_7f3", "choreo.say_hello"]);
+    assert_eq!(host.titles, vec!["Weekly Report", "say hello"]);
 }

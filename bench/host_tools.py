@@ -30,16 +30,29 @@ sys.path.insert(0, HERE)
 from acp_convo import AcpClient, AcpError, run_turn, DEFAULT_BINARY, ROOT  # noqa: E402
 from host_mcp import HostServer  # noqa: E402
 
-# (id, prompt, the host tool it needs or None, fewest tools for the prompt to apply)
+# (id, prompt, the host tool it needs or None, fewest tools for the prompt to apply, check)
+# check: "need" = that tool runs; "none" = no host call; "forbid" = that tool does not run;
+# "soft" = recorded, never a failure (docs/host-tool-mentions.md, the bench table).
 PROMPTS = [
-    ("hello", 'Use the Choreo "Say Hello" automation to greet Ada, then tell me exactly what it returned.', "say_hello", 1),
-    ("hello_q", "What did Say Hello return for Ada?", "say_hello", 1),
-    ("weekly", "Run my weekly report automation.", "weekly_report", 2),
-    ("tidy", "Can you tidy my downloads with the automation for that?", "tidy_downloads", 3),
-    ("capital", "What is the capital of France?", None, 0),
-    ("haiku", "Write a haiku about autumn.", None, 0),
-    ("file", "Create a file ideas.md with three ideas for a birthday party.", None, 0),
+    ("hello", 'Use the Choreo "Say Hello" automation to greet Ada, then tell me exactly what it returned.', "say_hello", 1, "need"),
+    ("hello_q", "What did Say Hello return for Ada?", "say_hello", 1, "need"),
+    ("weekly", "Run my weekly report automation.", "weekly_report", 2, "need"),
+    ("tidy", "Can you tidy my downloads with the automation for that?", "tidy_downloads", 3, "need"),
+    ("weekly_q", "Has Weekly Report run today?", "weekly_report", 2, "soft"),
+    ("tidy_what", "What does Tidy Downloads do?", "tidy_downloads", 3, "soft"),
+    ("dont", "Don't run Weekly Report, just tell me what it would make.", "weekly_report", 2, "forbid"),
+    ("hi", "Hello!", None, 0, "none"),
+    ("capital", "What is the capital of France?", None, 0, "none"),
+    ("haiku", "Write a haiku about autumn.", None, 0, "none"),
+    ("file", "Create a file ideas.md with three ideas for a birthday party.", None, 0, "none"),
 ]
+# --arm: what AGENT_ABLATION switches off (bead boubou-8c4).
+ARMS = {
+    "none": "host_mention_note,host_mention_hold",
+    "note": "host_mention_hold",
+    "hold": "host_mention_note",
+    "both": "",
+}
 TIMING = re.compile(r"\[timing: load [\d.]+s · prompt (\d+) tok ([\d.]+)s · gen (\d+) tok ([\d.]+)s\]")
 
 
@@ -57,7 +70,7 @@ def first_timing(home):
     return None
 
 
-def run_cell(binary, model, n_tools, ctx, cell_dir, turn_timeout, user_home, cap):
+def run_cell(binary, model, n_tools, ctx, cell_dir, turn_timeout, user_home, cap, arm):
     path = os.path.join(cell_dir, "score.json")
     if os.path.exists(path):
         return json.load(open(path))
@@ -69,7 +82,8 @@ def run_cell(binary, model, n_tools, ctx, cell_dir, turn_timeout, user_home, cap
     cfg = os.path.join(user_home, "config.json")
     if os.path.exists(cfg):
         shutil.copy(cfg, os.path.join(home, "config.json"))
-    env = dict(os.environ, RUFOUS_HOME=home, RUFOUS_HOST_TOOL_CAP=str(cap))
+    env = dict(os.environ, RUFOUS_HOME=home, RUFOUS_HOST_TOOL_CAP=str(cap),
+               AGENT_ABLATION=ARMS[arm])
     env.pop("AGENT_UNATTENDED", None)
     server = HostServer(n_tools).start() if n_tools else None
     servers = [server.acp_entry()] if server else []
@@ -81,7 +95,7 @@ def run_cell(binary, model, n_tools, ctx, cell_dir, turn_timeout, user_home, cap
         client = AcpClient(cmd, env, stderr)
         client.request("initialize", {"protocolVersion": 1, "clientCapabilities": {
             "fs": {"readTextFile": False, "writeTextFile": False}}}, lambda m: None, 60)
-        for pid, say, need, min_tools in PROMPTS:
+        for pid, say, need, min_tools, check in PROMPTS:
             if need and n_tools < min_tools:
                 continue
             ns = client.request("session/new", {"cwd": os.path.abspath(work), "mcpServers": servers},
@@ -89,15 +103,19 @@ def run_cell(binary, model, n_tools, ctx, cell_dir, turn_timeout, user_home, cap
             rec = run_turn(client, ns["sessionId"], say, "allow", turn_timeout)
             calls = server.take_calls() if server else []
             ran = [c["tool"] for c in calls]
-            if need:
-                hit = need in ran
-                quoted = any(c["run"] in rec["reply"] for c in calls if c["tool"] == need)
+            hit = need in ran if need else None
+            quoted = any(c["run"] in rec["reply"] for c in calls if c["tool"] == need) if need else None
+            if check == "need":
                 ok = hit and (quoted or need != "say_hello")
+            elif check == "forbid":
+                ok = not hit
+            elif check == "soft":
+                ok = True
             else:
-                hit, quoted, ok = None, None, not ran
+                ok = not ran
             # A turn the engine or the session failed is no reading, never a pass.
             ok = ok and not rec["error"]
-            rows.append({"prompt": pid, "need": need, "ran": ran, "ok": ok, "hit": hit,
+            rows.append({"prompt": pid, "need": need if check == "need" else None, "check": check, "ran": ran, "ok": ok, "hit": hit,
                          "quoted": quoted, "reply": rec["reply"][:400], "stop": rec["stop"],
                          "error": rec["error"], "wall_s": rec["wall_s"],
                          "timing": first_timing(home)})
@@ -109,7 +127,7 @@ def run_cell(binary, model, n_tools, ctx, cell_dir, turn_timeout, user_home, cap
         if server:
             server.stop()
         stderr.close()
-    score = {"model": model, "tools": n_tools, "cell": os.path.basename(cell_dir), "rows": rows}
+    score = {"model": model, "tools": n_tools, "arm": arm, "cell": os.path.basename(cell_dir), "rows": rows}
     json.dump(score, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     return score
 
@@ -123,7 +141,7 @@ def summary(results_dir):
     for (model, n), cs in sorted(groups.items()):
         rows = [r for c in cs for r in c["rows"] if r.get("prompt") != "session"]
         host = [r for r in rows if r.get("need")]
-        plain = [r for r in rows if not r.get("need")]
+        plain = [r for r in rows if r.get("check", "none" if not r.get("need") else "need") == "none"]
         hello = [r for r in host if r["need"] == "say_hello"]
         tim = [r["timing"] for r in rows if r.get("timing")]
         frac = lambda rs: f"{sum(r['ok'] for r in rs)}/{len(rs)}" if rs else "-"
@@ -132,6 +150,18 @@ def summary(results_dir):
               f"{(str(sum(bool(r['quoted']) for r in hello)) + '/' + str(len(hello))) if hello else '-':>7} "
               f"{avg([t['prompt_tok'] for t in tim]):>6.0f} {avg([t['prefill_s'] for t in tim]):>9.2f} "
               f"{avg([r['wall_s'] for r in rows]):>7.1f}")
+    print("\nper prompt (ok/runs; soft prompts: host call/runs):")
+    per = {}
+    for c in cells:
+        for r in c["rows"]:
+            if r.get("prompt") == "session":
+                continue
+            k = (c["model"], c["tools"], r["prompt"])
+            v = per.setdefault(k, [0, 0])
+            v[0] += bool(r["ran"]) if r.get("check") == "soft" else bool(r["ok"])
+            v[1] += 1
+    for k in sorted(per):
+        print("  ", k, "%d/%d" % tuple(per[k]))
     misses = [(c["model"], c["tools"], r["prompt"], r["ran"], r["reply"][:120])
               for c in cells for r in c["rows"] if not r.get("ok") and r.get("prompt") != "session"]
     if misses:
@@ -151,6 +181,8 @@ def main():
     ap.add_argument("--binary", default=DEFAULT_BINARY)
     ap.add_argument("--turn-timeout-min", type=float, default=5)
     ap.add_argument("--user-home", default=os.path.expanduser("~/.ollama_agent"))
+    ap.add_argument("--arm", default="both", choices=sorted(ARMS),
+                    help="host mention arms on (bead boubou-8c4); none = both switched off")
     ap.add_argument("--summary", action="store_true")
     a = ap.parse_args()
     if a.summary:
@@ -161,7 +193,8 @@ def main():
             for n in [int(x) for x in a.tools.split(",")]:
                 cell = os.path.join(a.results, f"{model.replace(':', '_')}__n{n}__r{run}")
                 t = time.monotonic()
-                s = run_cell(a.binary, model, n, a.ctx, cell, a.turn_timeout_min * 60, a.user_home, a.cap)
+                s = run_cell(a.binary, model, n, a.ctx, cell, a.turn_timeout_min * 60, a.user_home, a.cap,
+                             a.arm)
                 ok = sum(bool(r.get("ok")) for r in s["rows"])
                 print(f"{model} N={n} run {run}: {ok}/{len(s['rows'])} ok ({time.monotonic() - t:.0f}s)", flush=True)
     summary(a.results)

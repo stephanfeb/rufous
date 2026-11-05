@@ -58,7 +58,8 @@ AUTOMATIONS = [
 def tool_list(n):
     out = []
     for name, desc, params in AUTOMATIONS[:n]:
-        out.append({"name": name, "description": desc, "inputSchema": {
+        # The MCP title is the name the user sees ("Say Hello"), the description's lead.
+        out.append({"name": name, "title": desc.split(":", 1)[0], "description": desc, "inputSchema": {
             "type": "object",
             "properties": {k: {"type": "string", "description": v} for k, v in params.items()},
             "required": list(params),

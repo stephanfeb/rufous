@@ -242,7 +242,13 @@ pub fn host_note(host: &HostFace) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    let names = host.names.join(", ");
+    let names = host
+        .names
+        .iter()
+        .zip(&host.titles)
+        .map(|(n, t)| format!("{n} ({t})"))
+        .collect::<Vec<_>>()
+        .join(", ");
     Some(if host.inlined {
         format!(
             "HOST TOOLS: the app you are running in gave you its own tools: {names}. They are in your tool list: call them directly (no enable_tools) whenever the user asks for one of the app's automations, by its name or in their own words, or asks what one returned. Report what the tool returned."
@@ -252,6 +258,49 @@ pub fn host_note(host: &HostFace) -> Option<String> {
             "HOST TOOLS: the app you are running in has its own tools: {names}. To run one, call mcp_call with server and tool (the parts before and after the dot) and its arguments, whenever the user asks for one of the app's automations, by its name or in their own words, or asks what one returned."
         )
     })
+}
+
+/// Lower-case words joined by single spaces: `Say_Hello!` and `say hello` read the same.
+fn words(text: &str) -> String {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The host tools an instruction names (bead boubou-8c4, docs/host-tool-mentions.md):
+/// `(qualified name, display name)` for each whose display name of two words or more, or
+/// whose qualified name, occurs in `text` on word boundaries, ignoring case and punctuation.
+/// A one-word display name ("backup", "hello") is an everyday word, never a mention alone.
+pub fn host_mentions<'a>(host: &'a HostFace, text: &str) -> Vec<(&'a str, &'a str)> {
+    let hay = format!(" {} ", words(text));
+    host.names
+        .iter()
+        .zip(&host.titles)
+        .filter(|(name, title)| {
+            let t = words(title);
+            (t.contains(' ') && hay.contains(&format!(" {t} ")))
+                || hay.contains(&format!(" {} ", words(name)))
+        })
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect()
+}
+
+/// Arm A's note: the named automation is a tool the model can call now.
+pub fn host_mention_note(mentions: &[(&str, &str)]) -> String {
+    let named = mentions
+        .iter()
+        .map(|(n, t)| format!("\"{t}\" is the app's automation {n}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("Hint: {named}. If the user wants it run or wants its result, call it; it runs now.")
+}
+
+/// Arm B's hold: the reply came without running the automation the user named.
+pub fn host_mention_hold_note(mentions: &[(&str, &str)]) -> String {
+    let names = mentions.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+    format!("⚠️ Your reply was held: you answered without running {names}, which the user named. If they want it run or want its result, call it now; if not, reply again and say why.")
 }
 
 fn schema_map() -> &'static BTreeMap<String, Value> {
@@ -428,6 +477,29 @@ mod tests {
         defs.iter()
             .filter_map(|d| d["function"]["name"].as_str().map(String::from))
             .collect()
+    }
+
+    #[test]
+    fn host_mentions_need_the_whole_display_name_or_the_qualified_name() {
+        let host = HostFace {
+            names: vec![
+                "choreo.backup".into(),
+                "choreo.say_hello".into(),
+                "choreo.weekly_report".into(),
+            ],
+            titles: vec!["backup".into(), "Say Hello".into(), "Weekly Report".into()],
+            defs: Vec::new(),
+            inlined: true,
+        };
+        let hit = |t: &str| -> Vec<String> {
+            host_mentions(&host, t).iter().map(|(n, _)| n.to_string()).collect()
+        };
+        assert_eq!(hit("What did Say Hello return for Ada?"), vec!["choreo.say_hello"]);
+        assert_eq!(hit("run choreo.weekly_report please"), vec!["choreo.weekly_report"]);
+        assert_eq!(hit("Has weekly-report run?"), vec!["choreo.weekly_report"]);
+        assert!(hit("Hello! Say hi to the team").is_empty());
+        assert!(hit("make a backup of my notes").is_empty(), "one-word title");
+        assert!(hit("say hellos").is_empty(), "word boundary");
     }
 
     #[test]
