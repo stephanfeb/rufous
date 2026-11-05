@@ -334,6 +334,9 @@ pub enum AgentEvent {
     /// A harness protocol line (Mingbird printed these to stdout; `[ctx: …]`, `⚙`, …).
     Log(String),
     ToolCall(ToolCall),
+    /// The hosts the call about to report its result contacted, or, with no call open, the
+    /// run's own setup (MCP probes); docs/egress.md.
+    Egress(Vec<crate::egress::Egress>),
     ToolResult {
         name: String,
         args: Value,

@@ -63,6 +63,15 @@ pub struct TurnBridge {
     /// Whether a plan was ever sent (an emptied plan is then sent once more, empty).
     plan_shown: bool,
     max_iterations: bool,
+    /// The hosts the open call contacted, for its `tool_call_update` (docs/egress.md).
+    egress: Vec<rufous_kernel::egress::Egress>,
+}
+
+/// `{"rufous": {"egress": [...]}}`, the `_meta` an egress report travels in (docs/acp.md).
+pub fn egress_meta(list: &[rufous_kernel::egress::Egress]) -> serde_json::Map<String, Value> {
+    let mut meta = serde_json::Map::new();
+    meta.insert("rufous".to_string(), serde_json::json!({ "egress": list }));
+    meta
 }
 
 impl TurnBridge {
@@ -76,6 +85,7 @@ impl TurnBridge {
             text_since_tool: false,
             plan_shown: false,
             max_iterations: false,
+            egress: Vec::new(),
         }
     }
 
@@ -142,12 +152,29 @@ impl TurnBridge {
                 self.pending.push_back(Pending { id, name, args });
                 vec![SessionUpdate::ToolCall(call)]
             }
+            AgentEvent::Egress(list) => {
+                if self.pending.is_empty() {
+                    // Traffic outside any call (the MCP probes while the face is built).
+                    let hosts = list
+                        .iter()
+                        .map(|e| e.host.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return vec![SessionUpdate::Notice(
+                        Notice::new(NoticeSeverity::Info, format!("Contacted {hosts}"))
+                            .meta(egress_meta(&list)),
+                    )];
+                }
+                self.egress.extend(list);
+                vec![]
+            }
             AgentEvent::ToolResult {
                 name,
                 args,
                 output,
                 blocked,
             } => {
+                let egress = std::mem::take(&mut self.egress);
                 if name == "finish" {
                     return vec![];
                 }
@@ -172,9 +199,11 @@ impl TurnBridge {
                     })
                     .content(content)
                     .raw_output(Value::String(output));
-                let mut out = vec![SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                    p.id, fields,
-                ))];
+                let mut update = ToolCallUpdate::new(p.id, fields);
+                if !egress.is_empty() {
+                    update = update.meta(egress_meta(&egress));
+                }
+                let mut out = vec![SessionUpdate::ToolCallUpdate(update)];
                 if p.name == "todo" {
                     out.extend(self.plan_update());
                 }
@@ -552,6 +581,46 @@ mod tests {
         );
         assert!(matches!(&content[1], ToolCallContent::Content(_)));
         assert!(b.current_call().is_none());
+    }
+
+    #[test]
+    fn egress_rides_on_its_call_s_update_and_without_a_call_is_a_notice() {
+        // docs/egress.md: Choreo records every host a run contacted, from which step.
+        use rufous_kernel::egress::Egress;
+        let brave = Egress::of("https://search.brave.com/search?q=x", "web_search").expect("url");
+        let mut b = TurnBridge::new("/w");
+        let out = b.on_event(AgentEvent::Egress(vec![Egress::of(
+            "http://127.0.0.1:8765/mcp",
+            "mcp:choreo",
+        )
+        .expect("url")]));
+        let [SessionUpdate::Notice(n)] = out.as_slice() else {
+            panic!("a notice expected: {out:?}");
+        };
+        assert_eq!(n.title, "Contacted 127.0.0.1:8765");
+        assert_eq!(
+            n.meta.as_ref().expect("meta")["rufous"]["egress"][0]["local"],
+            json!(true)
+        );
+
+        let args = json!({"query": "x"});
+        b.on_event(call("web_search", args.clone()));
+        assert!(b.on_event(AgentEvent::Egress(vec![brave])).is_empty());
+        let out = b.on_event(result("web_search", args.clone(), "• result", false));
+        let SessionUpdate::ToolCallUpdate(u) = &out[0] else {
+            panic!("tool_call_update expected");
+        };
+        assert_eq!(
+            u.meta.as_ref().expect("meta")["rufous"]["egress"],
+            json!([{"host": "search.brave.com", "purpose": "web_search", "local": false}])
+        );
+        // The next call contacted nothing: no stale report.
+        b.on_event(call("web_search", args.clone()));
+        let out = b.on_event(result("web_search", args, "• cached", false));
+        let SessionUpdate::ToolCallUpdate(u) = &out[0] else {
+            panic!("tool_call_update expected");
+        };
+        assert!(u.meta.is_none());
     }
 
     #[test]

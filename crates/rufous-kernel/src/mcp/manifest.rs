@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{call_tool, probe_server, McpConfig, ProbedTool, ServerConfig};
+use crate::egress::{offline_refusal, EgressLog};
 use crate::tools::{ADVANCED_TOOL_NAMES, CORE_TOOL_NAMES};
 
 /// `_MCP_TTL`: probes spawn processes, so results live this long.
@@ -179,6 +180,10 @@ pub struct McpRegistry {
     cache_file: PathBuf,
     mem: Mutex<Option<(f64, Manifest)>>,
     prober: Box<dyn Prober>,
+    /// The `url` servers called or probed, for the egress report (docs/egress.md).
+    pub egress: EgressLog,
+    /// Offline: a `url` server on another machine is neither probed nor called.
+    pub offline: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for McpRegistry {
@@ -195,12 +200,18 @@ impl McpRegistry {
         Self::with_prober(agent_home, servers, Box::new(RmcpProber))
     }
 
+    fn is_offline(&self) -> bool {
+        self.offline.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn with_prober(agent_home: &Path, servers: McpConfig, prober: Box<dyn Prober>) -> Self {
         Self {
             servers,
             cache_file: agent_home.join(CACHE_FILE),
             mem: Mutex::new(None),
             prober,
+            egress: EgressLog::default(),
+            offline: Default::default(),
         }
     }
 
@@ -279,7 +290,15 @@ impl McpRegistry {
             let outs: Vec<Option<Vec<ProbedTool>>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|(_, cfg)| s.spawn(move || self.prober.probe(cfg)))
+                    .map(|(name, cfg)| {
+                        // Offline, a server on another machine is not contacted: it counts as
+                        // a failed probe, so its earlier tools are kept for an online session.
+                        let skip = self.is_offline() && cfg.is_remote();
+                        if let (Some(url), false) = (&cfg.url, skip) {
+                            self.egress.record(url, &format!("mcp:{name}"));
+                        }
+                        s.spawn(move || if skip { None } else { self.prober.probe(cfg) })
+                    })
                     .collect();
                 handles
                     .into_iter()
@@ -362,7 +381,12 @@ impl McpRegistry {
         let manifest = self.manifest(false);
         let mut defs = Vec::new();
         for (server, info) in &manifest {
-            if offline && self.servers.get(server).is_some_and(ServerConfig::is_http) {
+            if offline
+                && self
+                    .servers
+                    .get(server)
+                    .is_some_and(ServerConfig::is_remote)
+            {
                 continue;
             }
             // A host server's tools are assembled by `host_face`, every turn.
@@ -402,7 +426,7 @@ impl McpRegistry {
         let hosts: Vec<&String> = self
             .servers
             .iter()
-            .filter(|(_, c)| c.host && !(offline && c.is_http()))
+            .filter(|(_, c)| c.host && !(offline && c.is_remote()))
             .map(|(n, _)| n)
             .collect();
         if hosts.is_empty() {
@@ -473,7 +497,13 @@ impl McpRegistry {
                     .display()
             );
         };
+        if self.is_offline() && cfg.is_remote() {
+            return offline_refusal(&format!("{server}.{tool}"));
+        }
         let args = resolve_mcp_paths(args, workdir);
+        if let Some(url) = &cfg.url {
+            self.egress.record(url, &format!("mcp:{server}"));
+        }
         let mut res = call_tool(cfg, tool, args, super::CALL_TIMEOUT);
         if res.starts_with("[mcp_call error:") && !res.contains("timed out") {
             if let Some(names) = self.param_names(server, tool) {

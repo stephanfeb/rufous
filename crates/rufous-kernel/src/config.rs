@@ -78,6 +78,10 @@ pub struct Config {
     /// Ollama, and a model call that cannot connect ends the turn at once (boubou-f8d).
     #[serde(skip)]
     pub no_start_engine: bool,
+    /// Offline for this session whatever the config and `AGENT_OFFLINE` say: a host's
+    /// per-session switch (`_meta.rufous.offline`, docs/egress.md). Never written.
+    #[serde(skip)]
+    pub offline_forced: bool,
     /// Command-output trimming: `auto` | `on` | `off`.
     pub slim_output: SlimOutput,
     /// Parallel sub-agent dispatch section (`parallel_config.py`); kept opaque until ported.
@@ -108,6 +112,7 @@ impl Default for Config {
             backend_flag: None,
             base_url_flag: None,
             no_start_engine: false,
+            offline_forced: false,
             slim_output: SlimOutput::Auto,
             parallel: Default::default(),
             profiles: BTreeMap::new(),
@@ -351,6 +356,9 @@ impl Config {
 
     /// Effective offline switch: `AGENT_OFFLINE` env > config.
     pub fn offline(&self) -> bool {
+        if self.offline_forced {
+            return true;
+        }
         match std::env::var("AGENT_OFFLINE") {
             Ok(v) if !v.trim().is_empty() => truthy(&v) == Some(true),
             _ => self.offline_mode,
@@ -443,9 +451,30 @@ impl Config {
         }
     }
 
-    /// A named backend that cannot be used as configured: `openai` without a URL, or a
-    /// `--base-url` with no backend that takes one.
+    /// The model engine as a host reports it: its product name (`Ollama`, `LM Studio`,
+    /// `OpenAI-compatible`, `cloud`) and its URL (docs/egress.md).
+    pub fn engine_endpoint(&self) -> (&'static str, String) {
+        if let Some(cp) = self.cloud_provider() {
+            return ("cloud", cp.base_url);
+        }
+        match self.backend_openai() {
+            Some(e) => (e.label, e.base_url),
+            None => ("Ollama", self.ollama_host()),
+        }
+    }
+
+    /// A named backend that cannot be used as configured: `openai` without a URL, a
+    /// `--base-url` with no backend that takes one, or, offline, an engine on another
+    /// machine (offline means this machine, docs/egress.md).
     pub fn backend_problem(&self) -> Option<String> {
+        if self.offline() {
+            let (_, url) = self.engine_endpoint();
+            if !crate::egress::is_local_url(&url) {
+                return Some(format!(
+                    "offline: the model engine at {url} is not on this machine"
+                ));
+            }
+        }
         let url = self.local_backend_str("base_url");
         if self.base_url_flag.is_some()
             && !matches!(

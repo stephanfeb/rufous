@@ -155,7 +155,7 @@ environment and flags, never through the user's files:
 | `--backend lmstudio\|openai --base-url <url>` | Another OpenAI-compatible engine (LM Studio on another port, llama-server), by its `/v1` URL. `config.json` is not written. `--base-url` without one of those backends is an error. |
 | `--no-start-engine` | The engine is the host's. rufous never starts or restarts Ollama, and a turn whose engine cannot be reached fails at once with `model server: <engine>: not reachable (<reason>); rufous does not start the engine under --no-start-engine`. |
 | `--user-home <path>` | The user's home as the prompt names it (`Home directory: …`). Inside a sandbox, without it, the prompt names no home, rather than the container. |
-| `AGENT_OFFLINE=1` | Local models only, no web tools or URL MCP servers, for the whole process. |
+| `AGENT_OFFLINE=1` | Offline for the whole process; per session, see "Where data goes". |
 
 A path the OS refuses comes back to the model as
 `[no access: <path> (not shared with this assistant)]` from `read_file`, `list_dir`,
@@ -168,6 +168,36 @@ started, with everything they started.
 `scripts/macos-universal.sh` builds the helper: arm64 + x86_64 in one binary, default features,
 macOS 11.0 or later. It checks that the binary links only the system's own libraries, and prints
 its SHA-256. rufous needs no entitlements and has no JIT.
+
+## Where data goes
+
+rufous reports its own network traffic so a host can record it (docs/egress.md). All keys are
+under `_meta.rufous`. They are a contract: renaming one means sending the new key next to the old
+for a release.
+
+- **Per tool call.** A `tool_call_update` whose call reached the network carries
+  `_meta.rufous.egress`, one entry per host:
+  `[{"host": "search.brave.com", "purpose": "web_search", "local": false}]`. The host includes
+  `:port` when the port is not the scheme's default. `purpose` is one of `web_search`,
+  `web_fetch`, `redirect` (every hop a redirect took) or `mcp:<server>` (a `url` MCP server).
+  A result served from rufous's cache contacted nothing and carries no entry.
+- **Outside a call.** Probing `url` MCP servers while a turn starts is reported as an Info
+  `notice` titled `Contacted <hosts>`, with the same `_meta.rufous.egress`.
+- **The model engine.** The `session/new` and `session/load` responses carry
+  `_meta.rufous.engine = {"label", "url", "host", "local"}` (`label`: `Ollama`, `LM Studio`,
+  `OpenAI-compatible` or `cloud`) and `_meta.rufous.offline`.
+- **Per-session offline.** `_meta.rufous.offline: true` on `session/new` or `session/load`
+  keeps that session on this machine, whatever the config says.
+  - The web tools are refused when called, not only hidden from the model:
+    `[offline: web_fetch would reach the network; this session stays on this machine]`.
+  - `url` MCP servers on other machines are neither probed nor called. A loopback server, such
+    as a host app's own, stays.
+  - A model engine on another machine fails the turn with
+    `offline: the model engine at <url> is not on this machine`. That covers a cloud provider, a
+    LAN LM Studio, and an `OLLAMA_HOST` elsewhere. `AGENT_OFFLINE=1` and `config.json`
+    `offline_mode` apply the same rules to every session.
+- **Not covered:** `run_bash`. A command can reach the network and rufous cannot see it.
+  Stdio MCP servers are the same: what they do is their own.
 
 ## Not yet
 

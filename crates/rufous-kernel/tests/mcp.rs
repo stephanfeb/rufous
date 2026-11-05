@@ -599,10 +599,24 @@ fn host_servers_are_assembled_whole_sorted_and_long_described_not_routed() {
         .map(|d| d["function"]["name"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(routed.iter().all(|n| n.starts_with("notes.")), "{routed:?}");
-    // Past the cap the names stay, the schemas go; offline drops a url host server.
+    // Past the cap the names stay, the schemas go.
     let over = reg.host_face(false, 2);
     assert!(!over.inlined && over.defs.is_empty() && over.names.len() == 3);
+    // Offline means this machine (docs/egress.md): the host's own loopback server stays, a
+    // url host server elsewhere goes.
+    assert_eq!(reg.host_face(true, 15).names.len(), 3);
+    let mut far = McpConfig::new();
+    far.insert(
+        "choreo".into(),
+        ServerConfig {
+            host: true,
+            ..cfg(json!({"url": "https://choreo.example.invalid/mcp"}))
+        },
+    );
+    let p = Scripted::new(Some(vec![probed("say_hello", "s")]));
+    let reg = McpRegistry::with_prober(d.path(), far, Box::new(Shared(p)));
     assert!(reg.host_face(true, 15).is_empty());
+    assert!(!reg.host_face(false, 15).is_empty());
 }
 
 #[test]

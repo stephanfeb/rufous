@@ -3423,6 +3423,67 @@ fn an_unreachable_engine_rufous_manages_is_retried() {
     assert!(ev.iter().any(|e| matches!(e, AgentEvent::Finished { .. })));
 }
 
+/// Scripted tools whose `web_fetch` reports a contacted host (docs/egress.md).
+struct Reaching(ScriptedTools);
+
+impl ToolRunner for Reaching {
+    fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        self.0.run_tool(name, args)
+    }
+    fn take_egress(&mut self) -> Vec<rufous_kernel::egress::Egress> {
+        rufous_kernel::egress::Egress::of("https://example.org/a", "web_fetch")
+            .into_iter()
+            .filter(|_| {
+                self.0.served.last()
+                    == Some(&json!(["web_fetch", {"url": "https://example.org/a"}]))
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_call_s_egress_is_reported_before_its_result_and_logged() {
+    let d = tempfile::tempdir().expect("tmp");
+    let calls: Vec<Call> = vec![(
+        "web_fetch",
+        json!({"url": "https://example.org/a"}),
+        "Example page",
+    )];
+    let backend = Scripted {
+        calls: calls.clone(),
+        i: 0,
+        finish_content: "done".to_string(),
+        finish_summary: "Fetched the page.".to_string(),
+    };
+    let tools = Reaching(ScriptedTools {
+        calls,
+        repeat: Vec::new(),
+        served: Vec::new(),
+    });
+    let mut params = RunParams::plain("m", d.path());
+    params.sleep_scale = 0.0;
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
+    let sink = Arc::clone(&events);
+    let mut a =
+        Agent::new(params, backend, tools).with_sink(move |e| sink.lock().expect("lock").push(e));
+    a.sessions_dir = d.path().join("sessions");
+    a.run(start("Fetch https://example.org/a"), None, None)
+        .expect("loop");
+    let ev = events.lock().expect("lock");
+    let at = ev
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Egress(l) if l[0].host == "example.org"))
+        .expect("egress event");
+    assert!(
+        matches!(&ev[at + 1], AgentEvent::ToolResult { name, .. } if name == "web_fetch"),
+        "{:?}",
+        ev[at + 1]
+    );
+    assert!(ev.iter().any(
+        |e| matches!(e, AgentEvent::Log(l) if l.ends_with("[egress] example.org (web_fetch)"))
+    ));
+}
+
 #[test]
 fn the_timeout_note_says_where_the_model_stalled() {
     use rufous_kernel::agent::run::reply_timeout_note;

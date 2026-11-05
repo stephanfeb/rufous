@@ -11,6 +11,7 @@ pub mod agent;
 pub mod config;
 pub mod decider;
 pub mod edit_match;
+pub mod egress;
 pub mod error;
 pub mod exec;
 pub mod guards;

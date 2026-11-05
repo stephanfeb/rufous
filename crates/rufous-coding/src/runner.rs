@@ -271,6 +271,8 @@ pub struct TurnSetup {
     /// the turn and it is written back after, so a name the user declined in one editor
     /// turn is still asked about in the next.
     pub declined: Arc<std::sync::Mutex<Vec<DeclinedWrite>>>,
+    /// The host asked for this session to stay on this machine (docs/egress.md).
+    pub offline: bool,
 }
 
 /// The client's `mcpServers` as rufous's server configs: a stdio server's command, args
@@ -353,6 +355,12 @@ pub trait AgentFactory: Send + Sync {
     fn notice(&self) -> Option<String> {
         None
     }
+
+    /// The `_meta` of the `session/new` and `session/load` responses: the model engine and
+    /// whether the session is offline (docs/egress.md). None from a factory with no engine.
+    fn session_meta(&self, _offline: bool) -> Option<serde_json::Map<String, serde_json::Value>> {
+        None
+    }
 }
 
 /// The production factory: `Agent::standard` on the user's `config.json`, the real executor
@@ -415,6 +423,29 @@ impl AgentFactory for StandardFactory {
         self.cfg.decider.notice()
     }
 
+    fn session_meta(&self, offline: bool) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let cfg = Config {
+            offline_forced: offline || self.cfg.offline_forced,
+            ..self.cfg.clone()
+        };
+        let (label, url) = cfg.engine_endpoint();
+        let host = rufous_kernel::egress::Egress::of(&url, "model");
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "rufous".to_string(),
+            serde_json::json!({
+                "engine": {
+                    "label": label,
+                    "url": url,
+                    "host": host.as_ref().map(|h| h.host.clone()),
+                    "local": host.is_some_and(|h| h.local),
+                },
+                "offline": cfg.offline(),
+            }),
+        );
+        Some(meta)
+    }
+
     fn new_turn(&self, setup: TurnSetup) -> rufous_kernel::Result<Box<dyn TurnRunner>> {
         let params = turn_params(
             setup.model,
@@ -424,7 +455,11 @@ impl AgentFactory for StandardFactory {
             self.num_ctx,
             self.policy,
         )?;
-        let mut agent = Agent::standard(params, &self.cfg)?
+        let cfg = Config {
+            offline_forced: setup.offline || self.cfg.offline_forced,
+            ..self.cfg.clone()
+        };
+        let mut agent = Agent::standard(params, &cfg)?
             .with_sink(setup.sink)
             .with_stop(setup.stop)
             .with_builtin_skills(self.skills.clone());
@@ -489,6 +524,30 @@ fn session_on_disk(sessions_dir: &Path, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_meta_names_the_engine_and_the_offline_switch() {
+        // docs/egress.md. A named LM Studio URL, so OLLAMA_HOST in the environment is moot.
+        let cfg = Config {
+            backend: Some(rufous_kernel::config::BackendKind::Lmstudio),
+            base_url_flag: Some("http://127.0.0.1:1234/v1".into()),
+            ..Config::default()
+        };
+        let f = StandardFactory::coding(cfg, None);
+        let meta = f.session_meta(true).expect("meta");
+        assert_eq!(
+            serde_json::Value::Object(meta),
+            serde_json::json!({"rufous": {
+                "engine": {
+                    "label": "LM Studio",
+                    "url": "http://127.0.0.1:1234/v1",
+                    "host": "127.0.0.1:1234",
+                    "local": true,
+                },
+                "offline": true,
+            }})
+        );
+    }
 
     #[test]
     fn two_sessions_in_the_same_second_get_different_names() {

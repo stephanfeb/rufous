@@ -213,8 +213,9 @@ pub enum ToolStatus {
 
 /// Result openings the executor writes for a call that did not do what was asked. New
 /// openings go here; `of_text` is the only reader.
-const ERROR_OPENINGS: [&str; 16] = [
+const ERROR_OPENINGS: [&str; 17] = [
     "[tool error",
+    "[offline:",
     "[no access",
     "[edit failed",
     "[overwrite guard",
@@ -424,8 +425,27 @@ impl Executor {
 
     /// Attach the MCP registry (shared with the loop, which asks it for tool definitions).
     pub fn with_mcp(mut self, mcp: Arc<McpRegistry>) -> Self {
+        mcp.offline.store(self.web.offline, Ordering::Relaxed);
         self.mcp = mcp;
         self
+    }
+
+    /// Offline mode for this executor: the web tools and MCP servers on other machines are
+    /// refused when called, not only hidden from the face (docs/egress.md).
+    pub fn set_offline(&mut self, on: bool) {
+        self.web.offline = on;
+        self.mcp.offline.store(on, Ordering::Relaxed);
+    }
+
+    /// The hosts contacted since the last call: the web client's and the MCP registry's.
+    pub fn take_egress(&self) -> Vec<crate::egress::Egress> {
+        let mut out = self.web.egress.take();
+        for e in self.mcp.egress.take() {
+            if !out.contains(&e) {
+                out.push(e);
+            }
+        }
+        out
     }
 
     /// Load the session's MCP servers ([`mcp::load_for`]: the home `mcp.json`, then the
@@ -439,7 +459,9 @@ impl Executor {
     /// Replace the server set (a host adding its own for the session, as an ACP client
     /// does in `session/new`); the registry is rebuilt, the manifest cache is shared.
     pub fn set_mcp_servers(&mut self, servers: mcp::McpConfig) {
-        self.mcp = Arc::new(McpRegistry::new(&self.agent_home, servers));
+        let reg = McpRegistry::new(&self.agent_home, servers);
+        reg.offline.store(self.web.offline, Ordering::Relaxed);
+        self.mcp = Arc::new(reg);
     }
 
     /// Whether the harness files live outside the workdir.
@@ -1380,6 +1402,11 @@ fn net_dispatch(
     save: crate::web::SaveTo<'_>,
     inv: &ToolInvocation,
 ) -> String {
+    if web.offline && !matches!(inv, ToolInvocation::McpCall { .. }) {
+        // The face hides these offline; a call that arrives anyway is refused here
+        // (docs/egress.md). An MCP call is the registry's to judge: loopback servers stay.
+        return crate::egress::offline_refusal(inv.name());
+    }
     match inv {
         ToolInvocation::WebSearch { query } => web.search(query, 5),
         ToolInvocation::WebFetch { url } => web.fetch(url, Some(save)),

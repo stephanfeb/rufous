@@ -88,7 +88,7 @@ pub struct ServerConfig {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
-    /// streamable-HTTP transport: skipped entirely in offline mode.
+    /// streamable-HTTP transport: skipped in offline mode unless it is on this machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Extra HTTP headers for a `url` server (API keys and the like).
@@ -113,6 +113,14 @@ pub struct ServerConfig {
 impl ServerConfig {
     pub fn is_http(&self) -> bool {
         self.url.is_some()
+    }
+
+    /// A `url` server on another machine: what offline mode leaves out. A loopback server,
+    /// such as a host app's own, stays (docs/egress.md).
+    pub fn is_remote(&self) -> bool {
+        self.url
+            .as_deref()
+            .is_some_and(|u| !crate::egress::is_local_url(u))
     }
 
     /// Spawnable or reachable: has a `command` or a `url`.

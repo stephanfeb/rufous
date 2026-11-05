@@ -20,6 +20,7 @@ use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 
+use crate::egress::EgressLog;
 use crate::text::{clen, head};
 
 /// Brave first: it serves full HTML to rufous's user agent and indexes new sites quickly.
@@ -390,6 +391,10 @@ pub struct Web {
     pub cache_dir: PathBuf,
     /// Search backends in order; `{query}` placeholder or a `q=` parameter.
     pub backends: Vec<String>,
+    /// Every host a request went to, redirects included (docs/egress.md).
+    pub egress: EgressLog,
+    /// Offline: the web tools are refused before any request (docs/egress.md).
+    pub offline: bool,
 }
 
 impl Web {
@@ -410,18 +415,33 @@ impl Web {
     }
 
     pub fn with_backends(agent_home: &Path, backends: Vec<String>) -> Self {
+        let egress = EgressLog::default();
+        // Each hop is recorded before it is followed, so a redirect to another host is in the
+        // report even when the request then fails (reqwest's default limit, 10 hops).
+        let hops = egress.clone();
+        let redirects = reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            hops.record(attempt.url().as_str(), "redirect");
+            attempt.follow()
+        });
         let http = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
+            .redirect(redirects)
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
         Self {
             http,
             cache_dir: agent_home.join("cache"),
             backends,
+            egress,
+            offline: false,
         }
     }
 
-    fn get(&self, url: &str, timeout: Duration) -> Result<String, String> {
+    fn get(&self, url: &str, timeout: Duration, purpose: &str) -> Result<String, String> {
+        self.egress.record(url, purpose);
         self.http
             .get(url)
             .timeout(timeout)
@@ -437,7 +457,7 @@ impl Web {
         let n = max_results.to_string();
         let mut tokens = query_tokens(query);
         let direct = direct_url(query).and_then(|url| {
-            let text = self.fetch(&url, None);
+            let text = self.fetch_as(&url, None, "web_search");
             (!text.starts_with("[web_fetch error")).then_some((url, text))
         });
         if let Some((_, text)) = &direct {
@@ -482,7 +502,7 @@ impl Web {
                 let sep = if backend.contains('?') { '&' } else { '?' };
                 format!("{backend}{sep}q={}", urlencode(query))
             };
-            let body = match self.get(&url, SEARCH_TIMEOUT) {
+            let body = match self.get(&url, SEARCH_TIMEOUT, "web_search") {
                 Ok(b) => b,
                 Err(e) => {
                     notes.push(format!("{site}: {}", head(&e, 80)));
@@ -562,11 +582,16 @@ impl Web {
     /// `web_fetch(url)`: full text to `<save.dir>/fetch_<key>.txt`, summary inline with a
     /// pointer the model can use as written ([`SaveTo`]).
     pub fn fetch(&self, url: &str, save: Option<SaveTo<'_>>) -> String {
+        self.fetch_as(url, save, "web_fetch")
+    }
+
+    /// [`Self::fetch`], its requests recorded under `purpose`.
+    fn fetch_as(&self, url: &str, save: Option<SaveTo<'_>>, purpose: &str) -> String {
         let key = cache_key(&["fetch", url]);
         if let Some(Value::String(s)) = cache_get(&self.cache_dir, &key, CACHE_TTL) {
             return s;
         }
-        let body = match self.get(url, FETCH_TIMEOUT) {
+        let body = match self.get(url, FETCH_TIMEOUT, purpose) {
             Ok(b) => b,
             Err(e) => return format!("[web_fetch error: {e}]"),
         };

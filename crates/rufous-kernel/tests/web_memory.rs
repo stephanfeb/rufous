@@ -615,3 +615,114 @@ fn batch_network_calls_run_concurrently() {
     assert_eq!(out.matches("slow").count(), 2, "{out}");
     assert!(el < Duration::from_millis(1100), "took {el:?}");
 }
+
+// ---- egress (docs/egress.md, bead boubou-45n) ----
+
+/// A one-shot server that redirects to `to`.
+fn redirect_once(to: String) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        }
+    });
+    format!("http://{addr}/start")
+}
+
+#[test]
+fn a_fetch_reports_every_host_it_reached_redirects_included_and_a_cache_hit_none() {
+    let d = home();
+    let target =
+        serve_once("<html><body><p>Moved here</p></body></html>").replace("127.0.0.1", "localhost");
+    let url = redirect_once(target.clone());
+    let mut e = ex(d.path());
+    e.web = Web::with_backends(&e.agent_home, vec![]);
+    let out = e.run_tool("web_fetch", &json!({"url": url}));
+    assert!(out.starts_with("Moved here"), "{out}");
+    let got = e.take_egress();
+    let first = url.trim_start_matches("http://").trim_end_matches("/start");
+    let second = target
+        .trim_start_matches("http://")
+        .trim_end_matches("/page");
+    assert_eq!(
+        got.iter()
+            .map(|g| (g.host.as_str(), g.purpose.as_str(), g.local))
+            .collect::<Vec<_>>(),
+        vec![(first, "web_fetch", true), (second, "redirect", true)]
+    );
+    // From the cache: nothing contacted, nothing reported.
+    e.run_tool("web_fetch", &json!({"url": url}));
+    assert!(e.take_egress().is_empty());
+}
+
+#[test]
+fn offline_refuses_the_web_tools_when_called_not_only_when_listed() {
+    let d = home();
+    let mut e = ex(d.path());
+    e.web = Web::with_backends(&e.agent_home, vec!["http://127.0.0.1:9/search".into()]);
+    e.set_offline(true);
+    for (tool, args) in [
+        ("web_fetch", json!({"url": "https://example.org/"})),
+        ("web_search", json!({"query": "rufous"})),
+        ("web_search_multi", json!({"queries": ["a", "b"]})),
+    ] {
+        let out = e.run_tool(tool, &args);
+        assert_eq!(
+            out,
+            format!(
+                "[offline: {tool} would reach the network; this session stays on this machine]"
+            )
+        );
+        assert!(rufous_kernel::agent::run::is_tool_error(&out));
+    }
+    assert!(e.take_egress().is_empty(), "nothing was contacted");
+}
+
+#[test]
+fn offline_refuses_an_mcp_server_on_another_machine_and_keeps_a_loopback_one() {
+    use rufous_kernel::mcp::{McpConfig, ServerConfig};
+    let d = home();
+    let mut e = ex(d.path());
+    let mut servers = McpConfig::new();
+    servers.insert(
+        "far".into(),
+        ServerConfig {
+            url: Some("https://mcp.example.invalid/mcp".into()),
+            ..Default::default()
+        },
+    );
+    servers.insert(
+        "near".into(),
+        ServerConfig {
+            url: Some("http://127.0.0.1:9/mcp".into()),
+            ..Default::default()
+        },
+    );
+    e.set_offline(true);
+    e.set_mcp_servers(servers);
+    let far = e.run_tool(
+        "mcp_call",
+        &json!({"server": "far", "tool": "t", "args": {}}),
+    );
+    assert_eq!(
+        far,
+        "[offline: far.t would reach the network; this session stays on this machine]"
+    );
+    let near = e.run_tool(
+        "mcp_call",
+        &json!({"server": "near", "tool": "t", "args": {}}),
+    );
+    assert!(near.starts_with("[mcp_call error"), "{near}");
+    let hosts: Vec<String> = e.take_egress().into_iter().map(|g| g.host).collect();
+    assert_eq!(
+        hosts,
+        vec!["127.0.0.1:9".to_string()],
+        "only the loopback server was tried"
+    );
+}

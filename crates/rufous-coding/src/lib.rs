@@ -68,6 +68,17 @@ struct SessionState {
     declined: Arc<Mutex<Vec<rufous_kernel::safety::DeclinedWrite>>>,
     /// The factory's notice was sent (bead boubou-xki): once per session, new or loaded.
     noticed: bool,
+    /// The host asked for this session to stay on this machine (`_meta.rufous.offline`,
+    /// docs/egress.md).
+    offline: bool,
+}
+
+/// `_meta.rufous.offline: true` on a `session/new` or `session/load` request.
+fn wants_offline(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    meta.and_then(|m| m.get("rufous"))
+        .and_then(|r| r.get("offline"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 type Sessions = Arc<Mutex<HashMap<SessionId, SessionState>>>;
@@ -175,6 +186,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                 {
                     let sessions = sessions.clone();
                     let sessions_dir = sessions_dir.clone();
+                    let factory = factory.clone();
                     async move |req: NewSessionRequest,
                                 responder: Responder<NewSessionResponse>,
                                 _cx: ConnectionTo<AcpClient>| {
@@ -199,6 +211,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             |n| lock(&sessions).values().any(|s| s.name == n),
                         );
                         let id = SessionId::new(name.clone());
+                        let offline = wants_offline(req.meta.as_ref());
                         let st = SessionState {
                             cwd: req.cwd.clone(),
                             name,
@@ -208,10 +221,13 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             mcp_servers,
                             declined: Arc::default(),
                             noticed: false,
+                            offline,
                         };
                         lock(&sessions).insert(id.clone(), st);
-                        tracing::info!(target: "rufous_coding", session = %id, cwd = %req.cwd.display(), "session/new");
-                        responder.respond(NewSessionResponse::new(id))
+                        tracing::info!(target: "rufous_coding", session = %id, cwd = %req.cwd.display(), offline, "session/new");
+                        responder.respond(
+                            NewSessionResponse::new(id).meta(factory.session_meta(offline)),
+                        )
                     }
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -220,6 +236,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                 {
                     let sessions = sessions.clone();
                     let sessions_dir = sessions_dir.clone();
+                    let factory = factory.clone();
                     async move |req: LoadSessionRequest,
                                 responder: Responder<LoadSessionResponse>,
                                 cx: ConnectionTo<AcpClient>| {
@@ -280,6 +297,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 tracing::warn!(target: "rufous_coding", "session/update (replay): {e}");
                             }
                         }
+                        let offline = wants_offline(req.meta.as_ref());
                         let st = SessionState {
                             cwd: req.cwd.clone(),
                             name,
@@ -289,6 +307,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             mcp_servers,
                             declined: Arc::default(),
                             noticed: false,
+                            offline,
                         };
                         lock(&sessions).insert(req.session_id.clone(), st);
                         tracing::info!(
@@ -298,7 +317,8 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             replayed,
                             "session/load"
                         );
-                        responder.respond(LoadSessionResponse::new())
+                        responder
+                            .respond(LoadSessionResponse::new().meta(factory.session_meta(offline)))
                     }
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -334,11 +354,13 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                         s.mcp_servers.clone(),
                                         s.declined.clone(),
                                         first,
+                                        s.offline,
                                     ))
                                 }
                             }
                         };
-                        let (cwd, name, prior, stop, mcp_servers, declined, first) = match taken {
+                        let (cwd, name, prior, stop, mcp_servers, declined, first, offline) =
+                            match taken {
                             Ok(t) => t,
                             Err(e) => return responder.respond_with_error(e),
                         };
@@ -393,6 +415,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 ),
                                 mcp_servers,
                                 declined,
+                                offline,
                             },
                             prior.clone(),
                             text,

@@ -886,3 +886,38 @@ fn a_closed_port_is_unreachable_on_both_engines() {
     let r = lm.chat("m", &msgs, &[], &mut |_| {});
     assert!(matches!(r, Err(ChatError::Unreachable(_))), "{r:?}");
 }
+
+#[test]
+fn offline_means_this_machine_for_the_model_engine_too() {
+    // docs/egress.md: a host's per-session switch, over AGENT_OFFLINE, and a model engine on
+    // another machine is refused under it; a cloud provider is already off.
+    let mut c = Config {
+        backend: Some(BackendKind::Lmstudio),
+        base_url_flag: Some("http://192.168.1.20:1234/v1".into()),
+        ..Config::default()
+    };
+    assert!(
+        c.backend_problem().is_none(),
+        "online, a LAN engine is fine"
+    );
+    c.offline_forced = true;
+    assert!(c.offline());
+    assert_eq!(
+        c.backend_problem().as_deref(),
+        Some("offline: the model engine at http://192.168.1.20:1234/v1 is not on this machine")
+    );
+    c.base_url_flag = Some("http://127.0.0.1:1234/v1".into());
+    assert!(c.backend_problem().is_none());
+    assert_eq!(
+        c.engine_endpoint(),
+        ("LM Studio", "http://127.0.0.1:1234/v1".to_string())
+    );
+    let cloud = Config {
+        offline_forced: true,
+        ..cfg_with(
+            json!({}),
+            json!({"enabled": true, "base_url": "https://example.invalid/v1", "model": "m"}),
+        )
+    };
+    assert!(cloud.cloud_provider().is_none());
+}

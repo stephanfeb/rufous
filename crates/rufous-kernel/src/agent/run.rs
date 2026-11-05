@@ -54,8 +54,9 @@ use crate::{text, Error, Result};
 
 /// `_FAIL_MARKERS`: a tool result that means "the action did not happen". Safety-ring
 /// refusals count too, otherwise a model that keeps changing paths never hits the ladder.
-pub const FAIL_MARKERS: [&str; 25] = [
+pub const FAIL_MARKERS: [&str; 26] = [
     "[edit failed",
+    "[offline:",
     "[no access",
     "[tool error",
     "[not found",
@@ -222,11 +223,19 @@ pub trait ToolRunner {
     }
     /// Seed the gate's declined writes from an earlier turn.
     fn set_declined(&mut self, _declined: Vec<crate::safety::DeclinedWrite>) {}
+    /// The hosts contacted since the last call ([`crate::egress`]); none from a runner that
+    /// does not reach the network.
+    fn take_egress(&mut self) -> Vec<crate::egress::Egress> {
+        Vec::new()
+    }
 }
 
 impl ToolRunner for Executor {
     fn run_tool(&mut self, name: &str, args: &Value) -> String {
         Executor::run_tool(self, name, args)
+    }
+    fn take_egress(&mut self) -> Vec<crate::egress::Egress> {
+        Executor::take_egress(self)
     }
     fn last_status(&self) -> Option<crate::exec::ToolStatus> {
         Some(Executor::last_status(self))
@@ -530,6 +539,7 @@ impl Agent<DynBackend, Executor> {
         let engine = format!("{engine} (from {})", cfg.backend_source());
         let engine_is_ollama = cfg.cloud_provider().is_none() && cfg.backend_openai().is_none();
         let mut tools = Executor::new(params.workdir.clone()).with_configured_mcp();
+        tools.set_offline(offline);
         tools.slim_output = params.slim_output;
         if let Some(h) = &params.harness_dir {
             tools.harness_dir = h.clone();
@@ -733,6 +743,16 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         // The host's tools (docs/host-tools.md): fixed for the run, on every turn and route.
         let host = tools.host_face(face.offline);
         let host_note = face::host_note(&host);
+        // Building the face may have probed MCP servers over the network: reported before
+        // any call (docs/egress.md).
+        let setup_egress = tools.take_egress();
+        if !setup_egress.is_empty() {
+            sink(AgentEvent::Log(format!(
+                "[egress] {}",
+                crate::egress::describe(&setup_egress)
+            )));
+            sink(AgentEvent::Egress(setup_egress));
+        }
         if !host.is_empty() {
             sink(AgentEvent::Log(format!(
                 "[face] host tools: {} {}: {}",
@@ -1969,6 +1989,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 if let Some((from, to)) = crate::exec::rebased_path(&res) {
                     log!("[{i}] 📁 path rebased: {from} → {to}");
                 }
+                let egress = tools.take_egress();
+                if !egress.is_empty() {
+                    log!("[{i}] [egress] {}", crate::egress::describe(&egress));
+                    sink(AgentEvent::Egress(egress));
+                }
                 sink(AgentEvent::ToolResult {
                     name: name.clone(),
                     args: args_v.clone(),
@@ -2374,6 +2399,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                     || is_tool_error(&cres)
                                     || (cname == "run_bash"
                                         && integrity::exit_code_of(&cres).is_some_and(|c| c != 0));
+                                let egress = tools.take_egress();
+                                if !egress.is_empty() {
+                                    log!("[{i}] [egress] {}", crate::egress::describe(&egress));
+                                    sink(AgentEvent::Egress(egress));
+                                }
                                 sink(AgentEvent::ToolResult {
                                     name: cname.clone(),
                                     args: cargs.clone(),

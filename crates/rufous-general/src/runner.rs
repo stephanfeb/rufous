@@ -84,6 +84,8 @@ pub fn publish(bus: &Bus, ev: AgentEvent) {
             }
         }
         AgentEvent::Error(e) => bus.note(format!("[error] {e}")),
+        // The `[egress]` log line already went out as a `log` event.
+        AgentEvent::Egress(_) => {}
         AgentEvent::Dispatch(v) => {
             // Parallel-dispatch progress: a "⚙ parallel <label>" chip, full event attached.
             let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();

@@ -1289,3 +1289,78 @@ async fn the_decision_model_is_announced_once_per_session_as_shadow_only() {
         .as_deref()
         .is_some_and(|d| d.contains("heuristics still decide") && d.contains("config.json")));
 }
+
+/// [`ScriptedFactory`] that reports an engine and records whether each turn ran offline.
+struct OfflineAware {
+    inner: ScriptedFactory,
+    turns_offline: Arc<Mutex<Vec<bool>>>,
+}
+
+impl AgentFactory for OfflineAware {
+    fn new_turn(&self, setup: TurnSetup) -> rufous_kernel::Result<Box<dyn TurnRunner>> {
+        self.turns_offline.lock().expect("lock").push(setup.offline);
+        self.inner.new_turn(setup)
+    }
+    fn session_meta(&self, offline: bool) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let v = serde_json::json!({"rufous": {"engine": {"label": "Ollama", "local": true}, "offline": offline}});
+        v.as_object().cloned()
+    }
+}
+
+#[tokio::test]
+async fn a_host_can_keep_one_session_offline_and_is_told_the_engine() {
+    // docs/egress.md: `_meta.rufous.offline` on session/new, the engine in the response.
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let turns_offline: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let factory = OfflineAware {
+        inner: ScriptedFactory {
+            script: vec![],
+            delay: Duration::ZERO,
+            forever: false,
+            turns: Arc::new(AtomicUsize::new(0)),
+            opened_with: Arc::new(Mutex::new(Vec::new())),
+        },
+        turns_offline: turns_offline.clone(),
+    };
+    let agent = RufousAcp::with_factory(cwd.join("home"), "scripted:1b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    let metas: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let m = metas.clone();
+    let client = Client
+        .builder()
+        .name("test-host")
+        .connect_with(client_ch, async |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let offline_meta = serde_json::json!({"rufous": {"offline": true}})
+                .as_object()
+                .cloned()
+                .expect("object");
+            for req in [
+                NewSessionRequest::new(cwd.clone()).meta(offline_meta),
+                NewSessionRequest::new(cwd.clone()),
+            ] {
+                let ns = cx.send_request(req).block_task().await?;
+                m.lock().expect("lock").push(serde_json::Value::Object(
+                    ns.meta.clone().unwrap_or_default(),
+                ));
+                cx.send_request(PromptRequest::new(
+                    ns.session_id.clone(),
+                    vec!["hello".into()],
+                ))
+                .block_task()
+                .await?;
+            }
+            Ok(())
+        });
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    client_res.expect("client side");
+    let metas = metas.lock().expect("lock");
+    assert_eq!(metas[0]["rufous"]["offline"], serde_json::json!(true));
+    assert_eq!(metas[0]["rufous"]["engine"]["label"], "Ollama");
+    assert_eq!(metas[1]["rufous"]["offline"], serde_json::json!(false));
+    assert_eq!(*turns_offline.lock().expect("lock"), vec![true, false]);
+}

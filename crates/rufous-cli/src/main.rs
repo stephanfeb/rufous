@@ -926,7 +926,9 @@ fn print_event(ev: AgentEvent) {
         AgentEvent::Log(l) => println!("{l}"),
         AgentEvent::Dispatch(v) => println!("{}", progress_line(&v)),
         AgentEvent::Error(e) => eprintln!("[error] {e}"),
+        // The `[egress]` log line is printed with the other harness lines.
         AgentEvent::ToolCall(_)
+        | AgentEvent::Egress(_)
         | AgentEvent::ToolResult { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::Compacted { .. }
