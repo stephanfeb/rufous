@@ -1370,6 +1370,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         "[{i}] ⚡ salvaged tool call(s) from text{}: {}",
                         if s.rescued {
                             " (profile finish-prose rescue)"
+                        } else if s.gemma {
+                            " (gemma native)"
                         } else {
                             ""
                         },

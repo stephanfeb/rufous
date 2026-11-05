@@ -24,7 +24,7 @@ README and [docs/acp.md](acp.md).
 | `todo_file`/`load_todo`/`save_todo`/`format_todo_lines`/`todo_progress`, `_atomic_write_json` | `rufous-kernel/src/todo.rs` | ported, tested |
 | `_model_params_b`, `_semantically_empty`, `_estimate_tokens` | `rufous-kernel/src/guards/mod.rs` | ported, tested |
 | `_is_qa`, `_has_task_progress`, `_task_original_text`, `_HARNESS_NOTE_PREFIXES` | `rufous-kernel/src/guards/qa.rs` | ported, tested |
-| `try_parse_tool_calls`, `_parse_func_call_expr` (format-leak salvage) | `rufous-kernel/src/guards/leak.rs` | ported, tested |
+| `try_parse_tool_calls`, `_parse_func_call_expr` (format-leak salvage) | `rufous-kernel/src/guards/leak.rs` | ported, tested. rufous addition (boubou-5hg): `parse_gemma_native` reads Gemma 4's own call syntax (`call:name{k:v,…}`, `<\|"\|>` strings, arrays, objects) when a Gemma marker is in the text, after JSON and before the placeholder shape; logged `(gemma native)`; under the `salvage` ablation |
 | `_claimed_missing_files`, `_plan_named_missing` | `rufous-kernel/src/guards/artifacts.rs` | ported, tested |
 | `_EditConvergenceGuard`, `_norm_p` | `rufous-kernel/src/guards/edit.rs` | ported, tested (case-insensitive on all platforms, by design) |
 | `parse_time_budget`, `parse_duration_str`, `resolve_time_budget`, `_budget_nudge`, elapsed sidecar | `rufous-kernel/src/guards/budget.rs` | ported, tested; module globals (`BUDGET_SEC`, `TIME_BUDGET_PARSE`) became explicit parameters |

@@ -3851,3 +3851,25 @@ fn a_scope_gate_deny_goes_straight_to_the_checkpoint() {
         Some("The gate refused the write; nothing was changed.")
     );
 }
+
+// Gemma 4 native call leaked as text (bead boubou-5hg): salvaged and run, not the turn's end.
+#[test]
+fn a_gemma_native_call_leaked_as_text_runs_instead_of_ending_the_turn() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (msgs, logs, _) = run_circling(d.path(), TurnPolicy::conversation(), &[], |n| match n {
+        1 => ChatResponse::call("", "todo", json!({"action": "create", "items": ["build"]})),
+        2 => ChatResponse::text(
+            r#"<|channel>::<|channel>call:todo{action:<|"|>update<|"|>,done:true,index:1}<tool_call|>"#,
+        ),
+        _ => ChatResponse::text("Built; the plan is done."),
+    });
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("⚡ salvaged tool call(s) from text (gemma native): todo")),
+        "{logs:#?}"
+    );
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("Built; the plan is done.")
+    );
+}

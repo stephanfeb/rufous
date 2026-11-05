@@ -18,15 +18,17 @@ pub type LeakedCall = (String, Map<String, Value>);
 pub struct Salvaged {
     pub calls: Vec<ToolCall>,
     pub rescued: bool,
+    /// The calls were in Gemma 4's own syntax (`call:name{…}`), see [`parse_gemma_native`].
+    pub gemma: bool,
 }
 
 /// Format-leak salvage: the model wrote its call as text. The generic shapes first
 /// ([`try_parse_tool_calls`]); the finish-prose rescue ([`parse_finish_prose`]) only when
 /// `finish_prose_rescue` is set, for models known to end a text turn with `Finish: …`.
 pub fn salvage(content: &str, finish_prose_rescue: bool) -> Option<Salvaged> {
-    let (calls, rescued) = match try_parse_tool_calls(content) {
-        Some(c) => (c, false),
-        None if finish_prose_rescue => (parse_finish_prose(content)?, true),
+    let (calls, rescued, gemma) = match parse_shapes(content) {
+        Some((c, gemma)) => (c, false, gemma),
+        None if finish_prose_rescue => (parse_finish_prose(content)?, true, false),
         None => return None,
     };
     Some(Salvaged {
@@ -40,6 +42,7 @@ pub fn salvage(content: &str, finish_prose_rescue: bool) -> Option<Salvaged> {
             })
             .collect(),
         rescued,
+        gemma,
     })
 }
 
@@ -65,9 +68,16 @@ static FUNC_ARG: LazyLock<Regex> = LazyLock::new(|| {
 /// Supported shapes, in priority order:
 /// 1. JSON: `{"todo": {...}}`, `{"name":"todo","arguments":{...}}`, or a list of those,
 ///    optionally wrapped in a ```` ```json ```` fence or `<tool_call>` tags;
-/// 2. placeholder-quoted single argument: `finish(summary:<|"|>...<|"|>)` or the brace form;
-/// 3. a whole-text function expression: `finish(summary="0")`, see [`parse_func_call_expr`].
+/// 2. Gemma 4 native calls: `call:todo{action:<|"|>update<|"|>,index:1}`, see
+///    [`parse_gemma_native`];
+/// 3. placeholder-quoted single argument: `finish(summary:<|"|>...<|"|>)` or the brace form;
+/// 4. a whole-text function expression: `finish(summary="0")`, see [`parse_func_call_expr`].
 pub fn try_parse_tool_calls(content: &str) -> Option<Vec<LeakedCall>> {
+    parse_shapes(content).map(|(calls, _)| calls)
+}
+
+/// [`try_parse_tool_calls`], also saying whether the Gemma native shape matched.
+fn parse_shapes(content: &str) -> Option<(Vec<LeakedCall>, bool)> {
     let mut c = content.trim().to_string();
     if !c.starts_with(['{', '[']) {
         if c.contains("<tool_call>") {
@@ -104,9 +114,12 @@ pub fn try_parse_tool_calls(content: &str) -> Option<Vec<LeakedCall>> {
                 }
             }
             if !calls.is_empty() {
-                return Some(calls);
+                return Some((calls, false));
             }
         }
+    }
+    if let Some(calls) = parse_gemma_native(content) {
+        return Some((calls, true));
     }
     let calls: Vec<LeakedCall> = PLACEHOLDER
         .captures_iter(&c)
@@ -117,9 +130,9 @@ pub fn try_parse_tool_calls(content: &str) -> Option<Vec<LeakedCall>> {
         })
         .collect();
     if !calls.is_empty() {
-        return Some(calls);
+        return Some((calls, false));
     }
-    parse_func_call_expr(&c)
+    parse_func_call_expr(&c).map(|calls| (calls, false))
 }
 
 static FINISH_LINE: LazyLock<Regex> =
@@ -205,4 +218,166 @@ pub fn parse_func_call_expr(c: &str) -> Option<Vec<LeakedCall>> {
         }
     }
     Some(vec![(name, args)])
+}
+
+/// Gemma 4's string delimiter and the control tokens that wrap its calls and thoughts.
+const GEMMA_QUOTE: &str = "<|\"|>";
+const GEMMA_MARKERS: [&str; 5] = [
+    GEMMA_QUOTE,
+    "<|tool_call>",
+    "<tool_call|>",
+    "<|channel>",
+    "<channel|>",
+];
+
+static GEMMA_THOUGHT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<\|channel>.*?<channel\|>").expect("regex"));
+static GEMMA_CALL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[^A-Za-z0-9_])call:([A-Za-z_][A-Za-z0-9_.\-]*)\s*\{").expect("regex")
+});
+
+/// Gemma 4 native calls leaked into text (bead boubou-5hg): `call:NAME{k:v,…}`, strings
+/// in `<|"|>…<|"|>`, bare keys, numbers, booleans, null, arrays and objects. Seen from LM
+/// Studio when the model opened its thought channel and dropped the `<|tool_call>` opener:
+/// `<|channel>::<|channel>call:todo{action:<|"|>update<|"|>,done:true,index:1}<tool_call|>`.
+/// A Gemma marker must be present, so prose that mentions `call:x{}` is left alone; closed
+/// thought spans are dropped first; the name must be a known tool or a dotted MCP name;
+/// a call whose arguments do not read cleanly to the closing brace is not salvaged.
+pub fn parse_gemma_native(content: &str) -> Option<Vec<LeakedCall>> {
+    if !GEMMA_MARKERS.iter().any(|m| content.contains(m)) {
+        return None;
+    }
+    let c = GEMMA_THOUGHT.replace_all(content, " ");
+    let mut calls = Vec::new();
+    for m in GEMMA_CALL.captures_iter(&c) {
+        let name = m[1].to_string();
+        if !is_known_tool(&name) && !name.contains('.') {
+            continue;
+        }
+        let open = m.get(0).expect("match").end() - 1;
+        let mut r = GemmaReader { s: &c, pos: open };
+        if let Some(Value::Object(args)) = r.value() {
+            calls.push((name, args));
+        }
+    }
+    (!calls.is_empty()).then_some(calls)
+}
+
+/// A reader for Gemma 4's call-argument literals.
+struct GemmaReader<'a> {
+    s: &'a str,
+    pos: usize,
+}
+
+impl GemmaReader<'_> {
+    fn rest(&self) -> &str {
+        &self.s[self.pos..]
+    }
+
+    fn skip_ws(&mut self) {
+        let t = self.rest().trim_start();
+        self.pos = self.s.len() - t.len();
+    }
+
+    fn eat(&mut self, tok: &str) -> bool {
+        self.skip_ws();
+        if self.rest().starts_with(tok) {
+            self.pos += tok.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn value(&mut self) -> Option<Value> {
+        self.skip_ws();
+        if self.eat("{") {
+            let mut obj = Map::new();
+            if self.eat("}") {
+                return Some(Value::Object(obj));
+            }
+            loop {
+                let k = self.key()?;
+                if !self.eat(":") {
+                    return None;
+                }
+                obj.insert(k, self.value()?);
+                if self.eat("}") {
+                    return Some(Value::Object(obj));
+                }
+                if !self.eat(",") {
+                    return None;
+                }
+            }
+        }
+        if self.eat("[") {
+            let mut arr = Vec::new();
+            if self.eat("]") {
+                return Some(Value::Array(arr));
+            }
+            loop {
+                arr.push(self.value()?);
+                if self.eat("]") {
+                    return Some(Value::Array(arr));
+                }
+                if !self.eat(",") {
+                    return None;
+                }
+            }
+        }
+        if let Some(st) = self.string() {
+            return Some(Value::String(st));
+        }
+        let word: String = self
+            .rest()
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '+' | '.' | '_'))
+            .collect();
+        let v = match word.as_str() {
+            "" => return None,
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            "null" => Value::Null,
+            w => match w.parse::<i64>() {
+                Ok(i) => Value::from(i),
+                Err(_) => Value::from(w.parse::<f64>().ok()?),
+            },
+        };
+        self.pos += word.len();
+        Some(v)
+    }
+
+    /// `<|"|>…<|"|>` or a JSON `"…"` string.
+    fn string(&mut self) -> Option<String> {
+        self.skip_ws();
+        if let Some(body) = self.rest().strip_prefix(GEMMA_QUOTE) {
+            let end = body.find(GEMMA_QUOTE)?;
+            let st = body[..end].to_string();
+            self.pos += GEMMA_QUOTE.len() * 2 + end;
+            return Some(st);
+        }
+        if self.rest().starts_with('"') {
+            let mut de = serde_json::Deserializer::from_str(self.rest()).into_iter::<String>();
+            let st = de.next()?.ok()?;
+            self.pos += de.byte_offset();
+            return Some(st);
+        }
+        None
+    }
+
+    fn key(&mut self) -> Option<String> {
+        if let Some(k) = self.string() {
+            return Some(k);
+        }
+        let k: String = self
+            .rest()
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect();
+        if k.is_empty() || k.starts_with(|ch: char| ch.is_ascii_digit()) {
+            return None;
+        }
+        self.pos += k.len();
+        Some(k)
+    }
 }

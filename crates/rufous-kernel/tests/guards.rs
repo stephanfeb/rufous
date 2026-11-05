@@ -5,7 +5,9 @@ use std::path::Path;
 
 use rufous_kernel::guards::artifacts::{claimed_missing_files, plan_named_missing};
 use rufous_kernel::guards::edit::EditConvergenceGuard;
-use rufous_kernel::guards::leak::{parse_finish_prose, try_parse_tool_calls};
+use rufous_kernel::guards::leak::{
+    parse_finish_prose, parse_gemma_native, salvage, try_parse_tool_calls,
+};
 use rufous_kernel::guards::qa::{
     has_task_progress, intent_heuristic, is_qa, task_original_text, Intent,
 };
@@ -774,4 +776,93 @@ fn the_follow_up_nudges_are_harness_notes_not_user_input() {
         let h = intent_heuristic(&history, true);
         assert_eq!(h.text, "close that one please", "{h:?}");
     }
+}
+
+// ---- Gemma 4 native calls (bead boubou-5hg) ----
+
+#[test]
+fn gemma_native_the_lm_studio_leak_is_salvaged() {
+    // acp_1105_001847, 00:53:35: two thought openers, no <|tool_call> opener.
+    let leak =
+        r#"<|channel>::<|channel>call:todo{action:<|"|>update<|"|>,done:true,index:1}<tool_call|>"#;
+    let s = salvage(leak, false).expect("salvaged");
+    assert!(s.gemma && !s.rescued);
+    assert_eq!(s.calls.len(), 1);
+    assert_eq!(s.calls[0].function.name, "todo");
+    assert_eq!(
+        s.calls[0].function.arguments,
+        json!({"action": "update", "done": true, "index": 1})
+    );
+}
+
+#[test]
+fn gemma_native_arrays_nested_objects_and_awkward_strings() {
+    assert_eq!(
+        try_parse_tool_calls(
+            r#"<|tool_call>call:todo{action:<|"|>create<|"|>,items:[<|"|>Read the spec<|"|>,<|"|>Write a, b} and c<|"|>]}<tool_call|>"#
+        ),
+        Some(vec![call(
+            "todo",
+            json!({"action": "create", "items": ["Read the spec", "Write a, b} and c"]})
+        )])
+    );
+    assert_eq!(
+        try_parse_tool_calls(
+            "<|tool_call>call:create_file{path:<|\"|>a.py<|\"|>,content:<|\"|>def f():\n    return {1: 2}\n<|\"|>}<tool_call|>"
+        ),
+        Some(vec![call(
+            "create_file",
+            json!({"path": "a.py", "content": "def f():\n    return {1: 2}\n"})
+        )])
+    );
+    assert_eq!(
+        parse_gemma_native(
+            r#"<|tool_call>call:srv.lookup{q:{term:<|"|>x<|"|>,limit:-2.5,on:null}}<tool_call|>"#
+        ),
+        Some(vec![call(
+            "srv.lookup",
+            json!({"q": {"term": "x", "limit": -2.5, "on": null}})
+        )])
+    );
+}
+
+#[test]
+fn gemma_native_two_calls_in_order_and_closed_thoughts_dropped() {
+    let text = concat!(
+        "<|channel>thought\nI could call:finish{summary:<|\"|>early<|\"|>} but not yet<channel|>",
+        "<|tool_call>call:read_file{path:<|\"|>a.txt<|\"|>}<tool_call|>",
+        "<|tool_call>call:run_bash{command:<|\"|>ls -la<|\"|>}<tool_call|>"
+    );
+    assert_eq!(
+        try_parse_tool_calls(text),
+        Some(vec![
+            call("read_file", json!({"path": "a.txt"})),
+            call("run_bash", json!({"command": "ls -la"})),
+        ])
+    );
+}
+
+#[test]
+fn gemma_native_rejects_unknown_names_truncation_and_plain_prose() {
+    assert_eq!(
+        parse_gemma_native(r#"<|tool_call>call:launch_rockets{when:<|"|>now<|"|>}<tool_call|>"#),
+        None
+    );
+    assert_eq!(
+        parse_gemma_native(
+            r#"<|tool_call>call:create_file{path:<|"|>a.py<|"|>,content:<|"|>def f("#
+        ),
+        None,
+        "a call cut off before its closing brace"
+    );
+    assert_eq!(
+        parse_gemma_native(r#"<|tool_call>call:todo{action:update}<tool_call|>"#),
+        None,
+        "a bare word is not a value"
+    );
+    assert_eq!(
+        try_parse_tool_calls("To mark it done, call:todo{index:1} is the shape the docs show."),
+        None,
+        "no Gemma marker: prose"
+    );
 }
