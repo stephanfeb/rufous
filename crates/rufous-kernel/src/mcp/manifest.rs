@@ -199,10 +199,60 @@ impl Prober for RmcpProber {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A server's entry in the cache: the fingerprint it was probed under, and when.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct Stamp {
+    fp: String,
+    ts: f64,
+}
+
+/// `<home>/mcp_manifest_cache.json`: Mingbird's `{ts, data}` plus a stamp per server
+/// (docs/mcp-cache.md). A file without stamps reads as all stale.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct DiskCache {
     ts: f64,
     data: Manifest,
+    #[serde(default)]
+    servers: BTreeMap<String, Stamp>,
+}
+
+/// Entries of servers no registry has probed for this long leave the cache file.
+const PRUNE_AFTER: f64 = 86_400.0;
+
+/// What a server's tools depend on that rufous can see: its configuration and, for a stdio
+/// server, the size and modification time of its command binary. Files in `args` are left
+/// out: bizframe's `--app` file changes with every edit (docs/mcp-cache.md).
+fn fingerprint(cfg: &ServerConfig) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(cfg).unwrap_or_default().hash(&mut h);
+    if let Some(meta) = cfg
+        .command
+        .as_deref()
+        .and_then(command_path)
+        .and_then(|p| std::fs::metadata(p).ok())
+    {
+        meta.len().hash(&mut h);
+        if let Ok(t) = meta.modified() {
+            t.hash(&mut h);
+        }
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// The binary a command names: the path itself when it has a separator, else the first
+/// match on `PATH`.
+fn command_path(cmd: &str) -> Option<PathBuf> {
+    let p = Path::new(cmd);
+    if cmd.is_empty() {
+        return None;
+    }
+    if p.components().count() > 1 {
+        return Some(p.to_path_buf());
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(cmd))
+        .find(|c| c.is_file())
 }
 
 fn now_secs() -> f64 {
@@ -217,7 +267,7 @@ fn now_secs() -> f64 {
 pub struct McpRegistry {
     pub servers: McpConfig,
     cache_file: PathBuf,
-    mem: Mutex<Option<(f64, Manifest)>>,
+    mem: Mutex<Option<DiskCache>>,
     prober: Box<dyn Prober>,
     /// The `url` servers called or probed, for the egress report (docs/egress.md).
     pub egress: EgressLog,
@@ -263,15 +313,18 @@ impl McpRegistry {
         super::split_qualified(name).is_some_and(|(s, _)| self.servers.contains_key(s))
     }
 
-    /// Seconds-since-epoch of the current cache entry (tests check the shortened TTL).
+    /// Seconds-since-epoch of the oldest configured server's cache entry (tests check the
+    /// shortened TTL).
     pub fn cache_ts(&self) -> Option<f64> {
-        self.mem
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(t, _)| *t))
+        let g = self.mem.lock().ok()?;
+        let c = g.as_ref()?;
+        self.servers
+            .keys()
+            .filter_map(|n| c.servers.get(n).map(|s| s.ts))
+            .reduce(f64::min)
     }
 
-    fn load_disk(&self) -> Option<(f64, Manifest)> {
+    fn load_disk(&self) -> Option<DiskCache> {
         let raw = std::fs::read_to_string(&self.cache_file).ok()?;
         let mut d: DiskCache = serde_json::from_str(&raw).ok()?;
         // A cache written with differently cased or aliased category names still routes.
@@ -281,61 +334,81 @@ impl McpRegistry {
                 t.categories = super::normalise_categories(&t.categories);
             }
         }
-        Some((d.ts, d.data))
+        Some(d)
     }
 
-    fn save_disk(&self, ts: f64, data: &Manifest) {
+    fn save_disk(&self, cache: &DiskCache) {
         if let Some(dir) = self.cache_file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(s) = serde_json::to_string(&DiskCache {
-            ts,
-            data: data.clone(),
-        }) {
+        if let Ok(s) = serde_json::to_string(cache) {
             let _ = std::fs::write(&self.cache_file, s);
         }
     }
 
-    /// `mcp_manifest(force)`: memory cache → disk cache → parallel probe. A failed probe
-    /// keeps that server's previous tools (stale-while-revalidate) and shortens the TTL.
+    /// `mcp_manifest(force)`: the configured servers' tools. A server whose cache stamp
+    /// matches its fingerprint and is younger than the TTL is served from memory or disk;
+    /// the others are probed in parallel (all of them with `force`). A failed probe keeps
+    /// that server's previous tools (stale-while-revalidate) and is retried after
+    /// [`FAILED_TTL`]. Only configured servers are returned (docs/mcp-cache.md).
     pub fn manifest(&self, force: bool) -> Manifest {
         let now = now_secs();
         let ttl = MANIFEST_TTL.as_secs_f64();
-        if !force {
-            if let Ok(g) = self.mem.lock() {
-                if let Some((t, data)) = g.as_ref() {
-                    if now - t < ttl {
-                        return data.clone();
-                    }
-                }
-            }
-            if let Some((t, data)) = self.load_disk() {
-                if !data.is_empty() && now - t < ttl {
-                    if let Ok(mut g) = self.mem.lock() {
-                        *g = Some((t, data.clone()));
-                    }
-                    return data;
-                }
-            }
-        }
-        let prev = self.load_disk().map(|(_, d)| d).unwrap_or_default();
-        let cand: Vec<(&String, &ServerConfig)> = self
+        let cand: Vec<(&String, &ServerConfig, String)> = self
             .servers
             .iter()
             .filter(|(_, c)| c.is_runnable())
+            .map(|(n, c)| (n, c, fingerprint(c)))
             .collect();
-        let mut raws: Vec<Option<Vec<ProbedTool>>> = Vec::with_capacity(cand.len());
-        for chunk in cand.chunks(MAX_PARALLEL_PROBES) {
+        let fresh = |c: &DiskCache, name: &str, fp: &str| {
+            c.data.contains_key(name)
+                && c.servers
+                    .get(name)
+                    .is_some_and(|s| s.fp == fp && now - s.ts < ttl)
+        };
+        let serve = |c: &DiskCache| -> Manifest {
+            cand.iter()
+                .filter_map(|(n, _, _)| c.data.get(*n).map(|m| ((*n).clone(), m.clone())))
+                .collect()
+        };
+        let mem = self.mem.lock().ok().and_then(|g| g.clone());
+        if !force {
+            if let Some(c) = &mem {
+                if cand.iter().all(|(n, _, fp)| fresh(c, n, fp)) {
+                    return serve(c);
+                }
+            }
+        }
+        // The disk may be newer than memory: another process probes into the same file.
+        let disk = self.load_disk();
+        if !force {
+            if let Some(c) = &disk {
+                if cand.iter().all(|(n, _, fp)| fresh(c, n, fp)) {
+                    if let Ok(mut g) = self.mem.lock() {
+                        *g = Some(c.clone());
+                    }
+                    return serve(c);
+                }
+            }
+        }
+        let mut cache = disk.or(mem).unwrap_or_default();
+        let stale: Vec<&(&String, &ServerConfig, String)> = cand
+            .iter()
+            .filter(|(n, _, fp)| force || !fresh(&cache, n, fp))
+            .collect();
+        let mut raws: Vec<Option<Vec<ProbedTool>>> = Vec::with_capacity(stale.len());
+        for chunk in stale.chunks(MAX_PARALLEL_PROBES) {
             let outs: Vec<Option<Vec<ProbedTool>>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|(name, cfg)| {
+                    .map(|(name, cfg, _)| {
                         // Offline, a server on another machine is not contacted: it counts as
                         // a failed probe, so its earlier tools are kept for an online session.
                         let skip = self.is_offline() && cfg.is_remote();
                         if let (Some(url), false) = (&cfg.url, skip) {
                             self.egress.record(url, &format!("mcp:{name}"));
                         }
+                        let cfg: &ServerConfig = cfg;
                         s.spawn(move || if skip { None } else { self.prober.probe(cfg) })
                     })
                     .collect();
@@ -346,14 +419,13 @@ impl McpRegistry {
             });
             raws.extend(outs);
         }
-        let mut any_fail = false;
-        let mut manifest = Manifest::new();
-        for ((name, cfg), raw) in cand.into_iter().zip(raws) {
-            let tools: Vec<ProbedTool> = match raw {
-                Some(t) => t,
-                None => {
-                    any_fail = true;
-                    prev.get(name)
+        for ((name, cfg, fp), raw) in stale.into_iter().zip(raws) {
+            let (tools, ts): (Vec<ProbedTool>, f64) = match raw {
+                Some(t) => (t, now),
+                None => (
+                    cache
+                        .data
+                        .get(*name)
                         .map(|m| {
                             m.tools
                                 .iter()
@@ -365,10 +437,10 @@ impl McpRegistry {
                                 })
                                 .collect()
                         })
-                        .unwrap_or_default()
-                }
+                        .unwrap_or_default(),
+                    now - ttl + FAILED_TTL.as_secs_f64(),
+                ),
             };
-            let server_cats = cfg.server_categories();
             let tools = tools
                 .into_iter()
                 .map(|t| ManifestTool {
@@ -384,24 +456,37 @@ impl McpRegistry {
                     desc: t.desc,
                 })
                 .collect();
-            manifest.insert(
-                name.clone(),
+            cache.data.insert(
+                (*name).clone(),
                 ServerManifest {
-                    categories: server_cats,
+                    categories: cfg.server_categories(),
                     tools,
                 },
             );
+            cache
+                .servers
+                .insert((*name).clone(), Stamp { fp: fp.clone(), ts });
         }
-        let cache_t = if any_fail {
-            now - ttl + FAILED_TTL.as_secs_f64()
-        } else {
-            now
+        // Other registries' servers stay for them, up to a day; unstamped ones (a file in
+        // the old shape) go unless configured here.
+        let kept = |n: &String, c: &BTreeMap<String, Stamp>| {
+            self.servers.contains_key(n) || c.get(n).is_some_and(|s| now - s.ts < PRUNE_AFTER)
         };
+        let stamps = cache.servers.clone();
+        cache.data.retain(|n, _| kept(n, &stamps));
+        cache.servers.retain(|n, _| kept(n, &stamps));
+        // Mingbird reads the top-level `ts`: the oldest stamp, so it probes when any is due.
+        cache.ts = cache
+            .servers
+            .values()
+            .map(|s| s.ts)
+            .reduce(f64::min)
+            .unwrap_or(now);
         if let Ok(mut g) = self.mem.lock() {
-            *g = Some((cache_t, manifest.clone()));
+            *g = Some(cache.clone());
         }
-        self.save_disk(cache_t, &manifest);
-        manifest
+        self.save_disk(&cache);
+        serve(&cache)
     }
 
     /// `mcp_tool_defs(cats, extra)`: flattened `server.tool` definitions for the routed

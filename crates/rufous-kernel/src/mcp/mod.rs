@@ -5,7 +5,8 @@
 //!
 //! The data formats are Mingbird's: the same `mcp.json` keys (`command`/`args`/`env`,
 //! `url`/`headers`, `categories`, `tools`, `expose`) and the same
-//! `<home>/mcp_manifest_cache.json` shape, so a probe by either stack warms the other.
+//! `<home>/mcp_manifest_cache.json` shape. rufous adds a stamp per server, so its probe warms
+//! Mingbird; a file Mingbird wrote has none and reads as stale (docs/mcp-cache.md).
 
 mod client;
 pub mod edit;

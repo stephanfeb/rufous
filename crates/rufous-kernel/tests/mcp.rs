@@ -245,6 +245,153 @@ fn manifest_stale_merge_and_short_ttl() {
     assert_eq!(disk["data"]["slow"]["categories"], json!(["mcp"]));
 }
 
+/// Records which servers were probed (by their command), and fails those in `fail`.
+struct Recorder {
+    probed: std::sync::Mutex<Vec<String>>,
+    fail: std::sync::Mutex<Vec<String>>,
+}
+
+impl Recorder {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            probed: std::sync::Mutex::new(Vec::new()),
+            fail: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    fn take(&self) -> Vec<String> {
+        let mut v = std::mem::take(&mut *self.probed.lock().expect("lock"));
+        v.sort();
+        v
+    }
+}
+
+struct Rec(Arc<Recorder>);
+
+impl Prober for Rec {
+    fn probe(&self, cfg: &ServerConfig) -> Option<Vec<ProbedTool>> {
+        let cmd = cfg.command.clone().unwrap_or_default();
+        let name = Path::new(&cmd)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.0.probed.lock().expect("lock").push(name.clone());
+        if self.0.fail.lock().expect("lock").contains(&name) {
+            return None;
+        }
+        let arg = cfg.args.first().cloned().unwrap_or_default();
+        Some(vec![probed(&format!("{name}_tool{arg}"), "d")])
+    }
+}
+
+fn bins(dir: &Path) -> (String, String) {
+    let a = dir.join("srv_a");
+    let b = dir.join("srv_b");
+    std::fs::write(&a, "v1").expect("a");
+    std::fs::write(&b, "v1").expect("b");
+    (a.display().to_string(), b.display().to_string())
+}
+
+fn two(a: &str, b: &str) -> McpConfig {
+    let mut m = McpConfig::new();
+    m.insert("a".into(), cfg(json!({"command": a})));
+    m.insert("b".into(), cfg(json!({"command": b})));
+    m
+}
+
+#[test]
+fn a_changed_server_is_probed_again_and_only_it() {
+    // docs/mcp-cache.md (boubou-gj0).
+    let home = tempfile::tempdir().expect("home");
+    let (a, b) = bins(home.path());
+    let r = Recorder::new();
+    let reg = McpRegistry::with_prober(home.path(), two(&a, &b), Box::new(Rec(r.clone())));
+    reg.manifest(false);
+    assert_eq!(r.take(), vec!["srv_a", "srv_b"]);
+    // A new process with the same servers reads the disk cache.
+    let reg = McpRegistry::with_prober(home.path(), two(&a, &b), Box::new(Rec(r.clone())));
+    reg.manifest(false);
+    assert!(r.take().is_empty());
+    // Changed args: that server only.
+    let mut servers = two(&a, &b);
+    servers.insert("a".into(), cfg(json!({"command": a, "args": ["2"]})));
+    let reg = McpRegistry::with_prober(home.path(), servers.clone(), Box::new(Rec(r.clone())));
+    let m = reg.manifest(false);
+    assert_eq!(r.take(), vec!["srv_a"]);
+    assert_eq!(m["a"].tools[0].name, "srv_a_tool2");
+    // A rebuilt binary: that server only, also within one registry's lifetime.
+    std::fs::write(&b, "version two").expect("rebuild");
+    let m = reg.manifest(false);
+    assert_eq!(r.take(), vec!["srv_b"]);
+    assert_eq!(m.len(), 2);
+    reg.manifest(false);
+    assert!(r.take().is_empty());
+}
+
+#[test]
+fn a_server_added_under_a_fresh_cache_is_probed_and_a_removed_one_is_not_served() {
+    let home = tempfile::tempdir().expect("home");
+    let (a, b) = bins(home.path());
+    let r = Recorder::new();
+    let mut only_a = McpConfig::new();
+    only_a.insert("a".into(), cfg(json!({"command": a})));
+    McpRegistry::with_prober(home.path(), only_a.clone(), Box::new(Rec(r.clone()))).manifest(false);
+    assert_eq!(r.take(), vec!["srv_a"]);
+    // A second session within the TTL adds `b` (as session/new does).
+    let m = McpRegistry::with_prober(home.path(), two(&a, &b), Box::new(Rec(r.clone())))
+        .manifest(false);
+    assert_eq!(r.take(), vec!["srv_b"]);
+    assert!(m.contains_key("a") && m.contains_key("b"));
+    // A session without `b` is not served its tools, and probes nothing.
+    let m = McpRegistry::with_prober(home.path(), only_a, Box::new(Rec(r.clone()))).manifest(false);
+    assert!(r.take().is_empty());
+    assert_eq!(m.keys().collect::<Vec<_>>(), vec!["a"]);
+    // `b` stays in the file for the sessions that have it.
+    let disk: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.path().join(CACHE_FILE)).expect("read"))
+            .expect("json");
+    assert!(disk["data"]["b"].is_object() && disk["servers"]["b"]["fp"].is_string());
+}
+
+#[test]
+fn a_changed_server_whose_probe_fails_keeps_its_old_tools_and_retries_soon() {
+    let home = tempfile::tempdir().expect("home");
+    let (a, b) = bins(home.path());
+    let r = Recorder::new();
+    McpRegistry::with_prober(home.path(), two(&a, &b), Box::new(Rec(r.clone()))).manifest(false);
+    r.take();
+    r.fail.lock().expect("lock").push("srv_a".into());
+    std::fs::write(&a, "broken rebuild").expect("rebuild");
+    let reg = McpRegistry::with_prober(home.path(), two(&a, &b), Box::new(Rec(r.clone())));
+    let m = reg.manifest(false);
+    assert_eq!(r.take(), vec!["srv_a"]);
+    assert_eq!(m["a"].tools[0].name, "srv_a_tool");
+    assert!(reg.cache_ts().expect("ts") <= now() - 240.0);
+}
+
+#[test]
+fn a_cache_file_in_the_old_shape_is_read_as_stale() {
+    let home = tempfile::tempdir().expect("home");
+    let (a, b) = bins(home.path());
+    std::fs::write(
+        home.path().join(CACHE_FILE),
+        json!({"ts": now(), "data": {"a": {"categories": ["mcp"], "tools": [
+            {"name": "old", "desc": "", "schema": {}, "categories": ["mcp"], "expose": "auto"}
+        ]}, "gone": {"categories": ["mcp"], "tools": []}}})
+        .to_string(),
+    )
+    .expect("write");
+    let r = Recorder::new();
+    let m = McpRegistry::with_prober(home.path(), two(&a, &b), Box::new(Rec(r.clone())))
+        .manifest(false);
+    assert_eq!(r.take(), vec!["srv_a", "srv_b"]);
+    assert_eq!(m["a"].tools[0].name, "srv_a_tool");
+    let disk: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.path().join(CACHE_FILE)).expect("read"))
+            .expect("json");
+    assert!(disk["data"]["gone"].is_null());
+}
+
 #[test]
 fn manifest_memory_and_disk_caches_skip_probing() {
     let d = tempfile::tempdir().expect("tmp");
