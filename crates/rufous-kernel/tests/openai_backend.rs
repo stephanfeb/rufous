@@ -830,3 +830,59 @@ fn the_agent_will_not_start_on_an_openai_backend_without_a_url() {
         Ok(_) => panic!("started without a URL"),
     }
 }
+
+#[test]
+fn the_base_url_flag_overrides_the_config_and_needs_a_backend_that_takes_one() {
+    // A host names the engine's URL without writing config.json (boubou-f8d).
+    let mut c = Config {
+        backend: Some(BackendKind::Lmstudio),
+        base_url_flag: Some("http://127.0.0.1:8081/v1/".into()),
+        local_backend: json!({"base_url": "http://127.0.0.1:1234/v1"})
+            .as_object()
+            .cloned()
+            .expect("object"),
+        ..Config::default()
+    };
+    assert!(c.backend_problem().is_none());
+    assert_eq!(
+        c.backend_openai().map(|e| e.base_url),
+        Some("http://127.0.0.1:8081/v1".to_string())
+    );
+    let text = serde_json::to_string(&c).expect("ser");
+    assert!(!text.contains("8081"), "the flag is never written: {text}");
+    let problem =
+        Some("--base-url needs --backend lmstudio or openai (Ollama's address is OLLAMA_HOST)");
+    c.backend = None;
+    assert_eq!(c.backend_problem().as_deref(), problem);
+    c.backend_flag = Some(BackendKind::Ollama);
+    assert_eq!(c.backend_problem().as_deref(), problem);
+    c.backend_flag = Some(BackendKind::Openai);
+    assert!(c.backend_problem().is_none());
+}
+
+#[test]
+fn a_closed_port_is_unreachable_on_both_engines() {
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("addr").port()
+    };
+    let d = tempfile::tempdir().expect("tmp");
+    let p = params(d.path(), 64);
+    let msgs = [Message::user("hi")];
+    let mut ollama =
+        rufous_kernel::agent::OllamaBackend::new(format!("http://127.0.0.1:{port}"), &p)
+            .expect("backend");
+    let r = ollama.chat("m", &msgs, &[], &mut |_| {});
+    assert!(matches!(r, Err(ChatError::Unreachable(_))), "{r:?}");
+    let mut lm = OpenAiBackend::local(
+        &OpenAiEngine {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            api_key: String::new(),
+            label: "LM Studio",
+        },
+        &p,
+    )
+    .expect("backend");
+    let r = lm.chat("m", &msgs, &[], &mut |_| {});
+    assert!(matches!(r, Err(ChatError::Unreachable(_))), "{r:?}");
+}

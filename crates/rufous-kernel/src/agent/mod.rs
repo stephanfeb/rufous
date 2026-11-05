@@ -116,6 +116,10 @@ pub struct RunParams {
     /// The model's profile (`profile.rs`): built-ins at construction, config overrides and
     /// the think/temperature defaults applied by [`Agent::standard`].
     pub profile: crate::profile::ModelProfile,
+    /// `--no-start-engine` ([`crate::config::Config::no_start_engine`], set by
+    /// [`Self::apply_config`]): the engine is the host's, so a model call that cannot connect
+    /// ends the turn at once instead of backing off for minutes (boubou-f8d).
+    pub engine_unmanaged: bool,
 }
 
 impl RunParams {
@@ -146,6 +150,7 @@ impl RunParams {
                 .map(PathBuf::from),
             slim_output: slim_env.unwrap_or(num_ctx <= 32_768),
             slim_output_env: slim_env,
+            engine_unmanaged: false,
             keep_alive: std::env::var("AGENT_KEEPALIVE")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
@@ -195,6 +200,7 @@ impl RunParams {
             system_file: None,
             slim_output: false,
             slim_output_env: None,
+            engine_unmanaged: false,
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
             budget_env_sec: None,
             unattended: false,
@@ -233,6 +239,7 @@ impl RunParams {
     pub fn apply_config(&mut self, cfg: &crate::config::Config) {
         self.apply_profile(&cfg.profiles);
         self.slim_output = resolve_slim_output(self.slim_output_env, cfg.slim_output, self.num_ctx);
+        self.engine_unmanaged = cfg.no_start_engine;
     }
 
     /// Whether the bench switch `flag` ([`ablation`]) is off for this run; `kernel` in

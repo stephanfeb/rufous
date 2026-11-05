@@ -347,9 +347,21 @@ pub struct Client {
 fn timeout_or_http(e: reqwest::Error, mid_reply: bool) -> Error {
     if e.is_timeout() {
         Error::Timeout { mid_reply }
+    } else if e.is_connect() {
+        Error::Unreachable(connect_reason(&e))
     } else {
         Error::Http(e)
     }
+}
+
+/// Why a connection failed, in the OS's words ("Connection refused (os error 61)"): the
+/// innermost cause, since reqwest's own text names only the URL.
+pub fn connect_reason(e: &reqwest::Error) -> String {
+    let mut cause: &dyn std::error::Error = e;
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    cause.to_string()
 }
 
 impl Client {

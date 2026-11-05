@@ -1181,3 +1181,64 @@ fn search_files_skips_stores_binaries_and_backups_from_the_root() {
     );
     assert!(r.contains("index:1: needle in git"), "{r}");
 }
+
+// Sandboxed helper (boubou-f8d): a path the OS refuses is said apart from a missing one, and
+// nothing rufous started outlives it.
+
+#[cfg(unix)]
+#[test]
+fn a_path_the_os_refuses_is_no_access_not_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let (d, mut e) = ex();
+    let shut = d.path().join("shut");
+    std::fs::create_dir(&shut).expect("dir");
+    std::fs::write(shut.join("notes.md"), "secret").expect("file");
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read_dir(&shut).is_ok() {
+        // Running as root: nothing is refused, so there is nothing to test.
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        return;
+    }
+    let calls = [
+        ("read_file", json!({"path": "shut/notes.md"})),
+        ("list_dir", json!({"path": "shut"})),
+        ("search_files", json!({"path": "shut", "pattern": "secret"})),
+        (
+            "create_file",
+            json!({"path": "shut/new.md", "content": "x"}),
+        ),
+        (
+            "append_file",
+            json!({"path": "shut/notes.md", "content": "x"}),
+        ),
+        (
+            "edit_file",
+            json!({"path": "shut/notes.md", "old": "secret", "new": "x"}),
+        ),
+    ];
+    let outs: Vec<String> = calls.iter().map(|(n, a)| e.run_tool(n, a)).collect();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    for ((name, _), out) in calls.iter().zip(&outs) {
+        assert!(
+            out.starts_with("[no access: ") && out.ends_with("(not shared with this assistant)]"),
+            "{name}: {out}"
+        );
+    }
+    assert!(rufous_kernel::agent::run::is_tool_error(&outs[0]));
+}
+
+#[cfg(unix)]
+#[test]
+fn live_groups_are_killed_with_everything_they_started() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "sleep 30 & wait"])
+        .process_group(0)
+        .spawn()
+        .expect("spawn");
+    let live = rufous_kernel::exec::LiveGroup::register(child.id());
+    rufous_kernel::exec::kill_live_groups();
+    let st = child.wait().expect("wait");
+    assert_eq!(st.signal(), Some(9), "{st:?}");
+    drop(live);
+}

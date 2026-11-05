@@ -70,6 +70,14 @@ pub struct Config {
     /// `--backend` from the command line: over `backend`, and never written back.
     #[serde(skip)]
     pub backend_flag: Option<BackendKind>,
+    /// `--base-url` from the command line: over `local_backend.base_url` for a named
+    /// `lmstudio` or `openai` backend, and never written back (boubou-f8d).
+    #[serde(skip)]
+    pub base_url_flag: Option<String>,
+    /// `--no-start-engine`: the engine is the host's. rufous neither starts nor restarts
+    /// Ollama, and a model call that cannot connect ends the turn at once (boubou-f8d).
+    #[serde(skip)]
+    pub no_start_engine: bool,
     /// Command-output trimming: `auto` | `on` | `off`.
     pub slim_output: SlimOutput,
     /// Parallel sub-agent dispatch section (`parallel_config.py`); kept opaque until ported.
@@ -98,6 +106,8 @@ impl Default for Config {
             local_backend: Default::default(),
             backend: None,
             backend_flag: None,
+            base_url_flag: None,
+            no_start_engine: false,
             slim_output: SlimOutput::Auto,
             parallel: Default::default(),
             profiles: BTreeMap::new(),
@@ -240,6 +250,20 @@ pub fn agent_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".ollama_agent")
+}
+
+/// The user's home as the prompt names it (boubou-f8d): `RUFOUS_USER_HOME` (`--user-home`)
+/// when set; none inside a macOS App Sandbox, where the process's home is the host app's
+/// container and naming it would send the model to the wrong Desktop; else the home
+/// directory.
+pub fn user_home() -> Option<PathBuf> {
+    if let Some(v) = std::env::var_os("RUFOUS_USER_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(v));
+    }
+    if std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    dirs::home_dir()
 }
 
 pub fn config_path() -> PathBuf {
@@ -419,9 +443,21 @@ impl Config {
         }
     }
 
-    /// A named backend that cannot be used as configured: `openai` without a URL.
+    /// A named backend that cannot be used as configured: `openai` without a URL, or a
+    /// `--base-url` with no backend that takes one.
     pub fn backend_problem(&self) -> Option<String> {
         let url = self.local_backend_str("base_url");
+        if self.base_url_flag.is_some()
+            && !matches!(
+                self.named_backend(),
+                Some((BackendKind::Lmstudio | BackendKind::Openai, _))
+            )
+        {
+            return Some(
+                "--base-url needs --backend lmstudio or openai (Ollama's address is OLLAMA_HOST)"
+                    .to_string(),
+            );
+        }
         match self.named_backend() {
             Some((BackendKind::Openai, from)) if url.is_empty() => Some(format!(
                 "backend \"openai\" (from {from}) needs local_backend.base_url, the server's /v1 URL"
@@ -431,6 +467,11 @@ impl Config {
     }
 
     fn local_backend_str(&self, k: &str) -> String {
+        if k == "base_url" {
+            if let Some(url) = self.base_url_flag.as_deref() {
+                return url.trim().to_string();
+            }
+        }
         self.local_backend
             .get(k)
             .and_then(Value::as_str)

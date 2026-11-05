@@ -299,7 +299,11 @@ pub fn host_mention_note(mentions: &[(&str, &str)]) -> String {
 
 /// Arm B's hold: the reply came without running the automation the user named.
 pub fn host_mention_hold_note(mentions: &[(&str, &str)]) -> String {
-    let names = mentions.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+    let names = mentions
+        .iter()
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("⚠️ Your reply was held: you answered without running {names}, which the user named. If they want it run or want its result, call it now; if not, reply again and say why.")
 }
 
@@ -492,13 +496,25 @@ mod tests {
             inlined: true,
         };
         let hit = |t: &str| -> Vec<String> {
-            host_mentions(&host, t).iter().map(|(n, _)| n.to_string()).collect()
+            host_mentions(&host, t)
+                .iter()
+                .map(|(n, _)| n.to_string())
+                .collect()
         };
-        assert_eq!(hit("What did Say Hello return for Ada?"), vec!["choreo.say_hello"]);
-        assert_eq!(hit("run choreo.weekly_report please"), vec!["choreo.weekly_report"]);
+        assert_eq!(
+            hit("What did Say Hello return for Ada?"),
+            vec!["choreo.say_hello"]
+        );
+        assert_eq!(
+            hit("run choreo.weekly_report please"),
+            vec!["choreo.weekly_report"]
+        );
         assert_eq!(hit("Has weekly-report run?"), vec!["choreo.weekly_report"]);
         assert!(hit("Hello! Say hi to the team").is_empty());
-        assert!(hit("make a backup of my notes").is_empty(), "one-word title");
+        assert!(
+            hit("make a backup of my notes").is_empty(),
+            "one-word title"
+        );
         assert!(hit("say hellos").is_empty(), "word boundary");
     }
 

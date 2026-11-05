@@ -612,7 +612,7 @@ impl OpenAiBackend {
         let resp = self
             .rt
             .block_on(async { self.post(body).send().await })
-            .map_err(|e| ChatError::Transport(e.to_string()))?;
+            .map_err(send_error)?;
         let status = resp.status();
         if !status.is_success() {
             let text = self.rt.block_on(resp.text()).unwrap_or_default();
@@ -646,7 +646,7 @@ impl OpenAiBackend {
         let resp = self
             .rt
             .block_on(async { self.post(body).send().await })
-            .map_err(|e| ChatError::Transport(e.to_string()))?;
+            .map_err(send_error)?;
         let status = resp.status();
         if !status.is_success() {
             let text = self.rt.block_on(resp.text()).unwrap_or_default();
@@ -737,6 +737,16 @@ pub async fn list_models(
 }
 
 /// Blocking wrapper for [`probe`] (CLI start-up check).
+/// A request that never got a reply: `Unreachable` when nothing could be connected to,
+/// else a transport error the loop retries.
+fn send_error(e: reqwest::Error) -> ChatError {
+    if e.is_connect() {
+        ChatError::Unreachable(crate::ollama::connect_reason(&e))
+    } else {
+        ChatError::Transport(e.to_string())
+    }
+}
+
 pub fn probe_blocking(base_url: &str, api_key: &str, timeout: Duration) -> bool {
     crate::ollama_proc::block_on_fresh(probe(base_url, api_key, timeout))
 }

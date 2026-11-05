@@ -38,6 +38,19 @@ struct Cli {
     /// config's `backend` and `local_backend.type`, and over an enabled cloud provider.
     #[arg(long, global = true, value_parser = BackendKind::NAMES)]
     backend: Option<String>,
+    /// The engine's URL for `--backend lmstudio|openai` (the server's /v1 URL), over
+    /// `local_backend.base_url`; config.json is not written. Ollama's is `OLLAMA_HOST`.
+    #[arg(long, global = true, value_name = "URL")]
+    base_url: Option<String>,
+    /// The engine is someone else's: never start or restart Ollama, and end a turn at once
+    /// when the engine cannot be reached. For a host app that owns the model server.
+    #[arg(long, global = true)]
+    no_start_engine: bool,
+    /// The user's home as the prompt names it (`RUFOUS_USER_HOME`). Inside a macOS App
+    /// Sandbox the process's home is the host's container, so without this the prompt
+    /// names no home.
+    #[arg(long, global = true, value_name = "PATH")]
+    user_home: Option<std::path::PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -403,6 +416,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut cfg = Config::load().context("loading config.json")?;
     cfg.backend_flag = cli.backend.as_deref().and_then(BackendKind::parse);
+    cfg.base_url_flag = cli.base_url.clone();
+    cfg.no_start_engine = cli.no_start_engine;
+    if let Some(home) = &cli.user_home {
+        // Read by `config::user_home` wherever a prompt is built; set before any thread.
+        std::env::set_var("RUFOUS_USER_HOME", home);
+    }
 
     match cli.cmd {
         Cmd::Models => {
@@ -498,11 +517,18 @@ fn main() -> Result<()> {
             if let Some(problem) = cfg.backend_problem() {
                 anyhow::bail!("rufous acp: {problem}");
             }
-            if cfg.backend_openai().is_none()
-                && cfg.cloud_provider().is_none()
-                && !OllamaProc::from_config(&cfg).ensure(std::time::Duration::from_secs(25))
-            {
-                eprintln!("[rufous acp] could not start ollama; run `ollama serve` first");
+            if cfg.backend_openai().is_none() && cfg.cloud_provider().is_none() {
+                let proc = OllamaProc::from_config(&cfg);
+                if cfg.no_start_engine {
+                    if !proc.alive(std::time::Duration::from_secs(2)) {
+                        eprintln!(
+                            "[rufous acp] engine {} not answering; not starting it (--no-start-engine)",
+                            proc.host
+                        );
+                    }
+                } else if !proc.ensure(std::time::Duration::from_secs(25)) {
+                    eprintln!("[rufous acp] could not start ollama; run `ollama serve` first");
+                }
             }
             let host_tools = acp_host_tools(&policy, host_tools.as_deref());
             let (policy, skills) = product(&policy);
@@ -524,8 +550,15 @@ fn main() -> Result<()> {
                 std::sync::Arc::new(factory),
             );
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(agent.serve_stdio())
-                .map_err(|e| anyhow::anyhow!("acp: {e}"))?;
+            let served = rt.block_on(serve_acp(agent));
+            // Nothing rufous started outlives it: a host that closed stdin or sent a
+            // signal has ended the agent (boubou-f8d).
+            rufous_kernel::exec::kill_live_groups();
+            match served {
+                Ok(Some(sig)) => std::process::exit(128 + sig),
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            }
         }
         Cmd::Serve { port, workdir } => {
             let wd = match workdir {
@@ -817,10 +850,39 @@ fn install_ctrl_c(stop: Arc<AtomicBool>) {
     });
 }
 
+/// Serve ACP on stdio until the client closes stdin (`None`) or a stop signal arrives (its
+/// number), whichever is first.
+async fn serve_acp(agent: rufous_coding::RufousAcp) -> anyhow::Result<Option<i32>> {
+    let serve = async move {
+        agent
+            .serve_stdio()
+            .await
+            .map(|()| None)
+            .map_err(|e| anyhow::anyhow!("acp: {e}"))
+    };
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate())?;
+        let mut hup = signal(SignalKind::hangup())?;
+        let mut int = signal(SignalKind::interrupt())?;
+        tokio::select! {
+            r = serve => r,
+            _ = term.recv() => Ok(Some(15)),
+            _ = hup.recv() => Ok(Some(1)),
+            _ = int.recv() => Ok(Some(2)),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        serve.await
+    }
+}
+
 /// Mingbird's stdout protocol: streamed text as is, harness lines verbatim.
 /// Start-up engine check (`main()`): an OpenAI-compatible engine is only probed (we cannot
 /// start someone else's server); Ollama is started when it is down (`ensure_ollama`); the
-/// cloud provider needs neither.
+/// cloud provider needs neither. Under `--no-start-engine` Ollama is only probed.
 fn ensure_engine(cfg: &Config) {
     if let Some(eng) = cfg.backend_openai() {
         if !openai::probe_blocking(
@@ -833,10 +895,20 @@ fn ensure_engine(cfg: &Config) {
                 eng.label, eng.base_url
             );
         }
-    } else if cfg.cloud_provider().is_none()
-        && !OllamaProc::from_config(cfg).ensure(std::time::Duration::from_secs(25))
-    {
-        println!("⚠️ could not start ollama automatically; run ollama serve yourself, then retry.");
+    } else if cfg.cloud_provider().is_none() {
+        let proc = OllamaProc::from_config(cfg);
+        if cfg.no_start_engine {
+            if !proc.alive(std::time::Duration::from_secs(2)) {
+                println!(
+                    "⚠️ Ollama not answering at {}; not starting it (--no-start-engine).",
+                    proc.host
+                );
+            }
+        } else if !proc.ensure(std::time::Duration::from_secs(25)) {
+            println!(
+                "⚠️ could not start ollama automatically; run ollama serve yourself, then retry."
+            );
+        }
     }
 }
 

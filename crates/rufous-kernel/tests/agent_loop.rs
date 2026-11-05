@@ -3390,6 +3390,40 @@ fn a_transport_error_that_is_not_a_timeout_is_still_retried() {
 }
 
 #[test]
+fn an_unreachable_engine_that_is_not_ours_ends_the_turn_at_once() {
+    // --no-start-engine (boubou-f8d): the host owns the engine, so a refused connection is
+    // not ridden out with minutes of back-off.
+    let d = tempfile::tempdir().expect("tmp");
+    let (mut a, _) = fails_once(
+        d.path(),
+        ChatError::Unreachable("Connection refused (os error 61)".into()),
+    );
+    a.params.engine_unmanaged = true;
+    let err = a
+        .run(start("List the folder."), None, None)
+        .expect_err("the turn fails");
+    assert_eq!(a.backend.calls, 2, "not retried");
+    let text = err.to_string();
+    assert!(
+        text.contains("not reachable (Connection refused") && text.contains("--no-start-engine"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_unreachable_engine_rufous_manages_is_retried() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (mut a, events) = fails_once(
+        d.path(),
+        ChatError::Unreachable("Connection refused (os error 61)".into()),
+    );
+    a.run(start("List the folder."), None, None).expect("loop");
+    assert!(a.backend.calls >= 3, "retried: {}", a.backend.calls);
+    let ev = events.lock().expect("lock");
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Finished { .. })));
+}
+
+#[test]
 fn the_timeout_note_says_where_the_model_stalled() {
     use rufous_kernel::agent::run::reply_timeout_note;
     let before = reply_timeout_note("m", 240, false, 23000);
@@ -4198,7 +4232,10 @@ fn a_question_turn_is_offered_the_host_tools_and_named_them() {
     let out = a
         .run(start("What did Say Hello return for Ada?"), None, None)
         .expect("loop");
-    assert!(out[0].content.contains("chatting with the user"), "a question turn");
+    assert!(
+        out[0].content.contains("chatting with the user"),
+        "a question turn"
+    );
     assert!(out[0].content.contains("HOST TOOLS") && out[0].content.contains("choreo.say_hello"));
     let first = offered.lock().expect("lock")[0].clone();
     assert!(first.iter().any(|n| n == "choreo.say_hello"), "{first:?}");
@@ -4277,7 +4314,9 @@ fn a_named_host_tool_gets_a_note_before_the_first_call() {
         .iter()
         .find(|m| m.role == Role::User && m.content.starts_with("Hint:"))
         .expect("mention note");
-    assert!(note.content.contains("\"Say Hello\" is the app's automation choreo.say_hello"));
+    assert!(note
+        .content
+        .contains("\"Say Hello\" is the app's automation choreo.say_hello"));
     // The note sits right after the instruction, before the model's first reply.
     let at = out.iter().position(|m| std::ptr::eq(m, note)).expect("pos");
     assert!(out[at - 1].content.contains("What did Say Hello"));
@@ -4294,10 +4333,17 @@ fn a_reply_that_skips_a_named_host_tool_is_held_once() {
     );
     let holds: Vec<&Message> = out
         .iter()
-        .filter(|m| m.role == Role::User && m.content.contains("you answered without running choreo.say_hello"))
+        .filter(|m| {
+            m.role == Role::User
+                && m.content
+                    .contains("you answered without running choreo.say_hello")
+        })
         .collect();
     assert_eq!(holds.len(), 1, "{out:?}");
-    assert!(!out.iter().any(|m| m.content.starts_with("Hint:")), "arm A is off");
+    assert!(
+        !out.iter().any(|m| m.content.starts_with("Hint:")),
+        "arm A is off"
+    );
 }
 
 #[test]
@@ -4310,7 +4356,9 @@ fn a_reply_after_the_named_host_tool_ran_is_not_held() {
             _ => ChatResponse::text("It returned: Hello, Ada!"),
         },
     );
-    assert!(!out.iter().any(|m| m.content.contains("Your reply was held")));
+    assert!(!out
+        .iter()
+        .any(|m| m.content.contains("Your reply was held")));
 }
 
 #[test]

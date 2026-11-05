@@ -92,3 +92,31 @@ fn the_standard_agent_runs_its_executor_in_the_configured_slim_mode() {
         "config.json slim_output=on did not reach the executor"
     );
 }
+
+#[test]
+fn the_home_line_is_left_out_when_there_is_no_user_home() {
+    // A sandboxed helper's home is its host's container (boubou-f8d).
+    use rufous_kernel::agent::prompt::{fill_base_with, TASK_BASE};
+    let named = fill_base_with(TASK_BASE, Some("/Users/ada"));
+    assert!(named.contains("- Home directory: /Users/ada. To save"));
+    assert!(named.contains("/Users/ada/Desktop"));
+    let none = fill_base_with(TASK_BASE, None);
+    assert!(!none.contains("Home directory") && !none.contains("{USER_HOME}"));
+    assert_eq!(
+        named.lines().count(),
+        none.lines().count() + 1,
+        "only that line goes"
+    );
+}
+
+#[test]
+fn no_start_engine_makes_the_run_fail_fast_on_an_unreachable_engine() {
+    let mut p = RunParams::plain("m", ".");
+    p.apply_config(&Config::default());
+    assert!(!p.engine_unmanaged);
+    p.apply_config(&Config {
+        no_start_engine: true,
+        ..Config::default()
+    });
+    assert!(p.engine_unmanaged);
+}

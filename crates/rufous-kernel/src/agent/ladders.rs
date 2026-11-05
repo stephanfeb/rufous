@@ -497,6 +497,9 @@ impl Compaction {
 pub struct RetryLadder {
     fails: usize,
     restarts: usize,
+    /// The engine is the host's (`--no-start-engine`): an engine that cannot be connected
+    /// to will not come back on its own, so the first such failure gives up.
+    pub fail_fast_unreachable: bool,
 }
 
 /// How a model call failed, as the loop classified the error.
@@ -509,6 +512,8 @@ pub enum ChatFailure {
     ContextOverflow,
     /// A 5xx.
     Server,
+    /// Nothing could be connected to (refused, no route).
+    Unreachable,
     /// Anything else (network, timeout, malformed reply).
     Other,
 }
@@ -572,7 +577,8 @@ impl RetryLadder {
                 self.fails = 0;
                 Retry::Overflow
             }
-            ChatFailure::Server | ChatFailure::Other => {
+            ChatFailure::Unreachable if self.fail_fast_unreachable => Retry::GiveUp,
+            ChatFailure::Server | ChatFailure::Other | ChatFailure::Unreachable => {
                 self.fails += 1;
                 let server = kind == ChatFailure::Server;
                 if server && self.fails >= 4 && self.restarts < 3 {
@@ -886,6 +892,32 @@ mod tests {
         assert_eq!(c.bump(), Some(2));
         assert_eq!(c.bump(), Some(3));
         assert_eq!(c.bump(), None);
+    }
+
+    #[test]
+    fn an_unreachable_engine_gives_up_at_once_only_when_it_is_not_ours() {
+        use super::{ChatFailure, Retry, RetryLadder};
+        let mut r = RetryLadder::default();
+        assert_eq!(
+            r.on_error(ChatFailure::Unreachable),
+            Retry::Backoff {
+                nap_secs: 3,
+                give_up: false
+            }
+        );
+        let mut r = RetryLadder {
+            fail_fast_unreachable: true,
+            ..Default::default()
+        };
+        assert_eq!(r.on_error(ChatFailure::Unreachable), Retry::GiveUp);
+        assert_eq!(
+            r.on_error(ChatFailure::Other),
+            Retry::Backoff {
+                nap_secs: 3,
+                give_up: false
+            },
+            "only a refused connection is cut short"
+        );
     }
 
     #[test]

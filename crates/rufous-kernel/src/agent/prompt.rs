@@ -43,18 +43,29 @@ pub fn system_base() -> String {
     fill_base(TASK_BASE)
 }
 
-/// A task prefill with its `{PLATFORM_LINE}` and `{USER_HOME}` placeholders filled in.
+/// A task prefill with its `{PLATFORM_LINE}` and `{USER_HOME}` placeholders filled in, the
+/// home from [`crate::config::user_home`].
 pub fn fill_base(base: &str) -> String {
-    let home = dirs::home_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "~".to_string());
+    let home = crate::config::user_home().map(|p| p.to_string_lossy().into_owned());
+    fill_base_with(base, home.as_deref())
+}
+
+/// [`fill_base`] with the home given. With none (a sandboxed helper whose host named no
+/// user home, boubou-f8d) every line that would name it is left out.
+pub fn fill_base_with(base: &str, home: Option<&str>) -> String {
     let line = if cfg!(windows) {
         PLATFORM_LINE_WINDOWS
     } else {
         PLATFORM_LINE_POSIX
     };
-    base.replace("{PLATFORM_LINE}", line)
-        .replace("{USER_HOME}", &home)
+    let base = base.replace("{PLATFORM_LINE}", line);
+    match home {
+        Some(h) => base.replace("{USER_HOME}", h),
+        None => base
+            .split_inclusive('\n')
+            .filter(|l| !l.contains("{USER_HOME}"))
+            .collect(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

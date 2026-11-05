@@ -33,6 +33,30 @@ use crate::Error;
 /// Recycle bin inside the workspace. Kept as Mingbird's name so old workspaces stay readable.
 pub const TRASH_DIR: &str = ".mingbird_trash";
 
+/// The result for a path the OS refused (`EPERM`, `EACCES`). Inside a host app's sandbox
+/// that is a folder the user did not share with it (boubou-f8d); said apart from "not
+/// found", since a small model told `[not a dir]` went searching elsewhere.
+fn no_access(p: &Path) -> String {
+    format!(
+        "[no access: {} (not shared with this assistant)]",
+        p.display()
+    )
+}
+
+/// Did the OS refuse access, as opposed to the path being missing or wrong?
+fn denied(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+/// A store or disk error as a tool result: [`no_access`] for a refusal, else the error.
+fn io_failure(p: &Path, e: std::io::Error) -> String {
+    if denied(&e) {
+        no_access(p)
+    } else {
+        format!("[tool error: {e}]")
+    }
+}
+
 /// Where the text-file tools read and write the project: `read_file` (text), `create_file`,
 /// `edit_file` and `append_file` go through this seam, so a host that owns the files can
 /// stand in for the disk. The disk is the default ([`DiskStore`]); the ACP server supplies
@@ -189,8 +213,9 @@ pub enum ToolStatus {
 
 /// Result openings the executor writes for a call that did not do what was asked. New
 /// openings go here; `of_text` is the only reader.
-const ERROR_OPENINGS: [&str; 15] = [
+const ERROR_OPENINGS: [&str; 16] = [
     "[tool error",
+    "[no access",
     "[edit failed",
     "[overwrite guard",
     "[not found",
@@ -744,7 +769,7 @@ impl Executor {
         }
         let (out, repaired) = repair_escapes(&p, content);
         if let Err(e) = self.store.write(&p, &out) {
-            return format!("[tool error: {e}]");
+            return io_failure(&p, e);
         }
         let tag = if repaired {
             "escapes auto-repaired".to_string()
@@ -756,6 +781,12 @@ impl Executor {
 
     fn read_file(&mut self, path: &str, start_line: Option<u64>, end_line: Option<u64>) -> String {
         let p = self.workdir.join(path);
+        // `exists()` is false for a path the OS refuses; ask first so it is not "not found".
+        if let Err(e) = std::fs::symlink_metadata(&p) {
+            if denied(&e) {
+                return no_access(&p);
+            }
+        }
         if !p.exists() {
             return format!("[not found: {path}]");
         }
@@ -780,6 +811,7 @@ impl Executor {
 
         let full = match self.store.read(&p) {
             Ok(t) => t,
+            Err(e) if denied(&e) => return no_access(&p),
             Err(e) => return format!("[tool error: {}]", Error::io(&p, e)),
         };
         let sl = start_line.unwrap_or(0) as usize;
@@ -873,6 +905,7 @@ impl Executor {
         let p = self.workdir.join(path);
         let s = match self.store.read(&p) {
             Ok(s) => s,
+            Err(e) if denied(&e) => return no_access(&p),
             Err(e) => return format!("[tool error: {}]", Error::io(&p, e)),
         };
         if !self.edit_match {
@@ -975,7 +1008,7 @@ impl Executor {
         );
         let (out, repaired) = repair_escapes(p, out);
         if let Err(e) = self.store.write(p, &out) {
-            return format!("[tool error: {e}]");
+            return io_failure(p, e);
         }
         let tag = if repaired {
             "backed up, escapes auto-repaired"
@@ -1009,13 +1042,18 @@ impl Executor {
             _ => out,
         };
         if let Err(e) = self.store.append(&p, &out) {
-            return format!("[tool error: {e}]");
+            return io_failure(&p, e);
         }
         format!("[appended {path}]")
     }
 
     fn delete_file(&mut self, path: &str) -> String {
         let p = self.workdir.join(path);
+        if let Err(e) = std::fs::symlink_metadata(&p) {
+            if denied(&e) {
+                return no_access(&p);
+            }
+        }
         if !p.exists() {
             return format!("[not found: {path}]");
         }
@@ -1041,7 +1079,7 @@ impl Executor {
         }
         match std::fs::remove_file(&p) {
             Ok(()) => format!("[deleted {path}]"),
-            Err(e) => format!("[tool error: {e}]"),
+            Err(e) => io_failure(&p, e),
         }
     }
 
@@ -1057,6 +1095,7 @@ impl Executor {
                 names.sort();
                 names.join("\n")
             }
+            Err(e) if denied(&e) => no_access(&d),
             Err(_) => format!("[not a dir: {}]", d.display()),
         }
     }
@@ -1070,6 +1109,11 @@ impl Executor {
             Ok(r) => r,
             Err(e) => return format!("[tool error: {e}]"),
         };
+        if let Err(e) = std::fs::read_dir(&d) {
+            if denied(&e) {
+                return no_access(&d);
+            }
+        }
         let mut out = Vec::new();
         fn walk(dir: &Path, root: &Path, re: &Regex, out: &mut Vec<String>) {
             let Ok(rd) = std::fs::read_dir(dir) else {
@@ -1602,6 +1646,7 @@ pub(crate) fn run_command(
             }
         }
     };
+    let _live = LiveGroup::register(child.id());
     // Each pipe is read on its own thread and arrives over a channel, so the wait for it
     // can be bounded: a process the command backgrounded inherits the pipes and holds them
     // open for as long as it lives (bead boubou-d4z).
@@ -1712,6 +1757,41 @@ fn exit_code(st: std::process::ExitStatus) -> i32 {
         }
     }
     1
+}
+
+/// Process groups rufous started and has not reaped yet: `run_bash` commands and stdio MCP
+/// servers, by leader pid. [`kill_live_groups`] stops them when rufous itself is going away
+/// (a host closed its stdin, or a signal), so nothing it started outlives it (boubou-f8d).
+static LIVE_GROUPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// One entry in the live-group registry, removed when dropped (the group was reaped, or
+/// its owner is done with it).
+#[derive(Debug)]
+pub struct LiveGroup(u32);
+
+impl LiveGroup {
+    pub fn register(pid: u32) -> Self {
+        live_groups().push(pid);
+        LiveGroup(pid)
+    }
+}
+
+impl Drop for LiveGroup {
+    fn drop(&mut self) {
+        live_groups().retain(|&p| p != self.0);
+    }
+}
+
+fn live_groups() -> std::sync::MutexGuard<'static, Vec<u32>> {
+    LIVE_GROUPS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Kill every registered group ([`kill_tree`]); for the moment rufous exits.
+pub fn kill_live_groups() {
+    let pids = std::mem::take(&mut *live_groups());
+    for pid in pids {
+        kill_tree(pid);
+    }
 }
 
 /// Kills `pid` and everything it started. On unix the command was spawned as a process-group

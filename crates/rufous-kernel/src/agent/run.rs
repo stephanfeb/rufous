@@ -54,8 +54,9 @@ use crate::{text, Error, Result};
 
 /// `_FAIL_MARKERS`: a tool result that means "the action did not happen". Safety-ring
 /// refusals count too, otherwise a model that keeps changing paths never hits the ladder.
-pub const FAIL_MARKERS: [&str; 24] = [
+pub const FAIL_MARKERS: [&str; 25] = [
     "[edit failed",
+    "[no access",
     "[tool error",
     "[not found",
     "[web_search error",
@@ -517,8 +518,13 @@ impl Agent<DynBackend, Executor> {
             let label = format!("{} · {}", eng.label, eng.base_url);
             (Box::new(OpenAiBackend::local(&eng, &params)?), label)
         } else {
-            let b = super::OllamaBackend::new(host.clone(), &params)?
-                .with_proc(OllamaProc::from_config(cfg));
+            let b = super::OllamaBackend::new(host.clone(), &params)?;
+            // Under --no-start-engine the engine is the host's: no restarts from here.
+            let b = if cfg.no_start_engine {
+                b
+            } else {
+                b.with_proc(OllamaProc::from_config(cfg))
+            };
             (Box::new(b), format!("Ollama · {host}"))
         };
         let engine = format!("{engine} (from {})", cfg.backend_source());
@@ -731,7 +737,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sink(AgentEvent::Log(format!(
                 "[face] host tools: {} {}: {}",
                 host.names.len(),
-                if host.inlined { "inlined" } else { "over the cap, by mcp_call" },
+                if host.inlined {
+                    "inlined"
+                } else {
+                    "over the cap, by mcp_call"
+                },
                 host.names.join(", ")
             )));
         }
@@ -855,6 +865,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
 
         // Per-run ladders (agent/ladders.rs) and counters.
         let mut retry = RetryLadder::default();
+        retry.fail_fast_unreachable = params.engine_unmanaged;
         let mut compaction = Compaction::default();
         let mut calls = CallLadders::default();
         let mut productive_used = false;
@@ -1286,6 +1297,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         ChatFailure::ContextOverflow
                     } else if e.is_500() {
                         ChatFailure::Server
+                    } else if matches!(e, ChatError::Unreachable(_)) {
+                        ChatFailure::Unreachable
                     } else {
                         ChatFailure::Other
                     };
@@ -1328,6 +1341,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 log!("[{i}] API 4xx error (retrying is pointless, stopped): {e}");
                             }
                             save!();
+                            if matches!(e, ChatError::Unreachable(_)) {
+                                log!("[{i}] engine not reachable and not ours to start (--no-start-engine), stopped: {e}");
+                                return Err(Error::Ollama(format!(
+                                    "{}; rufous does not start the engine under --no-start-engine",
+                                    engine_error(engine, &e)
+                                )));
+                            }
                             return Err(Error::Ollama(engine_error(engine, &e)));
                         }
                         Retry::Overflow => {

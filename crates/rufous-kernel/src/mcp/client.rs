@@ -11,6 +11,7 @@ use rmcp::ServiceExt;
 use serde_json::Value;
 
 use super::ServerConfig;
+use crate::exec::LiveGroup;
 use crate::text::head;
 
 /// `_probe_stdio` / `_probe_http` timeout.
@@ -47,8 +48,10 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
 type Running = rmcp::service::RunningService<rmcp::RoleClient, ClientConfig>;
 
 /// Spawn or connect and finish the `initialize` handshake. The future is dropped on
-/// timeout by the caller, which kills a spawned child.
-async fn connect(cfg: &ServerConfig) -> Result<Running, String> {
+/// timeout by the caller, which kills a spawned child. A spawned server leads its own
+/// process group and is registered for as long as the caller keeps the [`LiveGroup`], so
+/// it is stopped with rufous (boubou-f8d).
+async fn connect(cfg: &ServerConfig) -> Result<(Running, Option<LiveGroup>), String> {
     if let Some(url) = &cfg.url {
         let mut config =
             rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
@@ -70,6 +73,7 @@ async fn connect(cfg: &ServerConfig) -> Result<Running, String> {
         return client_info()
             .serve(transport)
             .await
+            .map(|c| (c, None))
             .map_err(|e| e.to_string());
     }
     let command = cfg
@@ -79,12 +83,19 @@ async fn connect(cfg: &ServerConfig) -> Result<Running, String> {
         .ok_or_else(|| "server has neither command nor url".to_string())?;
     let mut cmd = tokio::process::Command::new(command);
     cmd.args(&cfg.args).envs(cfg.env.iter()).kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     // Servers chatter on stderr at startup; keep it off the agent's log (Mingbird: DEVNULL).
     let (child, _stderr) = TokioChildProcess::builder(cmd)
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("spawn {command}: {e}"))?;
-    client_info().serve(child).await.map_err(|e| e.to_string())
+    let live = child.id().map(LiveGroup::register);
+    let client = client_info()
+        .serve(child)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((client, live))
 }
 
 async fn list_probed(client: &Running) -> Result<Vec<ProbedTool>, String> {
@@ -117,7 +128,7 @@ pub fn probe_server(cfg: &ServerConfig, timeout: Duration) -> Option<Vec<ProbedT
     let rt = runtime().ok()?;
     rt.block_on(async {
         let work = async {
-            let client = connect(cfg).await?;
+            let (client, _live) = connect(cfg).await?;
             let tools = list_probed(&client).await;
             let _ = tokio::time::timeout(Duration::from_secs(2), client.cancel()).await;
             tools
@@ -153,7 +164,9 @@ pub fn call_tool(
     let tool = tool.to_string();
     rt.block_on(async {
         let work = async {
-            let client = connect(cfg).await.map_err(|e| format!("[mcp_call error: {e}]"))?;
+            let (client, _live) = connect(cfg)
+                .await
+                .map_err(|e| format!("[mcp_call error: {e}]"))?;
             let params = CallToolRequestParams::new(tool.clone()).with_arguments(args);
             let res = match tokio::time::timeout(TOOL_CALL_TIMEOUT, client.call_tool(params)).await {
                 Ok(Ok(r)) => Ok(render_result(&r)),

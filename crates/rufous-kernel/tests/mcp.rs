@@ -588,7 +588,9 @@ fn host_servers_are_assembled_whole_sorted_and_long_described_not_routed() {
         host.names,
         vec!["choreo.read_file", "choreo.say_hello", "choreo.weekly"]
     );
-    let desc = host.defs[1]["function"]["description"].as_str().unwrap_or("");
+    let desc = host.defs[1]["function"]["description"]
+        .as_str()
+        .unwrap_or("");
     assert_eq!(desc.chars().count(), rufous_kernel::mcp::HOST_DESC_CAP + 1);
     // The routed path lists only the configured server.
     let routed: Vec<String> = reg

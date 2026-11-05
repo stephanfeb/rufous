@@ -25,8 +25,8 @@ but an editor starts the agent with no environment, so without the flag the wind
 resident under Zed). The editor turns measured so far peak at 6 to 13k tokens, so 32768 is
 plenty; the window is printed in the first log line of every turn. The model can also come
 from `RUFOUS_MODEL`. Display names from `config.json` `models` are
-accepted. Ollama is started if it is down; an OpenAI-compatible or cloud engine in
-`config.json` is used as for the CLI. stdout carries the protocol, so all diagnostics go to
+accepted. Ollama is started if it is down (not under `--no-start-engine`, see "Inside a host
+app"); an OpenAI-compatible or cloud engine in `config.json` is used as for the CLI. stdout carries the protocol, so all diagnostics go to
 stderr: `RUST_LOG=rufous_coding=info` shows the harness lines (`[decider]`, `[profile]`, gates).
 
 ## Zed
@@ -139,6 +139,35 @@ as `session/update` notifications (your turns, the agent's prose, each tool call
 result, the plan if there was one; the loop's own nudges and compaction summaries are not
 shown) and then continues the conversation from where it stopped. An unknown id is
 `session not found`; a thread whose rufous session files were deleted cannot be reopened.
+
+## Inside a host app
+
+A desktop app can ship rufous as a helper and drive it over ACP (Choreo does: a pinned copy in
+`Contents/Helpers`, signed with `app-sandbox` + `inherit`; docs/sandboxed-helper.md). Inside the
+macOS App Sandbox `HOME` is the app's container, the `ollama` binary cannot be started, and a
+folder the user did not share cannot be opened. The host configures rufous through its
+environment and flags, never through the user's files:
+
+| Setting | What it does |
+|---|---|
+| `RUFOUS_HOME` | The data directory: `config.json`, `mcp.json`, skills, sessions, memory. Point it at a folder in the host's container. |
+| `OLLAMA_HOST` | Ollama's address. |
+| `--backend lmstudio\|openai --base-url <url>` | Another OpenAI-compatible engine (LM Studio on another port, llama-server), by its `/v1` URL. `config.json` is not written. `--base-url` without one of those backends is an error. |
+| `--no-start-engine` | The engine is the host's. rufous never starts or restarts Ollama, and a turn whose engine cannot be reached fails at once with `model server: <engine>: not reachable (<reason>); rufous does not start the engine under --no-start-engine`. |
+| `--user-home <path>` | The user's home as the prompt names it (`Home directory: …`). Inside a sandbox, without it, the prompt names no home, rather than the container. |
+| `AGENT_OFFLINE=1` | Local models only, no web tools or URL MCP servers, for the whole process. |
+
+A path the OS refuses comes back to the model as
+`[no access: <path> (not shared with this assistant)]` from `read_file`, `list_dir`,
+`search_files` and the writes, so the model asks the user instead of searching elsewhere.
+
+rufous exits when the host closes its stdin, even mid-turn, and on `SIGTERM`, `SIGHUP` or
+`SIGINT`. Each time it first kills the commands `run_bash` is running and the stdio MCP servers it
+started, with everything they started.
+
+`scripts/macos-universal.sh` builds the helper: arm64 + x86_64 in one binary, default features,
+macOS 11.0 or later. It checks that the binary links only the system's own libraries, and prints
+its SHA-256. rufous needs no entitlements and has no JIT.
 
 ## Not yet
 

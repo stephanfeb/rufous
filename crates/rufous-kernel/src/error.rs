@@ -16,6 +16,10 @@ pub enum Error {
     Config(String),
     #[error("model server: {0}")]
     Ollama(String),
+    /// The model server could not be connected to at all (refused, no route, no such
+    /// host); the text is the innermost cause (boubou-f8d).
+    #[error("not reachable ({0})")]
+    Unreachable(String),
     /// The model server sent nothing for the read timeout (`AGENT_APITIMEOUT`): before the
     /// first chunk (`mid_reply` false: loading or processing the prompt) or after some
     /// (bead boubou-yqu).

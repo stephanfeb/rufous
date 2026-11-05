@@ -67,6 +67,10 @@ pub enum ChatError {
     Status { status: u16, body: String },
     #[error("{0}")]
     Transport(String),
+    /// The engine could not be connected to (refused, no route): nothing is listening, as
+    /// opposed to a server that failed mid-request (boubou-f8d).
+    #[error("not reachable ({0})")]
+    Unreachable(String),
     /// No reply within the read timeout; the loop ends the turn instead of resending
     /// (bead boubou-yqu). `mid_reply`: some of the reply had arrived.
     #[error("no reply from the model within the read timeout ({})", if *mid_reply { "mid-reply" } else { "before the first token" })]
@@ -77,7 +81,7 @@ impl ChatError {
     pub fn status(&self) -> Option<u16> {
         match self {
             ChatError::Status { status, .. } => Some(*status),
-            ChatError::Transport(_) | ChatError::Timeout { .. } => None,
+            ChatError::Transport(_) | ChatError::Unreachable(_) | ChatError::Timeout { .. } => None,
         }
     }
 
@@ -100,6 +104,7 @@ impl From<Error> for ChatError {
         match e {
             Error::Status { status, body } => ChatError::Status { status, body },
             Error::Timeout { mid_reply } => ChatError::Timeout { mid_reply },
+            Error::Unreachable(why) => ChatError::Unreachable(why),
             other => ChatError::Transport(other.to_string()),
         }
     }
