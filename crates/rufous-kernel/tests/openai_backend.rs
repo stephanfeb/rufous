@@ -13,8 +13,11 @@ use rufous_kernel::agent::openai::{
     normalize_message, parse_completion, split_inline_thinking, tc_args_from_str,
     to_openai_messages, Flavor, InlineThinkSplitter, OpenAiBackend, SseAssembler,
 };
+use rufous_kernel::agent::run::model_id_warning;
 use rufous_kernel::agent::{Agent, AgentEvent, RunParams, ToolRunner};
-use rufous_kernel::config::{CloudProvider, Config, LocalBackend, OpenAiEngine};
+use rufous_kernel::config::{
+    BackendKind, CloudProvider, Config, LocalBackend, OpenAiEngine, LMSTUDIO_BASE_URL,
+};
 use rufous_kernel::ollama::{Message, Role};
 use serde_json::{json, Value};
 
@@ -27,6 +30,121 @@ fn cfg_with(local_backend: Value, cloud: Value) -> Config {
 }
 
 // ---------------- appconfig.local_backend ----------------
+
+// Named backend (bead boubou-56g): --backend over config `backend` over the legacy
+// `local_backend.type`, over an enabled cloud; each source is named for the log.
+
+#[test]
+fn a_named_backend_resolves_in_order_and_says_where_it_came_from() {
+    let mut c = cfg_with(
+        json!({"type": "openai", "base_url": "http://127.0.0.1:9931/v1"}),
+        json!({}),
+    );
+    assert_eq!(c.backend_source(), "config.json local_backend");
+    assert_eq!(c.engine_display_name(), "OpenAI-compatible");
+    c.backend = Some(BackendKind::Ollama);
+    assert_eq!(c.local_backend(), LocalBackend::Ollama);
+    assert_eq!(c.backend_source(), "config.json backend");
+    c.backend_flag = Some(BackendKind::Lmstudio);
+    let e = c.backend_openai().expect("lm studio");
+    assert_eq!(
+        (e.label, e.base_url.as_str()),
+        ("LM Studio", "http://127.0.0.1:9931/v1")
+    );
+    assert_eq!(c.backend_source(), "--backend");
+    assert_eq!(Config::default().backend_source(), "default");
+}
+
+#[test]
+fn lmstudio_defaults_its_url_and_openai_without_one_is_a_problem() {
+    let mut c = Config {
+        backend: Some(BackendKind::Lmstudio),
+        ..Config::default()
+    };
+    assert_eq!(
+        c.backend_openai().map(|e| e.base_url),
+        Some(LMSTUDIO_BASE_URL.to_string())
+    );
+    assert!(c.backend_problem().is_none());
+    c.backend = Some(BackendKind::Openai);
+    assert_eq!(
+        c.backend_problem().as_deref(),
+        Some("backend \"openai\" (from config.json backend) needs local_backend.base_url, the server's /v1 URL")
+    );
+    c.local_backend = json!({"base_url": "http://box:8080/v1/"})
+        .as_object()
+        .cloned()
+        .expect("object");
+    assert!(c.backend_problem().is_none());
+    let e = c.backend_openai().expect("openai");
+    assert_eq!(
+        (e.label, e.base_url.as_str()),
+        ("OpenAI-compatible", "http://box:8080/v1")
+    );
+}
+
+#[test]
+fn the_backend_key_reads_from_json_and_the_flag_is_never_written() {
+    let (c, dropped) = Config::from_json(r#"{"backend": "lmstudio"}"#).expect("json");
+    assert!(dropped.is_empty());
+    assert_eq!(c.backend, Some(BackendKind::Lmstudio));
+    let (c, dropped) = Config::from_json(r#"{"backend": "llamafile"}"#).expect("json");
+    assert_eq!(
+        (c.backend, dropped.len()),
+        (None, 1),
+        "an unknown name is dropped with a warning"
+    );
+    let c = Config {
+        backend_flag: Some(BackendKind::Lmstudio),
+        ..Config::default()
+    };
+    let text = serde_json::to_string(&c).expect("ser");
+    assert!(
+        !text.contains("\"backend\"") && !text.contains("backend_flag"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_named_backend_wins_over_an_enabled_cloud() {
+    let mut c = cfg_with(
+        json!({}),
+        json!({"enabled": true, "base_url": "https://example.invalid/v1", "model": "m"}),
+    );
+    assert!(c.cloud_provider().is_some());
+    assert_eq!(c.backend_source(), "config.json cloud");
+    c.backend_flag = Some(BackendKind::Ollama);
+    assert!(c.cloud_provider().is_none());
+}
+
+#[test]
+fn model_ids_written_for_the_other_engine_are_flagged() {
+    assert_eq!(
+        model_id_warning("gemma-4-12b", true).as_deref(),
+        Some("gemma-4-12b looks like an LM Studio id; Ollama names it gemma4:12b")
+    );
+    assert!(model_id_warning("google/gemma-4-12b", true).is_some());
+    assert_eq!(model_id_warning("gemma4:12b", true), None);
+    assert_eq!(model_id_warning("llama3", true), None);
+    assert_eq!(
+        model_id_warning("hf.co/bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M", true),
+        None
+    );
+    assert!(model_id_warning("gemma4:12b", false)
+        .is_some_and(|w| w.starts_with("gemma4:12b looks like an Ollama tag")));
+    assert_eq!(model_id_warning("google/gemma-4-12b", false), None);
+}
+
+#[test]
+fn a_failed_request_names_the_model_server() {
+    let e = rufous_kernel::Error::Ollama(
+        "LM Studio · http://127.0.0.1:1234/v1: error sending request".into(),
+    );
+    assert_eq!(
+        e.to_string(),
+        "model server: LM Studio · http://127.0.0.1:1234/v1: error sending request"
+    );
+}
 
 #[test]
 fn local_backend_default_is_ollama() {
@@ -221,6 +339,7 @@ fn local(dir: &Path, key: &str, num_predict: i32) -> OpenAiBackend {
         &OpenAiEngine {
             base_url: "http://127.0.0.1:1234/v1".into(),
             api_key: key.into(),
+            label: "LM Studio",
         },
         &params(dir, num_predict),
     )
@@ -486,6 +605,7 @@ fn local_engine_streams_sse_and_sends_no_bearer_without_key() {
         &OpenAiEngine {
             base_url: base,
             api_key: String::new(),
+            label: "LM Studio",
         },
         &params(d.path(), 0),
     )
@@ -515,6 +635,7 @@ fn http_error_becomes_status_error() {
         &OpenAiEngine {
             base_url: base,
             api_key: String::new(),
+            label: "LM Studio",
         },
         &params(d.path(), 0),
     )
@@ -694,4 +815,18 @@ fn messages_roles_survive_round_trip() {
     assert_eq!(out[0]["role"], "tool");
     assert_eq!(out[0]["tool_call_id"], "call_0");
     assert_eq!(Message::user("u").role, Role::User);
+}
+
+#[test]
+fn the_agent_will_not_start_on_an_openai_backend_without_a_url() {
+    let d = tempfile::tempdir().expect("tmp");
+    let c = Config {
+        backend_flag: Some(BackendKind::Openai),
+        ..Config::default()
+    };
+    match Agent::standard(params(d.path(), 0), &c) {
+        Err(rufous_kernel::Error::Config(m)) => assert!(m.contains("(from --backend)"), "{m}"),
+        Err(e) => panic!("wrong error: {e}"),
+        Ok(_) => panic!("started without a URL"),
+    }
 }

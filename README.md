@@ -68,7 +68,8 @@ the child directory, audit log, exit 53 on a severe violation); each child runs 
 `parallel.child_ctx`, the context window the capacity plan budgets for it. The hook looks at the
 plan when the loop starts and once more right after the model writes it, so a fresh task can
 dispatch (Mingbird looked only before the first turn, when a new task has no plan yet). `rufous
-plan` shows what this machine could run. The engine follows `config.json` like Mingbird: Ollama (restarted
+plan` shows what this machine could run. The engine is named by `--backend ollama|lmstudio|openai` or `"backend"` in `config.json`
+(else `local_backend.type`, as in Mingbird) and logged as `[engine] …` at run start: Ollama (restarted
 automatically after four consecutive 500s; a server rufous did not start is given time to be
 relaunched by its own supervisor, the Ollama app or systemd, and a bound port is never spawned
 over, so there is only ever one server), an OpenAI-compatible local server (LM Studio,

@@ -40,6 +40,25 @@ Agent Settings → External Agents → Add Agent → Add Custom Agent, or in `se
 }
 ```
 
+To run the same agent on LM Studio, name the backend in the arguments and use LM Studio's
+model id (one entry per engine; there is no need for a separate `RUFOUS_HOME`):
+
+```json
+"rufous LM Studio": {
+  "type": "custom",
+  "command": "/absolute/path/to/rufous",
+  "args": ["acp", "--backend", "lmstudio", "--model", "google/gemma-4-12b", "--ctx", "64000"]
+}
+```
+
+`--backend` takes `ollama`, `lmstudio` (`local_backend.base_url` from `config.json`, else
+`http://127.0.0.1:1234/v1`) or `openai` (any OpenAI-compatible server; needs
+`local_backend.base_url`), and wins over `"backend"` in `config.json`, which wins over the older
+`local_backend.type`. Each session log starts with `[engine] <server> · <url> (from <source>)`, and
+a model id written for the other engine (`gemma-4-12b` on Ollama, `gemma4:12b` on LM Studio) adds
+an `[engine] ⚠️` line. Zed keeps a running agent after a settings change: restart the agent
+thread for new arguments to apply.
+
 Then start a new external agent thread from the Agent Panel and pick rufous. The session's
 working directory is the project root Zed passes as `cwd`; rufous's session files are written
 under `~/.ollama_agent/sessions/acp_*` as for a web chat. The live checkpoint goes there too

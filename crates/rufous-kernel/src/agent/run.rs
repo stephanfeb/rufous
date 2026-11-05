@@ -446,8 +446,11 @@ pub struct Agent<B, T> {
     /// `_maybe_parallel_dispatch`: set by [`Agent::standard`] (or `with_parallel`); `None`
     /// means the hook is absent (tests, embedding).
     pub parallel: Option<DispatchHook>,
-    /// Human-readable engine label (`Ollama · host`, `cloud · model`, `OpenAI-compatible · url`).
+    /// Human-readable engine label (`Ollama · host`, `cloud · model`, `LM Studio · url`) and
+    /// what chose it; logged at run start as `[engine]` when set (bead boubou-56g).
     pub engine: String,
+    /// The engine is Ollama: the model-id check reads Ollama tags, not engine ids.
+    pub engine_is_ollama: bool,
     /// Where skills are discovered for prefill, in precedence order (`<workdir>/skills`,
     /// `<agent_home>/skills`, `<install_dir>/skills`); tests narrow it.
     pub skill_dirs: Vec<PathBuf>,
@@ -486,19 +489,24 @@ impl Agent<DynBackend, Executor> {
         // built (the loop logs the resolved profile at run start), and the config's
         // `slim_output` mode is applied under the environment's override.
         params.apply_config(cfg);
+        if let Some(problem) = cfg.backend_problem() {
+            return Err(crate::Error::Config(problem));
+        }
         let host = cfg.ollama_host();
         let offline = cfg.offline();
         let (backend, engine): (DynBackend, String) = if let Some(cp) = cfg.cloud_provider() {
             let label = format!("cloud · {} ({})", cp.model, cp.base_url);
             (Box::new(OpenAiBackend::cloud(&cp, &params)?), label)
         } else if let Some(eng) = cfg.backend_openai() {
-            let label = format!("OpenAI-compatible · {}", eng.base_url);
+            let label = format!("{} · {}", eng.label, eng.base_url);
             (Box::new(OpenAiBackend::local(&eng, &params)?), label)
         } else {
             let b = super::OllamaBackend::new(host.clone(), &params)?
                 .with_proc(OllamaProc::from_config(cfg));
             (Box::new(b), format!("Ollama · {host}"))
         };
+        let engine = format!("{engine} (from {})", cfg.backend_source());
+        let engine_is_ollama = cfg.cloud_provider().is_none() && cfg.backend_openai().is_none();
         let mut tools = Executor::new(params.workdir.clone()).with_configured_mcp();
         tools.slim_output = params.slim_output;
         if let Some(h) = &params.harness_dir {
@@ -510,6 +518,7 @@ impl Agent<DynBackend, Executor> {
         params.scope_gate = cfg.scope_gate;
         let mut agent = Agent::new(params, backend, tools);
         agent.engine = engine;
+        agent.engine_is_ollama = engine_is_ollama;
         agent.face.offline = offline;
         if child_mode {
             let allowed = agent.tools.install_child_mode(&pcfg);
@@ -555,6 +564,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             stop,
             parallel: None,
             engine: String::new(),
+            engine_is_ollama: false,
             skill_dirs,
             builtin_skills: Vec::new(),
             decider: LayeredDecider::off(),
@@ -681,7 +691,8 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             sink,
             stop,
             parallel,
-            engine: _,
+            engine,
+            engine_is_ollama,
             skill_dirs,
             builtin_skills,
             decider,
@@ -742,6 +753,12 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     None => None,
                 }
             }};
+        }
+        if !engine.is_empty() {
+            log!("[engine] {engine}");
+            if let Some(w) = model_id_warning(model, *engine_is_ollama) {
+                log!("[engine] ⚠️ {w}");
+            }
         }
         {
             let prof = &params.profile;
@@ -1253,7 +1270,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 log!("[{i}] API 4xx error (retrying is pointless, stopped): {e}");
                             }
                             save!();
-                            return Err(Error::Ollama(e.to_string()));
+                            return Err(Error::Ollama(engine_error(engine, &e)));
                         }
                         Retry::Overflow => {
                             log!(
@@ -1302,7 +1319,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             if give_up {
                                 log!("===== FAILED: repeated ollama errors (still failing after restart), stopped. Fix the engine and resume to continue from the checkpoint =====");
                                 save!();
-                                return Err(Error::Ollama(e.to_string()));
+                                return Err(Error::Ollama(engine_error(engine, &e)));
                             }
                             continue;
                         }
@@ -2901,4 +2918,33 @@ pub fn prefix_change(old: &RequestDigest, new: &RequestDigest) -> Vec<String> {
         ));
     }
     out
+}
+
+/// A model id written for the other kind of engine (bead boubou-56g): on Ollama an LM
+/// Studio id (`gemma-4-12b`, `google/gemma-4-12b`) that [`crate::profile::ollama_tag`]
+/// rewrites; on an OpenAI-compatible engine an Ollama tag (`gemma4:12b`). Warning only.
+pub fn model_id_warning(model: &str, ollama: bool) -> Option<String> {
+    let m = model.trim();
+    if ollama {
+        if m.starts_with("hf.co/") || m.starts_with("huggingface.co/") {
+            return None;
+        }
+        let tag = crate::profile::ollama_tag(m);
+        (tag != m.to_lowercase())
+            .then(|| format!("{m} looks like an LM Studio id; Ollama names it {tag}"))
+    } else {
+        m.contains(':').then(|| {
+            format!("{m} looks like an Ollama tag; this engine names its models differently (its /v1/models list)")
+        })
+    }
+}
+
+/// The text of a failed model request, naming the engine it went to.
+fn engine_error(engine: &str, e: &impl std::fmt::Display) -> String {
+    let engine = engine.split(" (from ").next().unwrap_or(engine);
+    if engine.is_empty() {
+        e.to_string()
+    } else {
+        format!("{engine}: {e}")
+    }
 }

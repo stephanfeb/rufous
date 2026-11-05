@@ -14,7 +14,7 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("config: {0}")]
     Config(String),
-    #[error("ollama: {0}")]
+    #[error("model server: {0}")]
     Ollama(String),
     /// The model server sent nothing for the read timeout (`AGENT_APITIMEOUT`): before the
     /// first chunk (`mid_reply` false: loading or processing the prompt) or after some

@@ -15,7 +15,7 @@ use rufous_kernel::agent::chat::model_can_think;
 use rufous_kernel::agent::openai;
 use rufous_kernel::agent::session::{self, load_checkpoint, load_session, sessions_dir};
 use rufous_kernel::agent::{Agent, AgentEvent, RunParams, TurnPolicy};
-use rufous_kernel::config::{agent_home, config_path, Config};
+use rufous_kernel::config::{agent_home, config_path, BackendKind, Config};
 use rufous_kernel::guards::budget::{
     elapsed_meta_path, fmt_hm, parse_duration_str, resolve_time_budget, BudgetSource,
 };
@@ -33,6 +33,11 @@ use rufous_kernel::{mcp, tools};
 #[derive(Debug, Parser)]
 #[command(name = "rufous", version = rufous_kernel::VERSION, about = "rufous · local-model autonomous agent")]
 struct Cli {
+    /// Model server: `ollama`, `lmstudio` (`local_backend.base_url` in config.json, else
+    /// http://127.0.0.1:1234/v1) or `openai` (needs `local_backend.base_url`). Over the
+    /// config's `backend` and `local_backend.type`, and over an enabled cloud provider.
+    #[arg(long, global = true, value_parser = BackendKind::NAMES)]
+    backend: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -387,7 +392,8 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let cfg = Config::load().context("loading config.json")?;
+    let mut cfg = Config::load().context("loading config.json")?;
+    cfg.backend_flag = cli.backend.as_deref().and_then(BackendKind::parse);
 
     match cli.cmd {
         Cmd::Models => {
@@ -475,6 +481,9 @@ fn main() -> Result<()> {
                 _ => anyhow::bail!("rufous acp needs --model <tag> (or RUFOUS_MODEL)"),
             };
             let model = cfg.models.get(&key).cloned().unwrap_or(key);
+            if let Some(problem) = cfg.backend_problem() {
+                anyhow::bail!("rufous acp: {problem}");
+            }
             if cfg.backend_openai().is_none()
                 && cfg.cloud_provider().is_none()
                 && !OllamaProc::from_config(&cfg).ensure(std::time::Duration::from_secs(25))
@@ -491,7 +500,9 @@ fn main() -> Result<()> {
                 Some(w) => std::path::absolute(w)?,
                 None => rufous_general::state::default_workdir(),
             };
-            let state = std::sync::Arc::new(rufous_general::AppState::new(agent_home(), wd));
+            let mut state = rufous_general::AppState::new(agent_home(), wd);
+            state.backend_flag = cfg.backend_flag;
+            let state = std::sync::Arc::new(state);
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async move {
                 let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -777,8 +788,8 @@ fn ensure_engine(cfg: &Config) {
             std::time::Duration::from_secs(3),
         ) {
             println!(
-                "⚠️ OpenAI-compatible engine not ready: {} — start LM Studio / llama.app / llama-server first, then retry.",
-                eng.base_url
+                "⚠️ {} not ready at {} — start it first, then retry.",
+                eng.label, eng.base_url
             );
         }
     } else if cfg.cloud_provider().is_none()

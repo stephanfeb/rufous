@@ -14,6 +14,31 @@ use serde_json::Value;
 use crate::{Error, Result};
 
 pub const DEFAULT_OLLAMA_HOST: &str = "http://127.0.0.1:11434";
+/// LM Studio's OpenAI-compatible endpoint when `local_backend.base_url` names none.
+pub const LMSTUDIO_BASE_URL: &str = "http://127.0.0.1:1234/v1";
+
+/// A named model server (`--backend`, config `backend`; bead boubou-56g).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendKind {
+    Ollama,
+    Lmstudio,
+    /// Any other OpenAI-compatible server; its URL is `local_backend.base_url`.
+    Openai,
+}
+
+impl BackendKind {
+    pub const NAMES: [&'static str; 3] = ["ollama", "lmstudio", "openai"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ollama" => Some(Self::Ollama),
+            "lmstudio" => Some(Self::Lmstudio),
+            "openai" => Some(Self::Openai),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -35,7 +60,16 @@ pub struct Config {
     /// Cloud (OpenAI-compatible) provider: `{base_url, api_key, model, enabled}`.
     pub cloud: serde_json::Map<String, serde_json::Value>,
     /// Local inference backend: `{}` or `{"type":"ollama"}` or `{"type":"openai", ...}`.
+    /// With `backend` named, only its `base_url` and `api_key` are read.
     pub local_backend: serde_json::Map<String, serde_json::Value>,
+    /// The model server: `"ollama"`, `"lmstudio"` (`local_backend.base_url`, else
+    /// [`LMSTUDIO_BASE_URL`]) or `"openai"` (`local_backend.base_url` required). Named, it
+    /// wins over `local_backend.type` and over an enabled `cloud`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendKind>,
+    /// `--backend` from the command line: over `backend`, and never written back.
+    #[serde(skip)]
+    pub backend_flag: Option<BackendKind>,
     /// Command-output trimming: `auto` | `on` | `off`.
     pub slim_output: SlimOutput,
     /// Parallel sub-agent dispatch section (`parallel_config.py`); kept opaque until ported.
@@ -62,6 +96,8 @@ impl Default for Config {
             offline_mode: false,
             cloud: Default::default(),
             local_backend: Default::default(),
+            backend: None,
+            backend_flag: None,
             slim_output: SlimOutput::Auto,
             parallel: Default::default(),
             profiles: BTreeMap::new(),
@@ -85,6 +121,8 @@ pub struct CloudProvider {
 pub struct OpenAiEngine {
     pub base_url: String,
     pub api_key: String,
+    /// `LM Studio` or `OpenAI-compatible`, for logs and errors.
+    pub label: &'static str,
 }
 
 /// The local inference engine.
@@ -337,7 +375,7 @@ impl Config {
     /// `cloud_provider`: the cloud (OpenAI-compatible) provider when it is enabled and
     /// complete (`base_url` + `model`). Offline mode disables it (local-first red line).
     pub fn cloud_provider(&self) -> Option<CloudProvider> {
-        if self.offline() {
+        if self.offline() || self.named_backend().is_some() {
             return None;
         }
         let s = |k: &str| {
@@ -364,24 +402,74 @@ impl Config {
         })
     }
 
-    /// `local_backend`, normalised: an `openai` entry without a `base_url` falls back to
-    /// Ollama (a half-configured engine is not an engine).
-    pub fn local_backend(&self) -> LocalBackend {
-        let s = |k: &str| {
-            self.local_backend
-                .get(k)
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        };
-        if s("type") == "openai" && !s("base_url").is_empty() {
-            return LocalBackend::OpenAi(OpenAiEngine {
-                base_url: s("base_url").trim_end_matches('/').to_string(),
-                api_key: s("api_key"),
-            });
+    /// The backend named by `--backend` or the config's `backend`, with where it came from.
+    pub fn named_backend(&self) -> Option<(BackendKind, &'static str)> {
+        self.backend_flag
+            .map(|b| (b, "--backend"))
+            .or_else(|| self.backend.map(|b| (b, "config.json backend")))
+    }
+
+    /// What chose the model server, for the `[engine]` log line.
+    pub fn backend_source(&self) -> &'static str {
+        match self.named_backend() {
+            Some((_, from)) => from,
+            None if self.cloud_provider().is_some() => "config.json cloud",
+            None if self.backend_openai().is_some() => "config.json local_backend",
+            None => "default",
         }
-        LocalBackend::Ollama
+    }
+
+    /// A named backend that cannot be used as configured: `openai` without a URL.
+    pub fn backend_problem(&self) -> Option<String> {
+        let url = self.local_backend_str("base_url");
+        match self.named_backend() {
+            Some((BackendKind::Openai, from)) if url.is_empty() => Some(format!(
+                "backend \"openai\" (from {from}) needs local_backend.base_url, the server's /v1 URL"
+            )),
+            _ => None,
+        }
+    }
+
+    fn local_backend_str(&self, k: &str) -> String {
+        self.local_backend
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+
+    /// The local engine: a named backend first ([`Config::named_backend`]); else the legacy
+    /// `local_backend`, where an `openai` entry without a `base_url` falls back to Ollama
+    /// (a half-configured engine is not an engine; a named `openai` reports it instead,
+    /// see [`Config::backend_problem`]).
+    pub fn local_backend(&self) -> LocalBackend {
+        let url = self
+            .local_backend_str("base_url")
+            .trim_end_matches('/')
+            .to_string();
+        let engine = |label: &'static str, base_url: String| {
+            LocalBackend::OpenAi(OpenAiEngine {
+                base_url,
+                api_key: self.local_backend_str("api_key"),
+                label,
+            })
+        };
+        match self.named_backend().map(|(b, _)| b) {
+            Some(BackendKind::Ollama) => LocalBackend::Ollama,
+            Some(BackendKind::Lmstudio) if url.is_empty() => {
+                engine("LM Studio", LMSTUDIO_BASE_URL.to_string())
+            }
+            Some(BackendKind::Lmstudio) => engine("LM Studio", url),
+            Some(BackendKind::Openai) | None
+                if !url.is_empty()
+                    && (self.named_backend().is_some()
+                        || self.local_backend_str("type") == "openai") =>
+            {
+                engine("OpenAI-compatible", url)
+            }
+            _ => LocalBackend::Ollama,
+        }
     }
 
     /// `backend_openai`: the local engine when it is an OpenAI-compatible server.
@@ -394,10 +482,9 @@ impl Config {
 
     /// `engine_display_name`: product names, not translated.
     pub fn engine_display_name(&self) -> &'static str {
-        if self.backend_openai().is_some() {
-            "OpenAI-compatible"
-        } else {
-            "Ollama"
+        match self.backend_openai() {
+            Some(e) => e.label,
+            None => "Ollama",
         }
     }
 

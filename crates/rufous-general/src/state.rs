@@ -144,6 +144,8 @@ pub struct AppState {
     pub session: Mutex<Option<String>>,
     run: Mutex<Option<Arc<RunHandle>>>,
     spawner: Box<dyn Spawner>,
+    /// `--backend` from the command line, laid over every config read (bead boubou-56g).
+    pub backend_flag: Option<rufous_kernel::config::BackendKind>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -174,6 +176,7 @@ impl AppState {
             session: Mutex::new(None),
             run: Mutex::new(None),
             spawner,
+            backend_flag: None,
         }
     }
 
@@ -182,7 +185,9 @@ impl AppState {
     }
 
     pub fn load_config(&self) -> Config {
-        Config::load_from(&self.config_path()).unwrap_or_default()
+        let mut cfg = Config::load_from(&self.config_path()).unwrap_or_default();
+        cfg.backend_flag = self.backend_flag;
+        cfg
     }
 
     pub fn sessions_dir(&self) -> PathBuf {
