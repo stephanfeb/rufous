@@ -69,8 +69,25 @@ compacted schema, about 60–120 tokens. On the bench, not in a live session:
 - Bench `qwen3.5:4b` and `gemma4:e2b` with 0, 5, 10, 15 and 25 synthetic host tools, using descriptions
   from the shape of Choreo's. Record the prompt tokens of the first call, the time to first token and
   the tool-choice accuracy on a fixed set: right tool, wrong tool, no tool, and a turn that needs no host tool.
-- Set `HOST_TOOL_CAP` at the largest count where tool choice on turns that need no host tool stays
-  at the 0-tool baseline, and time to first token stays within +25 %. Choreo expects 3–15.
+- Set `HOST_TOOL_CAP` at the largest count where host prompts keep their accuracy and plain
+  prompts stay at the 0-tool baseline (no host call). Prefill cost is recorded, not gated: a
+  percentage rule is unstable when the base is under a second (gemma4:e2b) or noisy (qwen3.5:4b
+  measured faster at N=5 than at N=0). Choreo expects 3–15.
+
+**Reading, 2026-11-05** (`bench/host_tools.py`, 3 runs, `bench/results/host_tools/2026-11-05`):
+
+| Model | N | Choreo's prompt | Weekly / tidy | Plain (no host call) | Prompt tok | Prefill |
+|---|---|---|---|---|---|---|
+| qwen3.5:4b | 0 | – | – | 9/9 | 1738 | 3.3 s |
+| | 5 | 3/3 | 6/6 | 9/9 | 2294 | 2.9 s |
+| | 10 | 3/3 | 6/6 | 9/9 | 2696 | 3.4 s |
+| | 15 | 3/3 | 6/6 | 9/9 | 3083 | 4.4 s |
+| | 25 | 2/3 | 6/6 | 9/9 | 3785 | 5.2 s |
+| gemma4:e2b | 0–25 | 3/3 each | 6/6 each | 9/9 each | 1406 → 3114 | 0.44 → 0.92 s |
+
+About 75 prompt tokens per host tool. qwen first slips at 25 (it dropped the run id it was asked to
+quote). `HOST_TOOL_CAP` = 15. "What did Say Hello return for Ada?" in a fresh session fails on qwen at
+every N, so it is not a cap effect: bead boubou-8c4.
 
 ## Risks
 
