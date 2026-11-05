@@ -37,17 +37,17 @@ use agent_client_protocol::schema::v1::{
     LoadSessionRequest, LoadSessionResponse, McpCapabilities, NewSessionRequest,
     NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
     ReadTextFileRequest, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
-    SessionNotification, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
-    WriteTextFileRequest,
+    SessionNotification, ToolCallId, ToolCallUpdate, WriteTextFileRequest,
 };
 use agent_client_protocol::{
     Agent as AcpAgent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder, Stdio,
 };
+use rufous_kernel::agent::session;
 use rufous_kernel::ollama::Message;
 use rufous_kernel::safety::Verdict;
 use tokio::sync::mpsc;
 
-use bridge::{kind_for, prompt_text, replay_updates, TurnBridge};
+use bridge::{prompt_text, replay_updates, TurnBridge};
 use runner::{
     AcpConfirmer, AcpFileStore, AgentFactory, BridgeMsg, ClientFs, FsRequest, PermissionAsk,
     StandardFactory, TurnSetup,
@@ -263,6 +263,11 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 "session/load mcpServers merged for the session"
                             );
                         }
+                        // A turn that ended while the user was being asked comes back with
+                        // the call answered as not run (docs/permission-waits.md).
+                        if session::recover_asking(&sessions_dir, &name) {
+                            tracing::info!(target: "rufous_coding", session = %name, "session/load recovered a turn stopped at a permission question");
+                        }
                         let Some(messages) =
                             rufous_kernel::agent::session::load_session(&sessions_dir, &name)
                         else {
@@ -419,16 +424,27 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             },
                             prior.clone(),
                             text,
-                            name,
+                            name.clone(),
                             tx,
                         );
+                        let turn_name = name;
                         let sessions = sessions.clone();
+                        let turn_dir = sessions_dir.clone();
                         let task_cx = cx.clone();
                         cx.spawn(async move {
                             let cx = task_cx;
                             let outcome =
-                                drive_turn(&cx, session_id.clone(), cwd, plan_dir, rx, stop.clone())
-                                    .await;
+                                drive_turn(
+                                &cx,
+                                session_id.clone(),
+                                cwd,
+                                plan_dir,
+                                turn_dir,
+                                turn_name,
+                                rx,
+                                stop.clone(),
+                            )
+                            .await;
                             let (result, bridge) = outcome;
                             let cancelled = stop.load(Ordering::SeqCst);
                             let mut g = lock(&sessions);
@@ -524,11 +540,14 @@ fn spawn_turn(
 
 /// The connection side of a turn: forward events as notifications, relay permission
 /// questions to the client, return the loop's result.
+#[allow(clippy::too_many_arguments)]
 async fn drive_turn(
     cx: &ConnectionTo<AcpClient>,
     session_id: SessionId,
     cwd: PathBuf,
     plan_dir: PathBuf,
+    sessions_dir: PathBuf,
+    name: String,
     mut rx: mpsc::UnboundedReceiver<BridgeMsg>,
     stop: Arc<AtomicBool>,
 ) -> (rufous_kernel::Result<Vec<Message>>, TurnBridge) {
@@ -550,7 +569,15 @@ async fn drive_turn(
             }
             BridgeMsg::Permission { ask, reply } => {
                 perm_n += 1;
+                // While the question is open a marker names the call, so a restart can
+                // tell the model it never ran (docs/permission-waits.md).
+                let (tool, args) = bridge
+                    .current_args()
+                    .map(|(n, a)| (n.to_string(), a.clone()))
+                    .unwrap_or_else(|| (ask.tool.clone(), serde_json::Value::Null));
+                session::mark_asking(&sessions_dir, &name, &tool, &args);
                 let verdict = ask_permission(cx, &session_id, &bridge, &ask, perm_n, &stop).await;
+                session::clear_asking(&sessions_dir, &name);
                 let _ = reply.send(verdict);
             }
             BridgeMsg::Fs { req, reply } => {
@@ -568,7 +595,7 @@ async fn drive_turn(
 }
 
 /// `session/request_permission` for one gate question. The subject is the tool call in
-/// flight; the options map onto the gate's verdicts (allow once, allow for the rest of this
+/// flight, with its whole proposed action ([`TurnBridge::permission_fields`]); the options map onto the gate's verdicts (allow once, allow for the rest of this
 /// run, deny). A cancelled turn, or a connection error, denies.
 async fn ask_permission(
     cx: &ConnectionTo<AcpClient>,
@@ -586,16 +613,7 @@ async fn ask_permission(
         .unwrap_or_else(|| ToolCallId::new(format!("permission_{n}")));
     let subject = ToolCallUpdate::new(
         id,
-        ToolCallUpdateFields::new()
-            .title(format!("{}: {}", ask.action, ask.target))
-            .kind(kind_for(&ask.tool))
-            .status(ToolCallStatus::Pending)
-            .raw_input(serde_json::json!({
-                "tool": ask.tool,
-                "action": ask.action,
-                "target": ask.target,
-                "workdir": ask.workdir,
-            })),
+        bridge.permission_fields(&ask.tool, &ask.action, &ask.target, &ask.workdir),
     );
     let options = vec![
         PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),

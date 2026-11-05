@@ -1364,3 +1364,206 @@ async fn a_host_can_keep_one_session_offline_and_is_told_the_engine() {
     assert_eq!(metas[1]["rufous"]["offline"], serde_json::json!(false));
     assert_eq!(*turns_offline.lock().expect("lock"), vec![true, false]);
 }
+
+/// Choreo's item 5 (docs/permission-waits.md). While the user is asked, the marker and the
+/// checkpoint are on disk; a kill at that moment leaves exactly those. The restarted server
+/// loads the session with the asked-about call answered as not run, and "go ahead" runs it
+/// again through a fresh question.
+#[tokio::test]
+async fn a_turn_killed_at_a_permission_question_is_recovered_on_load() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let home = cwd.join("home");
+    let sessions = home.join("sessions");
+    let snap = cwd.join("snap");
+    let opened_with = Arc::new(Mutex::new(Vec::new()));
+    let factory = |script: Script| ScriptedFactory {
+        script,
+        delay: Duration::ZERO,
+        forever: false,
+        turns: Arc::new(AtomicUsize::new(0)),
+        opened_with: opened_with.clone(),
+    };
+
+    // First life: the question is open; the client copies what is on disk, then the
+    // connection's answer no longer matters, since that disk state is put back below.
+    let first = RufousAcp::with_factory(
+        home.clone(),
+        "scripted:1b".into(),
+        Arc::new(factory(vec![
+            ("create_file", json!({"path": "a.txt", "content": "hello"})),
+            ("delete_file", json!({"path": "a.txt"})),
+        ])),
+    );
+    let (agent_ch, client_ch) = Channel::duplex();
+    let asked1 = Arc::new(Mutex::new(Vec::<RequestPermissionRequest>::new()));
+    let client = Client
+        .builder()
+        .name("test-editor")
+        .on_receive_request(
+            {
+                let asked1 = asked1.clone();
+                let sessions = sessions.clone();
+                let snap = snap.clone();
+                async move |req: RequestPermissionRequest,
+                            responder: Responder<RequestPermissionResponse>,
+                            _cx| {
+                    let sid = req.session_id.0.to_string();
+                    std::fs::create_dir_all(&snap).expect("snap dir");
+                    for f in [format!("{sid}.asking.json"), format!("{sid}.state.json")] {
+                        std::fs::copy(sessions.join(&f), snap.join(&f)).expect("on disk");
+                    }
+                    assert!(!sessions.join(format!("{sid}.json")).exists());
+                    asked1.lock().expect("lock").push(req);
+                    responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            PermissionOptionId::new("deny"),
+                        )),
+                    ))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(client_ch, {
+            let cwd = cwd.clone();
+            async move |cx| {
+                cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let ns = cx
+                    .send_request(NewSessionRequest::new(cwd.clone()))
+                    .block_task()
+                    .await?;
+                cx.send_request(PromptRequest::new(
+                    ns.session_id.clone(),
+                    vec!["Set up the scratch note".into()],
+                ))
+                .block_task()
+                .await?;
+                Ok(ns.session_id)
+            }
+        });
+    let (a, c) = tokio::join!(first.connect_to(agent_ch), client);
+    a.expect("agent side");
+    let sid = c.expect("client side");
+    let name = sid.0.to_string();
+
+    // The request named the whole action, and the answered question left no marker.
+    let asked = asked1.lock().expect("lock").clone();
+    assert_eq!(asked.len(), 1);
+    let raw = asked[0].tool_call.fields.raw_input.clone().expect("raw");
+    assert_eq!(raw["tool"], "delete_file");
+    assert_eq!(raw["args"], json!({"path": "a.txt"}));
+    assert!(!sessions.join(format!("{name}.asking.json")).exists());
+
+    // The kill: the disk as it was while the user was being asked.
+    std::fs::remove_file(sessions.join(format!("{name}.json"))).expect("saved");
+    for f in [format!("{name}.asking.json"), format!("{name}.state.json")] {
+        std::fs::copy(snap.join(&f), sessions.join(&f)).expect("restore");
+    }
+
+    // Second life: load, then "go ahead"; the model makes the call again and is asked again.
+    let second = RufousAcp::with_factory(
+        home.clone(),
+        "scripted:1b".into(),
+        Arc::new(factory(vec![("delete_file", json!({"path": "a.txt"}))])),
+    );
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let asked2 = Arc::new(AtomicUsize::new(0));
+    let client = recording_client!(seen.clone())
+        .on_receive_request(
+            {
+                let asked2 = asked2.clone();
+                async move |_req: RequestPermissionRequest,
+                            responder: Responder<RequestPermissionResponse>,
+                            _cx| {
+                    asked2.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            PermissionOptionId::new("allow"),
+                        )),
+                    ))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(client_ch, {
+            let cwd = cwd.clone();
+            let sid = sid.clone();
+            let seen = seen.clone();
+            async move |cx| {
+                cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
+                    .block_task()
+                    .await?;
+                let replayed = seen.lock().expect("lock").len();
+                cx.send_request(PromptRequest::new(sid.clone(), vec!["go ahead".into()]))
+                    .block_task()
+                    .await?;
+                Ok(replayed)
+            }
+        });
+    let (a, c) = tokio::join!(second.connect_to(agent_ch), client);
+    a.expect("agent side");
+    let replayed = c.expect("client side");
+
+    let seen = seen.lock().expect("lock");
+    let users: Vec<&str> = seen[..replayed]
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::UserMessageChunk(c) => match &c.content {
+                ContentBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        users,
+        vec!["Set up the scratch note"],
+        "the prompt survived"
+    );
+    let results: Vec<(ToolCallStatus, String)> = seen[..replayed]
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::ToolCallUpdate(t) => Some((
+                t.fields.status?,
+                t.fields
+                    .raw_output
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "{seen:#?}");
+    assert_eq!(results[0].0, ToolCallStatus::Completed);
+    assert_eq!(results[1].0, ToolCallStatus::Failed);
+    assert_eq!(
+        results[1].1,
+        rufous_kernel::agent::session::NOT_RUN_ASKED,
+        "the asked-about call replays as not run"
+    );
+    assert!(!sessions.join(format!("{name}.asking.json")).exists());
+
+    // The live turn: asked again, allowed, done.
+    assert_eq!(asked2.load(Ordering::SeqCst), 1);
+    let live: Vec<_> = seen[replayed..]
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::ToolCallUpdate(t) => t.fields.status,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(live, vec![ToolCallStatus::Completed]);
+    let saved = rufous_kernel::agent::session::load_session(&sessions, &name).expect("saved");
+    assert!(saved
+        .iter()
+        .any(|m| m.content == rufous_kernel::agent::session::NOT_RUN_ASKED));
+    assert!(saved.iter().any(|m| m.content == "[deleted a.txt]"));
+}

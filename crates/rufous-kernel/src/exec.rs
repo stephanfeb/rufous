@@ -213,8 +213,10 @@ pub enum ToolStatus {
 
 /// Result openings the executor writes for a call that did not do what was asked. New
 /// openings go here; `of_text` is the only reader.
-const ERROR_OPENINGS: [&str; 17] = [
+const ERROR_OPENINGS: [&str; 19] = [
     "[tool error",
+    "[not run:",
+    "[interrupted:",
     "[offline:",
     "[no access",
     "[edit failed",

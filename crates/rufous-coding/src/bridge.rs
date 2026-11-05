@@ -100,6 +100,57 @@ impl TurnBridge {
         self.pending.back().map(|p| p.id.clone())
     }
 
+    /// The name and arguments of the tool call currently running.
+    pub fn current_args(&self) -> Option<(&str, &Value)> {
+        self.pending.back().map(|p| (p.name.as_str(), &p.args))
+    }
+
+    /// The subject of a permission request (docs/permission-waits.md). The title is the
+    /// gate's question, since it says why rufous asks. `rawInput` keeps the gate's keys and
+    /// adds the call's complete `args`. The content is what the call will do: a write's diff,
+    /// the command, the URL, or any other call's arguments. A user answering hours later
+    /// sees the action itself in the request.
+    pub fn permission_fields(
+        &self,
+        tool: &str,
+        action: &str,
+        target: &str,
+        workdir: &Path,
+    ) -> ToolCallUpdateFields {
+        let mut raw = serde_json::json!({
+            "tool": tool,
+            "action": action,
+            "target": target,
+            "workdir": workdir,
+        });
+        let mut fields = ToolCallUpdateFields::new()
+            .title(format!("{action}: {target}"))
+            .kind(kind_for(tool))
+            .status(ToolCallStatus::Pending);
+        if let Some((name, args)) = self.current_args() {
+            raw["args"] = args.clone();
+            let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
+            let content = match diff_for(name, args, &self.cwd) {
+                Some(diff) => Some(ToolCallContent::Diff(diff)),
+                None => match name {
+                    "run_bash" => s("command").or_else(|| s("cmd")),
+                    "web_fetch" => s("url"),
+                    _ => (!args.is_null() && args.as_object().is_none_or(|o| !o.is_empty()))
+                        .then(|| serde_json::to_string_pretty(args).unwrap_or_default()),
+                }
+                .map(ToolCallContent::from),
+            };
+            if let Some(c) = content {
+                fields = fields.content(vec![c]);
+            }
+            let locations = locations_for(name, args, &self.cwd);
+            if !locations.is_empty() {
+                fields = fields.locations(locations);
+            }
+        }
+        fields.raw_input(raw)
+    }
+
     /// Why the turn stopped, from what the loop reported.
     pub fn stop_reason(&self, cancelled: bool) -> StopReason {
         if cancelled {
@@ -935,5 +986,73 @@ mod tests {
         assert_eq!(p.entries.len(), 2);
         assert_eq!(p.entries[0].status, PlanEntryStatus::Completed);
         assert_eq!(p.entries[1].status, PlanEntryStatus::InProgress);
+    }
+
+    #[test]
+    fn a_permission_request_carries_the_whole_proposed_action() {
+        let cwd = Path::new("/w");
+        let ask = |b: &TurnBridge, tool: &str| {
+            b.permission_fields(tool, "write outside the workspace", "/x/n.md", cwd)
+        };
+
+        let mut b = TurnBridge::new(cwd);
+        b.on_event(call(
+            "create_file",
+            json!({"path": "/x/n.md", "content": "hi\n"}),
+        ));
+        let f = ask(&b, "create_file");
+        assert_eq!(
+            f.title.as_deref(),
+            Some("write outside the workspace: /x/n.md")
+        );
+        assert_eq!(f.status, Some(ToolCallStatus::Pending));
+        let raw = f.raw_input.expect("raw input");
+        assert_eq!(raw["tool"], "create_file");
+        assert_eq!(raw["target"], "/x/n.md");
+        assert_eq!(raw["workdir"], "/w");
+        assert_eq!(raw["args"]["content"], "hi\n");
+        match f.content.as_deref() {
+            Some([ToolCallContent::Diff(d)]) => {
+                assert_eq!(d.path, PathBuf::from("/x/n.md"));
+                assert_eq!(d.new_text, "hi\n");
+                assert_eq!(d.old_text, None);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(f.locations.map(|l| l.len()), Some(1));
+
+        let mut b = TurnBridge::new(cwd);
+        b.on_event(call(
+            "edit_file",
+            json!({"path": "a.rs", "old": "x", "new": "y"}),
+        ));
+        match ask(&b, "edit_file").content.as_deref() {
+            Some([ToolCallContent::Diff(d)]) => {
+                assert_eq!(d.path, PathBuf::from("/w/a.rs"));
+                assert_eq!(
+                    (d.old_text.as_deref(), d.new_text.as_str()),
+                    (Some("x"), "y")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let mut b = TurnBridge::new(cwd);
+        b.on_event(call("run_bash", json!({"command": "rm -rf build"})));
+        let f = ask(&b, "run_bash");
+        assert_eq!(f.raw_input.expect("raw")["args"]["command"], "rm -rf build");
+        match f.content.as_deref() {
+            Some([ToolCallContent::Content(c)]) => match &c.content {
+                ContentBlock::Text(t) => assert_eq!(t.text, "rm -rf build"),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(f.locations, None);
+
+        // No call in flight: the gate's question alone, as before.
+        let f = ask(&TurnBridge::new(cwd), "run_bash");
+        assert_eq!(f.content, None);
+        assert!(f.raw_input.expect("raw").get("args").is_none());
     }
 }

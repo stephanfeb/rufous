@@ -140,6 +140,16 @@ result, the plan if there was one; the loop's own nudges and compaction summarie
 shown) and then continues the conversation from where it stopped. An unknown id is
 `session not found`; a thread whose rufous session files were deleted cannot be reopened.
 
+A permission question can wait as long as it needs to; nothing times it out. The request
+carries the whole proposed action: `rawInput.args` holds the call's complete arguments beside
+the gate's `tool`, `action`, `target` and `workdir`, and the content is the write's diff, the
+command, the URL, or the other call's arguments. If rufous stops while a question is open
+(killed, a crash, the host quitting), the next `session/load` recovers that turn: the replay
+shows your prompt and the call, failed with `[not run: rufous stopped while this call was
+waiting for the user's permission, so nothing was done. …]`. Your next prompt ("go ahead")
+makes the model call it again, and you are asked again (bead boubou-lbo,
+`docs/permission-waits.md`).
+
 ## Inside a host app
 
 A desktop app can ship rufous as a helper and drive it over ACP (Choreo does: a pinned copy in

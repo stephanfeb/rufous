@@ -27,6 +27,9 @@
 //!   from tracing; written by [`SessionLog`] on every surface that names its session
 //!   (rufous addition, bead boubou-bmq), so a live editor session is read by the same
 //!   bench parser as a CLI run. `AGENT_SESSION_LOG=0` switches it off.
+//! - `<sessions>/<name>.asking.json`: the call a permission question is open for, present
+//!   only while the user is being asked (rufous addition, bead boubou-lbo). One found at
+//!   `session/load` means the process ended mid-question; see [`recover_asking`].
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -278,6 +281,101 @@ pub fn append_decision(dir: &Path, name: &str, record: &Value) {
 pub fn load_session(dir: &Path, name: &str) -> Option<Vec<Message>> {
     let raw = std::fs::read_to_string(dir.join(format!("{name}.json"))).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+/// `<sessions>/<name>.asking.json`: the call a permission question is open for.
+pub fn asking_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.asking.json"))
+}
+
+/// Record that the user is being asked about `tool` with `args`; removed by
+/// [`clear_asking`] once there is an answer. Best effort, like the other sidecars.
+pub fn mark_asking(dir: &Path, name: &str, tool: &str, args: &Value) {
+    let _ = std::fs::create_dir_all(dir);
+    let marker = serde_json::json!({
+        "tool": tool,
+        "args": args,
+        "asked_at": chrono::Local::now().to_rfc3339(),
+    });
+    let _ = atomic_write_json(&asking_path(dir, name), &marker);
+}
+
+pub fn clear_asking(dir: &Path, name: &str) {
+    let _ = std::fs::remove_file(asking_path(dir, name));
+}
+
+/// The result of the call a permission question was open for when rufous stopped
+/// (docs/permission-waits.md). It tells the model what to do in words.
+pub const NOT_RUN_ASKED: &str = "[not run: rufous stopped while this call was waiting for the \
+user's permission, so nothing was done. If the user wants it now, make this same call \
+again; they will be asked again.]";
+
+/// The result of a call later in the same message, which never started.
+pub const NOT_RUN_LATER: &str =
+    "[not run: rufous stopped before this call started, so nothing was done.]";
+
+/// The result of a call earlier in the same message, which ran but whose result was lost.
+pub const INTERRUPTED: &str = "[interrupted: rufous stopped before this call's result was \
+saved; what it did is unknown. Check before repeating it.]";
+
+/// Recover a turn that ended while the user was being asked for permission (bead
+/// boubou-lbo). When the marker exists and the checkpoint ends in the assistant message
+/// holding the asked-about call, the checkpoint (which holds the user's prompt and the
+/// call) becomes the saved session, with a result for each of that message's calls:
+/// [`INTERRUPTED`] before the asked-about one, [`NOT_RUN_ASKED`] for it, [`NOT_RUN_LATER`]
+/// after it. The marker is removed either way; a marker that matches no checkpoint tail is
+/// stale and changes nothing. Returns whether the session was recovered.
+pub fn recover_asking(dir: &Path, name: &str) -> bool {
+    let marker_path = asking_path(dir, name);
+    let Some(marker) = std::fs::read_to_string(&marker_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+    else {
+        let _ = std::fs::remove_file(&marker_path);
+        return false;
+    };
+    let recovered = recovered_history(dir, name, &marker);
+    if let Some(msgs) = &recovered {
+        let _ = atomic_write_json(&dir.join(format!("{name}.json")), msgs);
+        let mut upd = Map::new();
+        upd.insert("status".into(), Value::String("interrupted".into()));
+        upd.insert("msgs".into(), Value::from(msgs.len()));
+        merge_session_meta(dir, name, upd);
+    }
+    let _ = std::fs::remove_file(&marker_path);
+    recovered.is_some()
+}
+
+/// The checkpoint with its trailing calls answered, or `None` when it does not end in the
+/// marker's call. The raw file is read: [`load_checkpoint_from`] would strip the calls.
+fn recovered_history(dir: &Path, name: &str, marker: &Value) -> Option<Vec<Message>> {
+    let tool = marker.get("tool")?.as_str()?;
+    let args = marker.get("args").cloned().unwrap_or(Value::Null);
+    let raw = std::fs::read_to_string(state_path(dir, name)).ok()?;
+    let mut msgs: Vec<Message> = serde_json::from_str(&raw).ok()?;
+    let last = msgs.last()?;
+    if last.role != Role::Assistant || last.tool_calls.is_empty() {
+        return None;
+    }
+    let calls: Vec<String> = last
+        .tool_calls
+        .iter()
+        .map(|tc| tc.function.name.clone())
+        .collect();
+    let asked = last
+        .tool_calls
+        .iter()
+        .rposition(|tc| tc.function.name == tool && tc.function.arguments == args)
+        .or_else(|| calls.iter().rposition(|n| n == tool))?;
+    for (i, call) in calls.into_iter().enumerate() {
+        let text = match i.cmp(&asked) {
+            std::cmp::Ordering::Less => INTERRUPTED,
+            std::cmp::Ordering::Equal => NOT_RUN_ASKED,
+            std::cmp::Ordering::Greater => NOT_RUN_LATER,
+        };
+        msgs.push(Message::tool(call, text));
+    }
+    Some(msgs)
 }
 
 pub fn load_session_meta(dir: &Path, name: &str) -> Map<String, Value> {
@@ -556,5 +654,94 @@ mod log_tests {
             Some(false)
         );
         assert_eq!(super::super::parse_switch("AGENT_SESSION_LOG", None), None);
+    }
+}
+
+#[cfg(test)]
+mod asking_tests {
+    use super::*;
+    use crate::ollama::{FunctionCall, ToolCall};
+    use serde_json::json;
+
+    fn call(name: &str, args: Value) -> ToolCall {
+        ToolCall {
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: args,
+            },
+        }
+    }
+
+    /// What a kill mid-question leaves: the previous turn's session, a checkpoint ending in
+    /// the message whose second call was being asked about, and the marker.
+    fn killed_mid_question(dir: &Path) -> Vec<Message> {
+        let earlier = vec![Message::user("first"), Message::assistant("done")];
+        atomic_write_json(&dir.join("s.json"), &earlier).expect("session");
+        let mut asked = Message::assistant("");
+        asked.tool_calls = vec![
+            call("read_file", json!({"path": "a"})),
+            call("delete_file", json!({"path": "a"})),
+            call("read_file", json!({"path": "b"})),
+        ];
+        let mut ckpt = earlier;
+        ckpt.push(Message::user("tidy up"));
+        ckpt.push(asked);
+        write_checkpoint_to(&state_path(dir, "s"), &ckpt);
+        mark_asking(dir, "s", "delete_file", &json!({"path": "a"}));
+        ckpt
+    }
+
+    #[test]
+    fn a_turn_stopped_at_a_question_comes_back_with_its_calls_answered() {
+        let d = tempfile::tempdir().expect("tmp");
+        let ckpt = killed_mid_question(d.path());
+        assert!(asking_path(d.path(), "s").is_file());
+
+        assert!(recover_asking(d.path(), "s"));
+        let msgs = load_session(d.path(), "s").expect("saved");
+        assert_eq!(msgs.len(), ckpt.len() + 3);
+        assert_eq!(msgs[2].content, "tidy up");
+        let results: Vec<(&str, &str)> = msgs[ckpt.len()..]
+            .iter()
+            .map(|m| (m.tool_name.as_deref().unwrap_or(""), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                ("read_file", INTERRUPTED),
+                ("delete_file", NOT_RUN_ASKED),
+                ("read_file", NOT_RUN_LATER),
+            ]
+        );
+        assert!(results
+            .iter()
+            .all(|(_, r)| crate::agent::run::is_tool_error(r)));
+        assert!(!asking_path(d.path(), "s").exists());
+        assert_eq!(
+            load_session_meta(d.path(), "s").get("status"),
+            Some(&json!("interrupted"))
+        );
+        // Once only: a second load finds no marker and changes nothing.
+        assert!(!recover_asking(d.path(), "s"));
+        assert_eq!(
+            load_session(d.path(), "s").expect("saved").len(),
+            msgs.len()
+        );
+    }
+
+    #[test]
+    fn a_stale_marker_is_removed_and_changes_nothing() {
+        let d = tempfile::tempdir().expect("tmp");
+        killed_mid_question(d.path());
+        // The turn went on and ended: the checkpoint no longer ends in the call.
+        let ended = vec![Message::user("tidy up"), Message::assistant("done")];
+        write_checkpoint_to(&state_path(d.path(), "s"), &ended);
+
+        assert!(!recover_asking(d.path(), "s"));
+        assert_eq!(load_session(d.path(), "s").expect("saved").len(), 2);
+        assert!(!asking_path(d.path(), "s").exists());
+
+        // No marker at all is the common case.
+        assert!(!recover_asking(d.path(), "s"));
     }
 }

@@ -54,8 +54,10 @@ use crate::{text, Error, Result};
 
 /// `_FAIL_MARKERS`: a tool result that means "the action did not happen". Safety-ring
 /// refusals count too, otherwise a model that keeps changing paths never hits the ladder.
-pub const FAIL_MARKERS: [&str; 26] = [
+pub const FAIL_MARKERS: [&str; 28] = [
     "[edit failed",
+    "[not run:",
+    "[interrupted:",
     "[offline:",
     "[no access",
     "[tool error",
