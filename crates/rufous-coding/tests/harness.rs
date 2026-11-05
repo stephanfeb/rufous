@@ -13,9 +13,13 @@ fn the_preset_is_the_kernel_conversation_under_this_name_prompt_and_gate() {
     assert_eq!(p.prompt, Prompt::Task(harness::TASK_PROMPT));
     // Bead boubou-78s: the one gate a conversation turn takes here, a file the instruction
     // asks to write must have been written (or the reply say why not) before the turn ends.
+    // Bead boubou-ear adds the plan hold, boubou-bcs the claims hold.
     assert_eq!(
         p.gates,
-        Gates::NONE.with(Gate::NamedWrites).with(Gate::PlanSync)
+        Gates::NONE
+            .with(Gate::NamedWrites)
+            .with(Gate::PlanSync)
+            .with(Gate::Claims)
     );
     assert_eq!(
         TurnPolicy {

@@ -1074,12 +1074,16 @@ mod tests {
             },
             c
         );
-        // Since bead boubou-ear both hold a turn that ends with its own plan still open.
+        // Since bead boubou-ear both hold a turn that ends with its own plan still open, and
+        // since boubou-bcs one that claims its code works with nothing run to show it.
         assert_eq!(
             c.gates,
-            Gates::NONE.with(Gate::NamedWrites).with(Gate::PlanSync)
+            Gates::NONE
+                .with(Gate::NamedWrites)
+                .with(Gate::PlanSync)
+                .with(Gate::Claims)
         );
-        assert_eq!(g.gates, Gates::NONE.with(Gate::PlanSync));
+        assert_eq!(g.gates, Gates::NONE.with(Gate::PlanSync).with(Gate::Claims));
         assert_eq!(
             rufous_general::harness::TASK_PROMPT,
             rufous_coding::harness::TASK_PROMPT

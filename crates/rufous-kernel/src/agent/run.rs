@@ -865,6 +865,10 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let mut plan_seen = plan_at_start.clone();
         let mut producing_calls = 0usize;
         let mut plan_holds = 0;
+        // The claims hold (bead boubou-bcs): once per turn, at the reply or the finish that
+        // ends a conversation turn.
+        let claims_hold_on = policy.text_ends_turn && !params.ablated(ablation::CLAIMS_HOLD);
+        let mut claims_holds = 0;
         let mut plan_hold_mark: Option<(Vec<TodoItem>, usize)> = None;
         // The circling ladder (bead boubou-m5d); `Some(refused calls)` once at a checkpoint.
         let circling_on = policy.checkpoint && !params.ablated(ablation::CHECKPOINT);
@@ -1574,6 +1578,25 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             }
                         }
                     }
+                    // The claims hold (bead boubou-bcs): a reply that says this turn's code
+                    // works, with nothing run after the last write to show it, is held once.
+                    if claims_hold_on
+                        && turn.gates.has(Gate::Claims)
+                        && turn.route != Route::Question
+                    {
+                        let instruction = qa::task_routing_text(&messages);
+                        if let Some(note) = claims_hold_step(
+                            i,
+                            &content,
+                            &cmd_records,
+                            &instruction,
+                            &mut claims_holds,
+                            &mut |l| log!("{l}"),
+                        ) {
+                            messages.push(Message::user(note));
+                            continue;
+                        }
+                    }
                     // The reply is the turn's answer: no note, no forced finish, nothing
                     // added to the history the next turn will see.
                     log!("[{i}] text reply ends the turn ({})", policy.name);
@@ -1991,6 +2014,27 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             messages.push(Message::user(msg));
                             messages.push(Message::tool_output(
                                 "[finish rejected: the summary contradicts this turn's command results. Verify for real or report the failure, then finish.]",
+                            ));
+                            continue;
+                        }
+                    }
+                    // The claims hold at a conversation turn's finish (bead boubou-bcs).
+                    if claims_hold_on
+                        && turn.gates.has(Gate::Claims)
+                        && turn.route != Route::Question
+                    {
+                        let instruction = qa::task_routing_text(&messages);
+                        if let Some(note) = claims_hold_step(
+                            i,
+                            &summary,
+                            &cmd_records,
+                            &instruction,
+                            &mut claims_holds,
+                            &mut |l| log!("{l}"),
+                        ) {
+                            messages.push(Message::user(note));
+                            messages.push(Message::tool_output(
+                                "[finish held: the summary claims an outcome nothing shown this turn backs. Run something that shows it, or say it is not yet run, then finish.]",
                             ));
                             continue;
                         }
@@ -2946,5 +2990,39 @@ fn engine_error(engine: &str, e: &impl std::fmt::Display) -> String {
         e.to_string()
     } else {
         format!("{engine}: {e}")
+    }
+}
+
+/// One claims-hold decision (bead boubou-bcs): the note to send when `reply` makes an
+/// outcome claim nothing after the turn's last write backs and the turn has not been held
+/// for one yet; logs the claim either way.
+fn claims_hold_step(
+    i: usize,
+    reply: &str,
+    cmds: &[integrity::CommandRecord],
+    instruction: &str,
+    holds: &mut usize,
+    log: &mut dyn FnMut(String),
+) -> Option<String> {
+    let claim = integrity::outcome_claim(reply)?;
+    match integrity::claim_backing(cmds, instruction) {
+        integrity::ClaimBacking::NoWrite => None,
+        integrity::ClaimBacking::Backed(by) => {
+            log(format!("[{i}] [claims] \"{claim}\" backed by {by}"));
+            None
+        }
+        integrity::ClaimBacking::Unbacked(why) if *holds >= 1 => {
+            log(format!(
+                "[{i}] [claims] released: \"{claim}\" still unbacked ({why})"
+            ));
+            None
+        }
+        integrity::ClaimBacking::Unbacked(why) => {
+            *holds += 1;
+            log(format!(
+                "[{i}] ⚠️ [claims] hold: \"{claim}\" ({why}), reply held"
+            ));
+            Some(integrity::claims_hold_note(&claim, &why))
+        }
     }
 }

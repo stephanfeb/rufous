@@ -3873,3 +3873,252 @@ fn a_gemma_native_call_leaked_as_text_runs_instead_of_ending_the_turn() {
         Some("Built; the plan is done.")
     );
 }
+
+// Claims hold (bead boubou-bcs): a conversation turn that wrote code and then says it works,
+// with nothing run after the last write to show it, is held once; a clean run, a hedge or a
+// second unbacked claim (released) ends it. At the finish of a conversation turn too.
+
+struct ScriptShell(Vec<(&'static str, &'static str)>);
+
+impl ToolRunner for ScriptShell {
+    fn run_tool(&mut self, name: &str, args: &Value) -> String {
+        match name {
+            "run_bash" => {
+                let cmd = args["command"].as_str().unwrap_or("");
+                self.0
+                    .iter()
+                    .find(|(k, _)| cmd.contains(k))
+                    .map_or("[exit 0]\nSTDOUT:\n", |(_, out)| out)
+                    .to_string()
+            }
+            "create_file" | "edit_file" => format!("[written {}]", args["path"]),
+            _ => "[tool error: not scripted]".to_string(),
+        }
+    }
+}
+
+fn claims_policy() -> TurnPolicy {
+    TurnPolicy {
+        name: "coding-test",
+        gates: Gates::NONE.with(Gate::Claims),
+        ..TurnPolicy::conversation()
+    }
+}
+
+fn run_claims<F: FnMut(usize) -> ChatResponse>(
+    policy: TurnPolicy,
+    ablation: &[&str],
+    shell: Vec<(&'static str, &'static str)>,
+    task: &str,
+    f: F,
+) -> (Vec<Message>, Vec<String>) {
+    let d = tempfile::tempdir().expect("tmp");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink_logs = logs.clone();
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.policy = policy;
+    params.ablation = ["anti_loop", "corrector"]
+        .iter()
+        .chain(ablation)
+        .map(|s| s.to_string())
+        .collect();
+    let backend = Lens {
+        n: 0,
+        f,
+        seen: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut a = Agent::new(params, backend, ScriptShell(shell)).with_sink(move |ev| {
+        if let AgentEvent::Log(l) = ev {
+            sink_logs.lock().expect("lock").push(l);
+        }
+    });
+    a.sessions_dir = d.path().join("sessions");
+    let msgs = a.run(start(task), None, None).expect("loop");
+    let logs = logs.lock().expect("lock").clone();
+    (msgs, logs)
+}
+
+fn edit_app() -> ChatResponse {
+    ChatResponse::call(
+        "",
+        "edit_file",
+        json!({"path": "src/App.vue", "old": "a", "new": "b"}),
+    )
+}
+
+const HELD: &str = "⚠️ Your reply was held: it says";
+
+#[test]
+fn an_unbacked_fix_claim_is_held_once_and_a_clean_run_then_backs_it() {
+    let (msgs, logs) = run_claims(
+        claims_policy(),
+        &[],
+        vec![("npm run build", "[exit 0]\nSTDOUT:\n✓ built in 1.2s\n")],
+        "Fix the blank page.",
+        |n| match n {
+            1 => edit_app(),
+            2 => ChatResponse::text("Fixed the blank page; it now loads."),
+            3 => ChatResponse::call(
+                "",
+                "run_bash",
+                json!({"command": "cd frontend && npm run build"}),
+            ),
+            _ => ChatResponse::text("Fixed the blank page; the build is clean."),
+        },
+    );
+    let held = user_msgs(&msgs, HELD);
+    assert_eq!(held.len(), 1);
+    assert!(
+        held[0].content.contains(
+            "\"Fixed the\", but nothing ran after your last write (`edit_file src/App.vue`)"
+        ),
+        "{}",
+        held[0].content
+    );
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("[claims] hold: \"Fixed the\"")),
+        "{logs:#?}"
+    );
+    assert!(logs
+        .iter()
+        .any(|l| l.contains("[claims] \"Fixed the\" backed by `npm run build`")));
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("Fixed the blank page; the build is clean.")
+    );
+}
+
+#[test]
+fn a_run_that_prints_a_failure_does_not_back_and_a_second_claim_is_released() {
+    let (msgs, logs) = run_claims(
+        claims_policy(),
+        &[],
+        vec![("curl", "[exit 0]\nSTDOUT:\n{\"message\":\"Not Found\"}\n")],
+        "The home page is a 404.",
+        |n| match n {
+            1 => edit_app(),
+            2 => ChatResponse::call(
+                "",
+                "run_bash",
+                json!({"command": "curl -s http://localhost:8080/ | head"}),
+            ),
+            3 => ChatResponse::text("Fixed the 404 error for static resources."),
+            _ => ChatResponse::text("Fixed the 404 error for static resources, as I said."),
+        },
+    );
+    let held = user_msgs(&msgs, HELD);
+    assert_eq!(held.len(), 1);
+    assert!(
+        held[0]
+            .content
+            .contains("exited 0 but printed \"{\"message\":\"Not Found\"}\""),
+        "{}",
+        held[0].content
+    );
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("[claims] released: \"Fixed the\" still unbacked")),
+        "{logs:#?}"
+    );
+}
+
+#[test]
+fn a_reworded_reply_after_the_hold_ends_the_turn() {
+    let (msgs, logs) = run_claims(
+        claims_policy(),
+        &[],
+        vec![],
+        "Add the toggle.",
+        |n| match n {
+            1 => edit_app(),
+            2 => ChatResponse::text("I added the toggle and verified that it updates the store."),
+            _ => {
+                ChatResponse::text("I added the toggle to App.vue; it is written but not yet run.")
+            }
+        },
+    );
+    assert_eq!(user_msgs(&msgs, HELD).len(), 1);
+    assert!(logs
+        .iter()
+        .any(|l| l.contains("[claims] hold: \"verified that\"")));
+    assert!(!logs.iter().any(|l| l.contains("[claims] released")));
+    assert_eq!(
+        msgs.last().map(|m| m.content.as_str()),
+        Some("I added the toggle to App.vue; it is written but not yet run.")
+    );
+}
+
+#[test]
+fn a_finish_that_claims_a_fix_is_held_the_same_way() {
+    let (msgs, logs) = run_claims(
+        claims_policy(),
+        &[],
+        vec![],
+        "Fix the npm build.",
+        |n| match n {
+            1 => edit_app(),
+            2 => ChatResponse::call(
+                "",
+                "finish",
+                json!({"summary": "Fixed the npmBuild task; the build now works."}),
+            ),
+            _ => ChatResponse::call(
+                "",
+                "finish",
+                json!({"summary": "Changed the npmBuild task to source nvm first; not yet run."}),
+            ),
+        },
+    );
+    assert_eq!(user_msgs(&msgs, HELD).len(), 1);
+    assert!(msgs.iter().any(|m| m
+        .content
+        .starts_with("[finish held: the summary claims an outcome")));
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("[claims] hold: \"Fixed the\"")),
+        "{logs:#?}"
+    );
+}
+
+#[test]
+fn no_write_a_question_the_ablation_or_an_unattended_run_never_holds() {
+    let claim = |n: usize| match n {
+        1 => edit_app(),
+        _ => ChatResponse::text("Fixed the blank page; it now loads."),
+    };
+    // No write this turn: the claim is not about this turn's code.
+    let (msgs, _) = run_claims(claims_policy(), &[], vec![], "Is the page fixed?", |_| {
+        ChatResponse::text("Fixed the blank page earlier; it now loads.")
+    });
+    assert!(user_msgs(&msgs, HELD).is_empty());
+    let (msgs, logs) = run_claims(
+        claims_policy(),
+        &["claims_hold"],
+        vec![],
+        "Fix the blank page.",
+        claim,
+    );
+    assert!(user_msgs(&msgs, HELD).is_empty());
+    assert!(!logs.iter().any(|l| l.contains("[claims]")));
+    let unattended = TurnPolicy {
+        gates: Gates::NONE.with(Gate::Claims),
+        ..TurnPolicy::unattended()
+    };
+    let (msgs, logs) = run_claims(
+        unattended,
+        &[],
+        vec![],
+        "Fix the blank page.",
+        |n| match n {
+            1 => edit_app(),
+            _ => ChatResponse::call(
+                "",
+                "finish",
+                json!({"summary": "Fixed the blank page; it now loads."}),
+            ),
+        },
+    );
+    assert!(user_msgs(&msgs, HELD).is_empty());
+    assert!(!logs.iter().any(|l| l.contains("[claims]")), "{logs:#?}");
+}

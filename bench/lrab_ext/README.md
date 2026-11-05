@@ -45,6 +45,9 @@ a text reply ends the turn even while the plan the turn made has open items (Gat
 `checkpoint` (2026-11-05, bead boubou-m5d) is in the list: off, a conversation turn is never
 asked for a hypothesis or stopped by the circling ladder; the unattended policy (lrab runs) has it
 off anyway.
+`claims_hold` (2026-11-05, bead boubou-bcs) is in the list: off, a conversation turn may end on
+"fixed" or "verified" with nothing run after its last write. Unattended runs never take it
+(their finish keeps the Gate 2b claim check).
 
 No mean claim from one run per cell: on 2026-10-31 five coding cells re-run under one
 configuration moved from 0.70 to 0.47. `--runs 3` scores every cell three times (`_r0`…`_r2`),

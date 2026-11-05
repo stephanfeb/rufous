@@ -11,8 +11,9 @@ fn the_preset_is_the_kernel_conversation_under_this_name_and_prompt() {
     let p = harness::policy();
     assert_eq!(p.name, "general");
     assert_eq!(p.prompt, Prompt::Task(harness::TASK_PROMPT));
-    // The plan hold (bead boubou-ear): a turn does not end with its own plan still open.
-    assert_eq!(p.gates, Gates::NONE.with(Gate::PlanSync));
+    // The plan hold (bead boubou-ear): a turn does not end with its own plan still open; the
+    // claims hold (boubou-bcs): nor on "it works" with nothing run to show it.
+    assert_eq!(p.gates, Gates::NONE.with(Gate::PlanSync).with(Gate::Claims));
     assert_eq!(
         TurnPolicy {
             name: "conversation",

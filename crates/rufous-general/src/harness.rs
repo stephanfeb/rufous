@@ -31,13 +31,14 @@ RULES:
 - Be concise in text; put large content in tool arguments."#;
 
 /// The `general` preset: [`TurnPolicy::conversation`] under this harness's name, on its own
-/// task prefill, with one gate: the plan this turn made must not be left open (bead
-/// boubou-ear).
+/// task prefill, with two gates: the plan this turn made must not be left open (bead
+/// boubou-ear), and a claim that the turn's code works needs something run after the last
+/// write (bead boubou-bcs).
 pub const fn policy() -> TurnPolicy {
     TurnPolicy {
         name: "general",
         prompt: Prompt::Task(TASK_PROMPT),
-        gates: Gates::NONE.with(Gate::PlanSync),
+        gates: Gates::NONE.with(Gate::PlanSync).with(Gate::Claims),
         ..TurnPolicy::conversation()
     }
 }

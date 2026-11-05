@@ -866,3 +866,181 @@ fn gemma_native_rejects_unknown_names_truncation_and_plain_prose() {
         "no Gemma marker: prose"
     );
 }
+
+// ---- claims at the text ending (bead boubou-bcs) ----
+
+mod claims {
+    use rufous_kernel::guards::integrity::{
+        claim_backing, outcome_claim, output_failure_line, runs_something, shell_writes,
+        ClaimBacking, CommandRecord,
+    };
+
+    fn shell(cmd: &str, out: &str) -> CommandRecord {
+        CommandRecord::from_result(cmd, out)
+    }
+    fn write(path: &str) -> CommandRecord {
+        CommandRecord::file_write("edit_file", path, true)
+    }
+
+    #[test]
+    fn outcome_and_verification_claims_are_found_and_descriptions_are_not() {
+        for (reply, claim) in [
+            ("Fixed the 404 error for static resources.", "Fixed the"),
+            ("**Fixed** — the build was missing a task.", "Fixed"),
+            ("The page now loads and the list renders.", "now loads"),
+            (
+                "The vertical slice \"Display hardcoded todo list\" is now complete.",
+                "vertical slice \"Display hardcoded todo list\" is now complete",
+            ),
+            (
+                "I have implemented the toggle and verified that it interacts with the store.",
+                "verified that",
+            ),
+            (
+                "The toggle works correctly in both states.",
+                "works correctly",
+            ),
+            ("All tests pass.", "All tests pass"),
+        ] {
+            assert_eq!(outcome_claim(reply).as_deref(), Some(claim), "{reply}");
+        }
+        for reply in [
+            "Implemented TodoForm.vue; the component displays the current todo and has two actions.",
+            "Completed the frontend setup: package.json, vite.config.js and the router.",
+            "Updated App.vue with CSS variables, ensuring a consistent typography.",
+            "Fixed the 404 handler in WebController.kt, but I have not run it yet.",
+            "The page now loads the store. Please verify in the browser.",
+            "Fixed the import; the build still fails with a missing symbol.",
+        ] {
+            assert_eq!(outcome_claim(reply), None, "{reply}");
+        }
+    }
+
+    #[test]
+    fn failure_in_the_output_is_read_whatever_the_exit_code() {
+        // acp_1103_083226: every one of these reported exit 0.
+        assert_eq!(
+            output_failure_line(
+                "[exit 0]\nSTDOUT:\n> Task :kspKotlin FAILED\nKotlin does not yet support 26"
+            ),
+            Some("> Task :kspKotlin FAILED".to_string())
+        );
+        assert_eq!(
+            output_failure_line("[exit 0]\nSTDOUT:\nindex.html also 404\n\nSTDERR:\n"),
+            Some("index.html also 404".to_string())
+        );
+        assert!(output_failure_line(
+            r#"[exit 0]
+STDOUT:
+{"_embedded":{"errors":[{"message":"Page Not Found"}]},"message":"Not Found"}"#
+        )
+        .is_some());
+        assert_eq!(
+            output_failure_line("[exit 0]\nSTDOUT:\nBUILD SUCCESSFUL in 4s\n"),
+            None
+        );
+        assert_eq!(
+            output_failure_line("[exit 0]\nSTDOUT:\n✓ built in 1.2s\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn inline_code_and_installs_write_and_builds_requests_and_scripts_run() {
+        for c in [
+            "cd app && python3 << 'PYEOF'\nwith open('a.kt','w') as f: f.write(x)\nPYEOF",
+            "python3 -c \"open('a','w').write('x')\"",
+            "npm install vite",
+            "cat > a.txt",
+            "sed -i 's/a/b/' x.kt",
+            "cd app && git checkout src/main/kotlin/WebController.kt 2>/dev/null || echo new",
+            "rm -rf src/old",
+        ] {
+            assert!(shell_writes(c), "{c}");
+        }
+        assert!(
+            !shell_writes("cd app && rm -f build.log run.log"),
+            "clearing logs"
+        );
+        for c in [
+            "./gradlew build 2>&1 | tail -20",
+            "ls -la 2>/dev/null",
+            "curl -s http://localhost:8080/",
+        ] {
+            assert!(!shell_writes(c), "{c}");
+        }
+        for c in [
+            "cd app && ./gradlew clean run --console=plain 2>&1 | tail -40",
+            "curl -s http://localhost:8080/index.html",
+            "cd frontend && npm run build",
+            "python3 scripts/smoke.py",
+            "pytest -q",
+            "npx vue-tsc --noEmit",
+        ] {
+            assert!(runs_something(c), "{c}");
+        }
+        for c in [
+            "ls -R frontend/src",
+            "cat a.kt",
+            "bd show todo_4-3na",
+            "git status",
+        ] {
+            assert!(!runs_something(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_claim_needs_a_clean_run_after_the_last_write() {
+        assert_eq!(
+            claim_backing(&[shell("bd show x", "[exit 0]\n")], ""),
+            ClaimBacking::NoWrite
+        );
+        let edit = [write("src/App.vue")];
+        assert_eq!(
+            claim_backing(&edit, "make the page load"),
+            ClaimBacking::Unbacked(
+                "nothing ran after your last write (`edit_file src/App.vue`)".into()
+            )
+        );
+        let masked = [
+            write("src/App.vue"),
+            shell(
+                "curl -s http://localhost:8080/ || echo \"also 404\"",
+                "[exit 0]\nSTDOUT:\nalso 404\n",
+            ),
+        ];
+        assert_eq!(
+            claim_backing(&masked, ""),
+            ClaimBacking::Unbacked("`curl -s http://localhost:8080/ || echo \"also 404\"` exited 0 but printed \"also 404\"".into())
+        );
+        let built = [
+            shell("./gradlew build", "[exit 1]\nFAILURE: Build failed"),
+            write("build.gradle.kts"),
+            shell(
+                "./gradlew build 2>&1 | tail",
+                "[exit 0]\nBUILD SUCCESSFUL in 3s",
+            ),
+        ];
+        assert_eq!(
+            claim_backing(&built, ""),
+            ClaimBacking::Backed("`./gradlew build 2>&1 | tail`".into())
+        );
+        let before = [shell("npm run build", "[exit 0]\nok"), write("src/App.vue")];
+        assert!(
+            matches!(claim_backing(&before, ""), ClaimBacking::Unbacked(_)),
+            "a run before the write is stale"
+        );
+        let inline = [
+            write("a.kt"),
+            shell("python3 << 'EOF'\nopen('a.kt','w')\nEOF", "[exit 0]\n"),
+        ];
+        assert_eq!(
+            claim_backing(&inline, ""),
+            ClaimBacking::Unbacked("nothing ran after your last write (`python3 << 'EOF'`)".into())
+        );
+        assert_eq!(
+            claim_backing(&edit, "I tested it, it works now. Commit please."),
+            ClaimBacking::Backed("the user's own report".into())
+        );
+    }
+}

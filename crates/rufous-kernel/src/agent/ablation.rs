@@ -62,6 +62,9 @@ pub const PLAN_HOLD: &str = "plan_hold";
 /// The circling ladder (bead boubou-m5d): off, a turn runs on to the iteration cap with no
 /// hypothesis note and no checkpoint.
 pub const CHECKPOINT: &str = "checkpoint";
+/// The claims hold (bead boubou-bcs): off, a conversation turn may end on "fixed" or
+/// "verified" with nothing run after its last write.
+pub const CLAIMS_HOLD: &str = "claims_hold";
 /// Every switch above at once.
 pub const KERNEL_OFF: &str = "kernel";
 
@@ -82,6 +85,7 @@ pub const KERNEL: &[&str] = &[
     SESSION_FACE,
     PLAN_HOLD,
     CHECKPOINT,
+    CLAIMS_HOLD,
 ];
 
 /// Whether `flag` is off under `listed` (the parsed `AGENT_ABLATION`).

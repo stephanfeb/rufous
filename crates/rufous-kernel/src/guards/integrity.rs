@@ -165,6 +165,10 @@ pub struct CommandRecord {
     pub kind: ActionKind,
     pub command: String,
     pub exit: Option<i32>,
+    /// A shell command's first output line that reads as a failure ([`output_failure_line`]),
+    /// whatever the exit code said: `| tail` and `|| echo` report 0 over a failed build
+    /// (bead boubou-bcs). Read only by the claims hold.
+    pub output_failure: Option<String>,
 }
 
 impl CommandRecord {
@@ -173,6 +177,7 @@ impl CommandRecord {
             kind: ActionKind::Shell,
             command: command.to_string(),
             exit: exit_code_of(result),
+            output_failure: output_failure_line(result),
         }
     }
 
@@ -185,6 +190,7 @@ impl CommandRecord {
             kind: ActionKind::FileWrite,
             command: format!("{tool} {path}"),
             exit: landed.then_some(0),
+            output_failure: None,
         }
     }
 
@@ -1632,4 +1638,229 @@ mod tests {
         let empty = tempfile::tempdir().expect("tempdir");
         assert!(task_named_unwritten(t1, "Done.", &beside, empty.path()).is_empty());
     }
+}
+
+// ---------------- claims at the text ending (bead boubou-bcs) ----------------
+
+/// An outcome observed: fixed, now works, loads correctly, successfully renders, is now
+/// functional, a slice or feature is complete. A description of what code does ("the
+/// component displays the title") is not one.
+static OUTCOME_CLAIM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?imx)
+            \b(?:fixed|resolved)\s+(?:the|a|an|this|that|it|by|issue|bug|error|problem|\d+|`)
+          | ^\s*(?:[-*]\s*)?(?:\*\*)?(?:fixed|resolved)\b
+          | \bnow\s+(?:works|loads|displays|renders|serves|shows|runs|builds|compiles|returns|appears|responds)\b
+          | \b(?:works|loads|renders|displays)\s+(?:correctly|properly|as\s+expected|fine)\b
+          | \bsuccessfully\s+(?:displays?|renders?|loads?|runs?|works?|serves?|builds?|compiles?|returns?)\b
+          | \b(?:is|are)\s+now\s+(?:fully\s+)?(?:functional|working|operational|served|fixed|resolved)\b
+          | \bfully\s+(?:functional|working|operational)\b
+          | \b(?:vertical\s+slice|feature|fix|integration)\b[^.\n]{0,40}\b(?:is|are)\s+(?:now\s+)?complete\b",
+    )
+    .expect("regex")
+});
+/// A claim to have checked: "verified that…", "tested it", "has been confirmed".
+static DID_VERIFY_CLAIM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)
+            \b(?:verified|tested|confirmed)\s+(?:that|it|the|this|by|with|everything)\b
+          | \b(?:has|have)\s+been\s+(?:verified|tested|confirmed)\b",
+    )
+    .expect("regex")
+});
+/// The reply says itself that nothing was run.
+static CLAIM_HEDGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)
+            \bnot\s+(?:yet\s+)?(?:been\s+)?(?:verified|tested|run|checked)\b
+          | \bunverified\b | \buntested\b
+          | \b(?:have\s+not|haven't|did\s+not|didn't|could\s+not|couldn't)\s+(?:yet\s+)?(?:run|test|verify|check|start)\b
+          | \bplease\s+(?:verify|test|check|confirm|try)\b
+          | \bstill\s+(?:fails?|failing|broken|errors?|crashes|not\s+\w+)\b
+          | \b(?:does|do|did)\s*(?:n't|\s+not)\s+(?:yet\s+)?(?:work|load|build|compile|pass|run|start|render)\b
+          | \b(?:could|can)(?:n't|not|\s+not)\s+(?:get|make|fix|run|start|reach|build)\b
+          | \bunable\s+to\b | \bremains?\s+(?:broken|failing|unresolved)\b",
+    )
+    .expect("regex")
+});
+/// Output that reads as a failure, whatever the exit code.
+static FAILURE_MARK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?mx)
+            \bFAILURE\b | \bFAILED\b | \b[Bb]uild\s+failed\b | Traceback\s+\(most\s+recent
+          | \b[A-Za-z]*Exception\b | ^\s*(?:error|Error|ERROR)\b\s*[:\[] | \berror\[E\d+\]
+          | \bNot\s+Found\b | \b404\b | \b500\s+Internal | Cannot\s+GET
+          | \bECONNREFUSED\b | [Cc]onnection\s+refused | command\s+not\s+found | No\s+such\s+file",
+    )
+    .expect("regex")
+});
+/// A shell command that writes: a heredoc, a redirect to a file, tee, sed -i, inline
+/// interpreter code, file moves, package installs, and git commands that rewrite files.
+static SHELL_WRITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)
+            << | \btee\b | \bsed\s+-i | \b(?:mv|cp|mkdir|touch|ln)\s
+          | \b(?:python3?|node|ruby|perl|php)\s+-[ce]\b
+          | \b(?:pip3?|npm|yarn|pnpm|bun|gem|cargo)\s+(?:i|install|add)\b | -m\s+(?:pip|venv)\b
+          | \bgit\s+(?:checkout|restore|reset|apply|stash|revert|cherry-pick|merge|pull)\b | \bpatch\s",
+    )
+    .expect("regex")
+});
+/// A shell command that runs what was written: a build or run task, a script, the
+/// program itself, or a request to it.
+static RUN_CMD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)
+            \b(?:curl|wget|http|https|xh)\s
+          | \b(?:python3?|node|ruby|perl|php|bash|sh|deno|bun|tsx|ts-node)\s+(?:\S+\s+)*?[\w./-]+\.(?:py|m?js|cjs|ts|rb|pl|php|sh)\b
+          | (?:^|[;&|(]\s*|&&\s*)\.{0,2}/[\w./-]+
+          | \b(?:gradlew?|mvnw?|make|cargo|go|npm|yarn|pnpm|bun|deno|dotnet|swift|flutter|dart|tsc|vue-tsc|vite|uvicorn|flask|rails)\b[^|;&\n]*?\b(?:run|build|start|serve|dev|preview|compile\w*|assemble|bootRun|micronautRun|exec|tsc)\b
+          | \b(?:tsc|vue-tsc)\b",
+    )
+    .expect("regex")
+});
+/// The user says in this instruction that it works.
+static USER_REPORTS_WORKING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)\b(?:it\s+works|works\s+now|it'?s\s+working|i\s+(?:have\s+)?(?:verified|tested)|it'?s\s+verified|looks\s+good)\b",
+    )
+    .expect("regex")
+});
+
+/// The first output line of a shell result that reads as a failure, the `[exit N]` header
+/// left out.
+pub fn output_failure_line(result: &str) -> Option<String> {
+    let body = result
+        .trim_start()
+        .strip_prefix('[')
+        .and_then(|r| r.split_once(']').map(|(_, b)| b))
+        .unwrap_or(result);
+    let m = FAILURE_MARK.find(body)?;
+    let start = body[..m.start()].rfind('\n').map_or(0, |i| i + 1);
+    let end = body[m.end()..]
+        .find('\n')
+        .map_or(body.len(), |i| m.end() + i);
+    Some(head(body[start..end].trim()))
+}
+
+/// Does this shell command write files?
+pub fn shell_writes(command: &str) -> bool {
+    let probe = command
+        .replace("2>&1", "")
+        .replace("2>/dev/null", "")
+        .replace(">/dev/null", "")
+        .replace("> /dev/null", "");
+    SHELL_WRITE.is_match(&probe) || probe.contains('>') || removes_source(&probe)
+}
+
+/// An `rm` that removes something other than logs, temp files, output captures or pid
+/// files: clearing `build.log` after a passing check does not change what it showed.
+fn removes_source(command: &str) -> bool {
+    command.split(['\n', ';', '&', '|']).any(|seg| {
+        let mut words = seg.split_whitespace();
+        if words.next() != Some("rm") {
+            return false;
+        }
+        words.filter(|w| !w.starts_with('-')).any(|w| {
+            let w = w.trim_matches(['"', '\'']);
+            !(w.starts_with("/tmp/")
+                || [".log", ".tmp", ".out", ".pid", ".err"]
+                    .iter()
+                    .any(|ext| w.ends_with(ext)))
+        })
+    })
+}
+
+/// Does this shell command check or run what was written?
+pub fn runs_something(command: &str) -> bool {
+    is_verification_command(command) || RUN_CMD.is_match(command)
+}
+
+/// The outcome or verification claim a reply makes, when it makes one and does not hedge
+/// it ("not yet run", "please verify") or say something still fails. Mentioning the error
+/// that was fixed is not such an admission ([`admits_failure_about`] would count it).
+pub fn outcome_claim(reply: &str) -> Option<String> {
+    if CLAIM_HEDGE.is_match(reply) {
+        return None;
+    }
+    [&*OUTCOME_CLAIM, &*DID_VERIFY_CLAIM, &*VERIFIED_CLAIM]
+        .iter()
+        .find_map(|re| re.find(reply))
+        .map(|m| head(m.as_str().trim().trim_start_matches(['-', '*', ' '])))
+}
+
+/// What stands behind an outcome claim at the end of a turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimBacking {
+    /// Nothing was written this turn: the claim is not about this turn's code.
+    NoWrite,
+    /// A check or a run after the last write, clean, or the user's own report.
+    Backed(String),
+    /// Why it is not backed, in words for the note.
+    Unbacked(String),
+}
+
+/// Is a claim backed by what ran after the last write this turn? A run counts when it
+/// exited 0 and printed no failure ([`CommandRecord::output_failure`]); the user saying it
+/// works in `instruction` counts too.
+pub fn claim_backing(cmds: &[CommandRecord], instruction: &str) -> ClaimBacking {
+    let is_write = |r: &CommandRecord| {
+        r.exit.is_some()
+            && match r.kind {
+                ActionKind::FileWrite => true,
+                ActionKind::Shell => shell_writes(&r.command),
+            }
+    };
+    let Some(lw) = cmds.iter().rposition(is_write) else {
+        return ClaimBacking::NoWrite;
+    };
+    if USER_REPORTS_WORKING.is_match(instruction) {
+        return ClaimBacking::Backed("the user's own report".to_string());
+    }
+    let runs: Vec<&CommandRecord> = cmds[lw + 1..]
+        .iter()
+        .filter(|r| r.kind == ActionKind::Shell && runs_something(&r.command))
+        .collect();
+    let clean = |r: &&&CommandRecord| r.succeeded() && r.output_failure.is_none();
+    // Named in the log: the last clean check if there is one, else the last clean run.
+    if let Some(r) = runs
+        .iter()
+        .rev()
+        .filter(clean)
+        .find(|r| r.is_verification())
+        .or_else(|| runs.iter().rev().find(clean))
+    {
+        return ClaimBacking::Backed(format!("`{}`", shown(&r.command)));
+    }
+    let why = match runs.last() {
+        Some(r) => match (&r.exit, &r.output_failure) {
+            (Some(0), Some(line)) => {
+                format!("`{}` exited 0 but printed \"{line}\"", shown(&r.command))
+            }
+            (Some(n), _) => format!("`{}` exited {n}", shown(&r.command)),
+            (None, _) => format!("`{}` never ran", shown(&r.command)),
+        },
+        None => format!(
+            "nothing ran after your last write (`{}`)",
+            shown(&cmds[lw].command)
+        ),
+    };
+    ClaimBacking::Unbacked(why)
+}
+
+/// A command as the claims note quotes it: a leading `cd <dir> &&` dropped, one line.
+fn shown(command: &str) -> String {
+    let c = command.trim();
+    let c = c
+        .strip_prefix("cd ")
+        .and_then(|r| r.split_once("&&").map(|(_, rest)| rest.trim()))
+        .unwrap_or(c);
+    head(c)
+}
+
+/// The note that holds a reply making an unbacked claim.
+pub fn claims_hold_note(claim: &str, why: &str) -> String {
+    format!(
+        "⚠️ Your reply was held: it says \"{claim}\", but {why}, so nothing shows it. Either run something now that would show it (the tests, the build, the program, a request to it) and report what it printed, or say plainly that the change is written but not yet run. Do not repeat the claim without one of those."
+    )
 }
