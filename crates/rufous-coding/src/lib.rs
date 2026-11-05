@@ -34,10 +34,11 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, Implementation, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionNotification, ToolCallId,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, WriteTextFileRequest,
+    LoadSessionRequest, LoadSessionResponse, McpCapabilities, NewSessionRequest,
+    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    ReadTextFileRequest, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
+    SessionNotification, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    WriteTextFileRequest,
 };
 use agent_client_protocol::{
     Agent as AcpAgent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder, Stdio,
@@ -94,15 +95,16 @@ impl std::fmt::Debug for RufousAcp {
 }
 
 impl RufousAcp {
-    /// The production agent: the user's `config.json`, the real engine and executor.
-    /// `num_ctx` is `rufous acp --ctx`, the context window for every session.
+    /// The production agent for an editor: the user's `config.json`, the real engine and
+    /// executor, the coding preset. `num_ctx` is `rufous acp --ctx`, the context window for
+    /// every session.
     pub fn standard(
         cfg: rufous_kernel::config::Config,
         home: PathBuf,
         model: String,
         num_ctx: Option<u32>,
     ) -> Self {
-        Self::with_factory(home, model, Arc::new(StandardFactory { cfg, num_ctx }))
+        Self::with_factory(home, model, Arc::new(StandardFactory::coding(cfg, num_ctx)))
     }
 
     pub fn with_factory(home: PathBuf, model: String, factory: Arc<dyn AgentFactory>) -> Self {
@@ -154,7 +156,13 @@ impl ConnectTo<AcpClient> for RufousAcp {
                     );
                     responder.respond(
                         InitializeResponse::new(req.protocol_version)
-                            .agent_capabilities(AgentCapabilities::new().load_session(true))
+                            .agent_capabilities(
+                                AgentCapabilities::new()
+                                    .load_session(true)
+                                    // `session/new` HTTP servers are served (runner.rs maps
+                                    // them); a client only sends them when this says so.
+                                    .mcp_capabilities(McpCapabilities::new().http(true)),
+                            )
                             .agent_info(
                                 Implementation::new("rufous", rufous_kernel::VERSION).title("rufous"),
                             ),

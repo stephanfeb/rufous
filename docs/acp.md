@@ -13,6 +13,12 @@ cargo build --release
 ./target/release/rufous acp --model gemma4:e2b --ctx 32768   # any tag from `rufous models`
 ```
 
+`--policy` picks the turn policy every session runs: `coding` (the default, an editor's agent,
+with the coding skills) or `general` (the web chat's preset and skills on documents, folders
+and research), for a client that is not an editor, such as a desktop app handing rufous
+everyday work. The policy is logged as `[rufous acp] policy <name>` at start. The batch
+harness (`unattended`) is not offered over ACP.
+
 `--ctx` is the context window, in tokens, for every editor session. The CLI reads `AGENT_CTX`,
 but an editor starts the agent with no environment, so without the flag the window is the
 131072-token default and the model loads with a KV cache sized for it (qwen3.5:9b: 17 GB
@@ -86,13 +92,13 @@ harness files in any mode.
 | the scope gate (bead boubou-6x3) | the same dialog, titled `outside the instruction: <path or command>`, when a tracker or docs instruction (beads, issues, specs, docs) is followed by a call that writes a source file or runs a build/test tool; Allow clears the turn, Deny hands the model the instruction back and asks for a report. A code instruction never asks. `"scope_gate": "shadow"` in `config.json` only logs |
 | `session/cancel` | the loop's stop flag: the turn ends at the next check and reports `cancelled` |
 | `read_file`, `create_file`, `edit_file`, `append_file` | `fs/read_text_file` and `fs/write_text_file` when the client offered them at `initialize` (see below) |
-| `mcpServers` in `session/new` / `session/load` | added to rufous's `mcp.json` and the project's `.mcp.json` for that session (stdio, HTTP; SSE tried as HTTP), routed by category like any other server |
+| `mcpServers` in `session/new` / `session/load` (rufous advertises `mcpCapabilities.http`) | added to rufous's `mcp.json` and the project's `.mcp.json` for that session (stdio, HTTP; SSE tried as HTTP), routed by category like any other server |
 | the loop's protocol lines (`⚙`, `[ctx: …]`, `🐚`, `⚠️`, `[prompt]`, `[hooks]`) | not sent to the editor; written to `<sessions>/<name>.log` behind a timestamp, with a `[turn] <prompt head>` line per prompt and tracing warnings mirrored in, so `bench/session_metrics.py <log>` reads a live session with the bench's counters (`AGENT_SESSION_LOG=0` switches it off) |
 
 ## Turn semantics
 
-An editor turn runs under the `coding` turn policy (`docs/refactor.md`), not the batch task
-run. The turn ends when the model replies in text without a tool call, or when it calls
+An editor turn runs under the `coding` turn policy (`docs/refactor.md`), or `general` with
+`--policy general`, not the batch task run. The turn ends when the model replies in text without a tool call, or when it calls
 `finish`. `finish` is accepted as it is: the delivery, test, artefact, plan and self-check
 gates exist for unattended batch tasks, and in a project directory they would run your own
 test suite and bounce the turn into work you did not ask for. The loop's "continue with tools" notes are not sent, every turn takes the

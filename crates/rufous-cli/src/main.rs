@@ -157,6 +157,10 @@ enum Cmd {
         /// 131072). Editors pass no environment, so this is how the window is set.
         #[arg(long)]
         ctx: Option<u32>,
+        /// Turn policy for every session: `coding` (an editor's agent, the default) or
+        /// `general` (a desktop app's assistant: the web chat's preset and skills).
+        #[arg(long, default_value = "coding", value_parser = ["coding", "general"])]
+        policy: String,
     },
     /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
     Serve {
@@ -472,7 +476,7 @@ fn main() -> Result<()> {
                 pc.enabled, pc.child_model, pc.hard_cap
             );
         }
-        Cmd::Acp { model, ctx } => {
+        Cmd::Acp { model, ctx, policy } => {
             let key = match model
                 .or_else(|| std::env::var("RUFOUS_MODEL").ok())
                 .or_else(|| std::env::var("BOUBOU_MODEL").ok())
@@ -490,7 +494,19 @@ fn main() -> Result<()> {
             {
                 eprintln!("[rufous acp] could not start ollama; run `ollama serve` first");
             }
-            let agent = rufous_coding::RufousAcp::standard(cfg.clone(), agent_home(), model, ctx);
+            let (policy, skills) = product(&policy);
+            eprintln!("[rufous acp] policy {}", policy.name);
+            let factory = rufous_coding::runner::StandardFactory {
+                cfg: cfg.clone(),
+                num_ctx: ctx,
+                policy,
+                skills,
+            };
+            let agent = rufous_coding::RufousAcp::with_factory(
+                agent_home(),
+                model,
+                std::sync::Arc::new(factory),
+            );
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(agent.serve_stdio())
                 .map_err(|e| anyhow::anyhow!("acp: {e}"))?;
@@ -1088,6 +1104,27 @@ mod tests {
             rufous_general::harness::TASK_PROMPT,
             rufous_coding::harness::TASK_PROMPT
         );
+    }
+
+    #[test]
+    fn acp_policy_is_coding_unless_asked_for_general() {
+        // `rufous acp` serves an editor by default; `--policy general` serves a desktop app
+        // (Choreo) the web chat's preset; the batch harness is not offered over ACP.
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.cmd) {
+            Ok(Cmd::Acp { policy, .. }) => Ok(policy),
+            Ok(_) => panic!("not acp"),
+            Err(e) => Err(e.kind()),
+        };
+        assert_eq!(parse(&["rufous", "acp"]).as_deref(), Ok("coding"));
+        assert_eq!(
+            parse(&["rufous", "acp", "--policy", "general"]).as_deref(),
+            Ok("general")
+        );
+        assert_eq!(
+            parse(&["rufous", "acp", "--policy", "unattended"]),
+            Err(clap::error::ErrorKind::InvalidValue)
+        );
+        assert_eq!(product("general").0, rufous_general::harness::policy());
     }
 
     #[test]

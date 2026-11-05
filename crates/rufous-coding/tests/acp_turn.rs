@@ -255,6 +255,8 @@ async fn a_prompt_turn_streams_tool_calls_asks_permission_and_closes_with_the_su
         Some("rufous")
     );
     assert!(init.agent_capabilities.load_session);
+    // HTTP MCP servers in `session/new` are served, so the client is told it may send them.
+    assert!(init.agent_capabilities.mcp_capabilities.http);
     assert!(ns.session_id.0.starts_with("acp_"));
     assert_eq!(p1.stop_reason, StopReason::EndTurn);
     assert_eq!(p2.stop_reason, StopReason::EndTurn);
@@ -601,6 +603,7 @@ fn an_editor_turn_is_interactive_keeps_its_files_beside_the_session_and_takes_th
         &sessions,
         "acp_1030_120000",
         Some(32_768),
+        rufous_coding::harness::policy(),
     )
     .expect("params");
     assert_eq!(p.policy, rufous_coding::harness::policy());
@@ -610,7 +613,15 @@ fn an_editor_turn_is_interactive_keeps_its_files_beside_the_session_and_takes_th
         Some(sessions.join("acp_1030_120000.files").as_path())
     );
     // Without the flag the environment decides, as for the CLI.
-    let p = turn_params("m".into(), d.path().to_path_buf(), &sessions, "s", None).expect("params");
+    let p = turn_params(
+        "m".into(),
+        d.path().to_path_buf(),
+        &sessions,
+        "s",
+        None,
+        rufous_coding::harness::policy(),
+    )
+    .expect("params");
     if std::env::var("AGENT_CTX").is_err() {
         assert_eq!(p.num_ctx, rufous_kernel::agent::DEFAULT_NUM_CTX);
     }

@@ -127,7 +127,7 @@ rufous skills [workdir]
 rufous tools --enable web_fetch  # print the schemas the model receives
 rufous run <model> <taskfile> <workdir> [--session NAME] [--new] [--append]
 rufous chat <model> <workdir>   # the general-purpose harness at a terminal: same turn policy as the web UI
-rufous acp --model <model>      # Agent Client Protocol over stdio, for an editor
+rufous acp --model <model>      # Agent Client Protocol over stdio, for an editor (--policy general for a desktop app)
 ```
 
 Environment variables are inherited from Mingbird: `OLLAMA_HOST`, `OLLAMA_BIN`, `AGENT_CTX`,

@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use rufous_kernel::agent::session;
-use rufous_kernel::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner};
+use rufous_kernel::agent::{Agent, AgentEvent, ChatBackend, RunParams, ToolRunner, TurnPolicy};
 use rufous_kernel::config::Config;
 use rufous_kernel::exec::{DiskStore, FileStore};
 use rufous_kernel::mcp::{McpConfig, ServerConfig};
@@ -21,6 +21,7 @@ use rufous_kernel::ollama::Message;
 use rufous_kernel::safety::{
     ConfirmRequest, Confirmer, DeclinedWrite, Gate, SafetyPolicy, Verdict,
 };
+use rufous_kernel::skills::Skill;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// A permission question from the safety gate, owned (the gate's request borrows).
@@ -361,11 +362,28 @@ pub struct StandardFactory {
     pub cfg: Config,
     /// `rufous acp --ctx`: the context window for every editor session, over `AGENT_CTX`.
     pub num_ctx: Option<u32>,
+    /// `rufous acp --policy`: the turn policy every session runs, the coding preset unless
+    /// the client is not an editor (a desktop app hands rufous `general` work).
+    pub policy: TurnPolicy,
+    /// The built-in skills that go with [`Self::policy`]'s product.
+    pub skills: Vec<Skill>,
+}
+
+impl StandardFactory {
+    /// The editor's factory: the coding preset and the coding skills.
+    pub fn coding(cfg: Config, num_ctx: Option<u32>) -> Self {
+        Self {
+            cfg,
+            num_ctx,
+            policy: crate::harness::policy(),
+            skills: crate::harness::skills(),
+        }
+    }
 }
 
 /// The loop parameters for one editor turn: the environment's defaults as for the CLI
-/// (`AGENT_CTX` and the rest), then what an editor session needs. The turn runs under the
-/// coding policy, so a text reply or `finish` ends it and the batch gates are off; the plan, backups
+/// (`AGENT_CTX` and the rest), then what an editor session needs. The turn runs under
+/// `policy`, a conversation preset (coding for an editor, general for a desktop app), so a text reply or `finish` ends it and the batch gates are off; the plan, backups
 /// and trash go beside the session files, not into the project; and `num_ctx`, from
 /// `rufous acp --ctx`, sets the context window. An editor passes no environment, so without
 /// the flag the window is the 131072-token default and the model loads with a KV cache sized
@@ -376,9 +394,10 @@ pub fn turn_params(
     sessions_dir: &Path,
     session: &str,
     num_ctx: Option<u32>,
+    policy: TurnPolicy,
 ) -> rufous_kernel::Result<RunParams> {
     let mut params = RunParams::from_env(model, cwd)?;
-    params.policy = crate::harness::policy();
+    params.policy = policy;
     params.harness_dir = Some(session::harness_dir(sessions_dir, session));
     if let Some(n) = num_ctx {
         params.num_ctx = n;
@@ -388,7 +407,7 @@ pub fn turn_params(
 
 impl AgentFactory for StandardFactory {
     fn notice(&self) -> Option<String> {
-        // The coding policy consults the decider on every turn.
+        // Both conversation presets consult the decider on every turn.
         self.cfg.decider.notice()
     }
 
@@ -399,11 +418,12 @@ impl AgentFactory for StandardFactory {
             &setup.sessions_dir,
             &setup.session,
             self.num_ctx,
+            self.policy,
         )?;
         let mut agent = Agent::standard(params, &self.cfg)?
             .with_sink(setup.sink)
             .with_stop(setup.stop)
-            .with_builtin_skills(crate::harness::skills());
+            .with_builtin_skills(self.skills.clone());
         agent.tools.gate = Gate::new(SafetyPolicy::from_env(), setup.confirmer);
         agent.tools.store = setup.files;
         if !setup.mcp_servers.is_empty() {
