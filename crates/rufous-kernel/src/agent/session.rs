@@ -604,6 +604,7 @@ mod log_tests {
         sink(AgentEvent::ContextUsage {
             used: 10,
             limit: 100,
+            call: None,
         });
         sink(AgentEvent::Error("boom".into()));
         sink(AgentEvent::Finished {

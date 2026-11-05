@@ -85,7 +85,7 @@ harness files in any mode.
 | a tool call | `tool_call` (kind read / search / edit / delete / execute / fetch / think, in_progress, raw input, file locations) |
 | its result | `tool_call_update` (completed, or failed when blocked or a tool error; output as content; a diff for create / edit / append) |
 | `todo.json` | `plan` after every `todo` call and at the finish |
-| context usage | `usage_update` |
+| context usage | `usage_update`; one per model call, with the call's tokens, model and engine in `_meta.rufous.call` (see Where data goes) |
 | compaction, errors, turn limit | `notice` |
 | `finish` summary | the closing message, when the model wrote no prose after its last tool call |
 | a safety-gate question | `session/request_permission` with Allow / Allow for the rest of this turn / Deny. A shell redirect, `tee` or `cp`/`mv` destination outside the project asks the same question as a file tool (bead boubou-hzl). After Deny the model reads that the user declined, must not do it another way or elsewhere, and may make the same call again if you ask again (beads boubou-ik4, boubou-77n); a write of the declined file name at another path in the same turn is refused without a dialog (bead boubou-sxx); in a later turn it is a dialog titled `write the declined file name elsewhere`, since "put it in the project instead" is something you may have said; the name is forgotten once you allow the write at the declined path, or after five turns (bead boubou-dml); the server carries the list across your turns, since it builds a fresh gate for each prompt (bead boubou-vj3). A refused call is reported to the editor as failed (bead boubou-bj4) |
@@ -196,6 +196,14 @@ for a release.
 - **The model engine.** The `session/new` and `session/load` responses carry
   `_meta.rufous.engine = {"label", "url", "host", "local"}` (`label`: `Ollama`, `LM Studio`,
   `OpenAI-compatible` or `cloud`) and `_meta.rufous.offline`.
+- **Per model call.** Each model call is one `usage_update` carrying
+  `_meta.rufous.call = {"model", "engine", "purpose", "input_tokens", "output_tokens"}`
+  (docs/call-usage.md). `model` is the id the engine was sent, which for a cloud provider is
+  its configured model. `engine` is the same object as `_meta.rufous.engine` above. `purpose`
+  is `turn` (the main call), `compaction`, `corrector` or `wrap_up`. A count the engine did not
+  report is `null`; a local engine that streams may report none. The main call's update is
+  the context update; a side call's update repeats the last context numbers. Not counted: a
+  failed or cancelled call, and the local decision model.
 - **Per-session offline.** `_meta.rufous.offline: true` on `session/new` or `session/load`
   keeps that session on this machine, whatever the config says.
   - The web tools are refused when called, not only hidden from the model:

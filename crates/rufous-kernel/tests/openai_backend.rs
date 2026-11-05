@@ -406,6 +406,8 @@ fn cloud_payload_shape() {
         .shape("whatever-the-loop-asked")
         .body(&[Message::user("hi")], &[]);
     assert_eq!(body["model"], "cloud-m", "the configured model wins");
+    // ... and is the id the call is metered under (docs/call-usage.md).
+    assert_eq!(b.model_id("whatever-the-loop-asked"), "cloud-m");
     assert_eq!(body["stream"], false);
     assert_eq!(body["enable_thinking"], false);
     assert!(

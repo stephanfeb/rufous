@@ -701,6 +701,9 @@ impl ChatBackend for OpenAiBackend {
         self.cancel = Some(flag);
     }
     // `restart_engine`: default `None` — we have no right to restart someone else's server.
+    fn model_id(&self, requested: &str) -> String {
+        self.shape(requested).model
+    }
 }
 
 // ---------------- probes (async; the web server and the CLI call them) ----------------

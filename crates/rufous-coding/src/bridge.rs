@@ -65,6 +65,29 @@ pub struct TurnBridge {
     max_iterations: bool,
     /// The hosts the open call contacted, for its `tool_call_update` (docs/egress.md).
     egress: Vec<rufous_kernel::egress::Egress>,
+    /// The engine object of `session/new`'s `_meta.rufous.engine`, repeated on each model
+    /// call's usage (docs/call-usage.md).
+    engine: Value,
+}
+
+/// `{"rufous": {"call": {...}}}`, the `_meta` of a model call's `usage_update`
+/// (docs/call-usage.md).
+pub fn call_meta(
+    call: &rufous_kernel::agent::CallUsage,
+    engine: &Value,
+) -> serde_json::Map<String, Value> {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "rufous".to_string(),
+        serde_json::json!({ "call": {
+            "model": call.model,
+            "engine": engine,
+            "purpose": call.purpose,
+            "input_tokens": call.input_tokens,
+            "output_tokens": call.output_tokens,
+        }}),
+    );
+    meta
 }
 
 /// `{"rufous": {"egress": [...]}}`, the `_meta` an egress report travels in (docs/acp.md).
@@ -86,7 +109,14 @@ impl TurnBridge {
             plan_shown: false,
             max_iterations: false,
             egress: Vec::new(),
+            engine: Value::Null,
         }
+    }
+
+    /// The engine object reported with each model call (`session_meta`'s `rufous.engine`).
+    pub fn with_engine(mut self, engine: Value) -> Self {
+        self.engine = engine;
+        self
     }
 
     /// Read the plan from `dir` instead of the cwd (`session::harness_dir`).
@@ -277,11 +307,17 @@ impl TurnBridge {
                     "Turn limit reached",
                 ))]
             }
-            AgentEvent::ContextUsage { used, limit } => {
-                vec![SessionUpdate::UsageUpdate(UsageUpdate::new(
-                    used,
-                    u64::from(limit),
-                ))]
+            AgentEvent::ContextUsage { used, limit, call } => {
+                let u = UsageUpdate::new(used, u64::from(limit));
+                vec![SessionUpdate::UsageUpdate(match call {
+                    Some(c) => u.meta(call_meta(&c, &self.engine)),
+                    None => u,
+                })]
+            }
+            AgentEvent::ModelCall { call, used, limit } => {
+                vec![SessionUpdate::UsageUpdate(
+                    UsageUpdate::new(used, u64::from(limit)).meta(call_meta(&call, &self.engine)),
+                )]
             }
             AgentEvent::Compacted {
                 level,
@@ -784,6 +820,7 @@ mod tests {
         let out = b.on_event(AgentEvent::ContextUsage {
             used: 1200,
             limit: 4096,
+            call: None,
         });
         assert!(
             matches!(out.as_slice(), [SessionUpdate::UsageUpdate(u)] if u.used == 1200 && u.size == 4096)
@@ -1054,5 +1091,64 @@ mod tests {
         let f = ask(&TurnBridge::new(cwd), "run_bash");
         assert_eq!(f.content, None);
         assert!(f.raw_input.expect("raw").get("args").is_none());
+    }
+
+    #[test]
+    fn each_model_call_is_one_usage_update_carrying_the_call_and_the_engine() {
+        use rufous_kernel::agent::CallUsage;
+        let engine = json!({"label": "cloud", "url": "https://x/v1", "host": "x", "local": false});
+        let mut b = TurnBridge::new("/w").with_engine(engine.clone());
+        let call = |purpose, output| CallUsage {
+            model: "cloud-m".into(),
+            purpose,
+            input_tokens: Some(2010),
+            output_tokens: output,
+        };
+        let meta_of = |out: &[SessionUpdate]| match out {
+            [SessionUpdate::UsageUpdate(u)] => (
+                u.used,
+                u.size,
+                u.meta.as_ref().map(|m| m["rufous"]["call"].clone()),
+            ),
+            other => panic!("{other:?}"),
+        };
+
+        let out = b.on_event(AgentEvent::ContextUsage {
+            used: 2010,
+            limit: 8192,
+            call: Some(call("turn", Some(156))),
+        });
+        let (used, size, meta) = meta_of(&out);
+        assert_eq!((used, size), (2010, 8192));
+        assert_eq!(
+            meta,
+            Some(json!({
+                "model": "cloud-m",
+                "engine": engine,
+                "purpose": "turn",
+                "input_tokens": 2010,
+                "output_tokens": 156,
+            }))
+        );
+
+        // A side call repeats the context it was given; an unreported count stays null.
+        let out = b.on_event(AgentEvent::ModelCall {
+            call: call("compaction", None),
+            used: 2010,
+            limit: 8192,
+        });
+        let (used, size, meta) = meta_of(&out);
+        assert_eq!((used, size), (2010, 8192));
+        let meta = meta.expect("meta");
+        assert_eq!(meta["purpose"], "compaction");
+        assert_eq!(meta["output_tokens"], Value::Null);
+
+        // A context report with no call carries no _meta, as before.
+        let out = b.on_event(AgentEvent::ContextUsage {
+            used: 10,
+            limit: 8192,
+            call: None,
+        });
+        assert_eq!(meta_of(&out).2, None);
     }
 }

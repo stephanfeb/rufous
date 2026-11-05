@@ -53,7 +53,7 @@ pub fn publish(bus: &Bus, ev: AgentEvent) {
         AgentEvent::Thinking(t) => {
             bus.push("think", Value::String(t), Map::new());
         }
-        AgentEvent::ContextUsage { used, limit } => {
+        AgentEvent::ContextUsage { used, limit, .. } => {
             let pct = if limit == 0 {
                 0
             } else {
@@ -84,8 +84,8 @@ pub fn publish(bus: &Bus, ev: AgentEvent) {
             }
         }
         AgentEvent::Error(e) => bus.note(format!("[error] {e}")),
-        // The `[egress]` log line already went out as a `log` event.
-        AgentEvent::Egress(_) => {}
+        // The `[egress]` and `[timing:]` lines already went out as `log` events.
+        AgentEvent::Egress(_) | AgentEvent::ModelCall { .. } => {}
         AgentEvent::Dispatch(v) => {
             // Parallel-dispatch progress: a "⚙ parallel <label>" chip, full event attached.
             let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();

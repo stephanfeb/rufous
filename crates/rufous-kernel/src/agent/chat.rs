@@ -131,6 +131,12 @@ pub trait ChatBackend {
     fn restart_engine(&mut self) -> Option<bool> {
         None
     }
+
+    /// The model id a call for `requested` is billed under: the one the engine is sent.
+    /// Default: `requested`. A backend that sends its own configured model says so.
+    fn model_id(&self, requested: &str) -> String {
+        requested.to_string()
+    }
 }
 
 /// A backend chosen at run time ([`super::Agent::standard`] picks Ollama, the cloud provider
@@ -153,6 +159,9 @@ impl ChatBackend for DynBackend {
     fn restart_engine(&mut self) -> Option<bool> {
         (**self).restart_engine()
     }
+    fn model_id(&self, requested: &str) -> String {
+        (**self).model_id(requested)
+    }
 }
 
 impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
@@ -170,6 +179,82 @@ impl<B: ChatBackend + ?Sized> ChatBackend for &mut B {
     }
     fn restart_engine(&mut self) -> Option<bool> {
         (**self).restart_engine()
+    }
+    fn model_id(&self, requested: &str) -> String {
+        (**self).model_id(requested)
+    }
+}
+
+/// One model call as Choreo meters it (docs/call-usage.md). A count the engine did not
+/// report is `None`, not 0.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CallUsage {
+    /// The id the call was billed under ([`ChatBackend::model_id`]).
+    pub model: String,
+    /// What the call was for: `turn`, `compaction`, `corrector`, `wrap_up`.
+    pub purpose: &'static str,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+/// The loop's backend for the length of a run: every successful call is recorded, so a
+/// model call added anywhere in the loop is metered without its call site knowing. The loop
+/// sets `purpose` before each kind of call and drains the record with [`Metered::take`].
+pub struct Metered<'a, B: ChatBackend + ?Sized> {
+    inner: &'a mut B,
+    pub purpose: &'static str,
+    calls: Vec<CallUsage>,
+}
+
+impl<B: ChatBackend + ?Sized> std::fmt::Debug for Metered<'_, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Metered")
+            .field("purpose", &self.purpose)
+            .field("calls", &self.calls)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, B: ChatBackend + ?Sized> Metered<'a, B> {
+    pub fn new(inner: &'a mut B) -> Self {
+        Self {
+            inner,
+            purpose: "turn",
+            calls: Vec::new(),
+        }
+    }
+
+    /// The calls recorded since the last take, oldest first.
+    pub fn take(&mut self) -> Vec<CallUsage> {
+        std::mem::take(&mut self.calls)
+    }
+}
+
+impl<B: ChatBackend + ?Sized> ChatBackend for Metered<'_, B> {
+    fn chat(
+        &mut self,
+        model: &str,
+        messages: &[Message],
+        tools: &[Value],
+        on_piece: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        let r = self.inner.chat(model, messages, tools, on_piece)?;
+        self.calls.push(CallUsage {
+            model: self.inner.model_id(model),
+            purpose: self.purpose,
+            input_tokens: r.prompt_eval_count,
+            output_tokens: r.eval_count,
+        });
+        Ok(r)
+    }
+    fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
+        self.inner.set_cancel(flag)
+    }
+    fn restart_engine(&mut self) -> Option<bool> {
+        self.inner.restart_engine()
+    }
+    fn model_id(&self, requested: &str) -> String {
+        self.inner.model_id(requested)
     }
 }
 
@@ -408,4 +493,66 @@ pub fn model_can_think(cfg: &crate::config::Config, model: &str) -> Option<bool>
         c.insert(model.to_string(), v);
     }
     v
+}
+
+#[cfg(test)]
+mod metered_tests {
+    use super::*;
+
+    /// Answers with counts, or fails, and bills under its own model id.
+    struct Billed {
+        fail: bool,
+    }
+
+    impl ChatBackend for Billed {
+        fn chat(
+            &mut self,
+            _model: &str,
+            _messages: &[Message],
+            _tools: &[Value],
+            _on: &mut dyn FnMut(StreamPiece<'_>),
+        ) -> Result<ChatResponse, ChatError> {
+            if self.fail {
+                return Err(ChatError::Transport("down".into()));
+            }
+            let mut r = ChatResponse::text("ok");
+            r.prompt_eval_count = Some(120);
+            r.eval_count = None;
+            Ok(r)
+        }
+        fn model_id(&self, _requested: &str) -> String {
+            "billed-m".into()
+        }
+    }
+
+    #[test]
+    fn each_successful_call_is_recorded_under_the_billed_model() {
+        let mut inner = Billed { fail: false };
+        let mut m = Metered::new(&mut inner);
+        m.chat("asked-m", &[], &[], &mut |_| {}).expect("ok");
+        m.purpose = "compaction";
+        m.chat("asked-m", &[], &[], &mut |_| {}).expect("ok");
+        let calls = m.take();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            CallUsage {
+                model: "billed-m".into(),
+                purpose: "turn",
+                input_tokens: Some(120),
+                output_tokens: None,
+            }
+        );
+        assert_eq!(calls[1].purpose, "compaction");
+        assert!(m.take().is_empty(), "taken once");
+        assert_eq!(m.model_id("x"), "billed-m");
+    }
+
+    #[test]
+    fn a_failed_call_records_nothing() {
+        let mut inner = Billed { fail: true };
+        let mut m = Metered::new(&mut inner);
+        assert!(m.chat("asked-m", &[], &[], &mut |_| {}).is_err());
+        assert!(m.take().is_empty());
+    }
 }

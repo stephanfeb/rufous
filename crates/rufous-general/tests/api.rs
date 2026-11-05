@@ -592,6 +592,7 @@ fn finish_summary_is_surfaced_as_answer_text() {
         AgentEvent::ContextUsage {
             used: 300,
             limit: 1000,
+            call: None,
         },
     );
     let mut got = Vec::new();

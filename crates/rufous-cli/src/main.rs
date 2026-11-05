@@ -929,6 +929,7 @@ fn print_event(ev: AgentEvent) {
         // The `[egress]` log line is printed with the other harness lines.
         AgentEvent::ToolCall(_)
         | AgentEvent::Egress(_)
+        | AgentEvent::ModelCall { .. }
         | AgentEvent::ToolResult { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::Compacted { .. }

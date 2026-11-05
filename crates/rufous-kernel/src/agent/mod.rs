@@ -39,7 +39,10 @@ use serde_json::Value;
 use crate::ollama::ToolCall;
 use crate::{Error, Result};
 
-pub use chat::{ChatBackend, ChatError, ChatResponse, DynBackend, OllamaBackend, StreamPiece};
+pub use chat::{
+    CallUsage, ChatBackend, ChatError, ChatResponse, DynBackend, Metered, OllamaBackend,
+    StreamPiece,
+};
 pub use face::ToolFace;
 pub use openai::OpenAiBackend;
 pub use policy::{Gate, Gates, Prompt, TurnPolicy};
@@ -343,7 +346,17 @@ pub enum AgentEvent {
         output: String,
         blocked: bool,
     },
+    /// The context after a main model call, with that call's usage when it was metered
+    /// (docs/call-usage.md).
     ContextUsage {
+        used: u64,
+        limit: u32,
+        call: Option<chat::CallUsage>,
+    },
+    /// Any other model call (compaction, corrector, wrap-up), or a main call the engine
+    /// reported no prompt count for; `used`/`limit` are the context as last reported.
+    ModelCall {
+        call: chat::CallUsage,
         used: u64,
         limit: u32,
     },

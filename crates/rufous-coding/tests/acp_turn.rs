@@ -1567,3 +1567,68 @@ async fn a_turn_killed_at_a_permission_question_is_recovered_on_load() {
         .any(|m| m.content == rufous_kernel::agent::session::NOT_RUN_ASKED));
     assert!(saved.iter().any(|m| m.content == "[deleted a.txt]"));
 }
+
+/// Choreo's item 6 (docs/call-usage.md): every model call of a turn is one `usage_update`
+/// with `_meta.rufous.call`, naming the model and the engine `session/new` reported.
+#[tokio::test]
+async fn every_model_call_reports_its_tokens_model_and_engine() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let factory = OfflineAware {
+        inner: ScriptedFactory {
+            script: vec![("read_file", json!({"path": "a.txt"}))],
+            delay: Duration::ZERO,
+            forever: false,
+            turns: Arc::new(AtomicUsize::new(0)),
+            opened_with: Arc::new(Mutex::new(Vec::new())),
+        },
+        turns_offline: Arc::default(),
+    };
+    let agent = RufousAcp::with_factory(cwd.join("home"), "scripted:1b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let client = recording_client!(seen.clone()).connect_with(client_ch, {
+        let cwd = cwd.clone();
+        async move |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let ns = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            cx.send_request(PromptRequest::new(
+                ns.session_id.clone(),
+                vec!["Read a.txt".into()],
+            ))
+            .block_task()
+            .await
+        }
+    });
+    let (a, c) = tokio::join!(agent.connect_to(agent_ch), client);
+    a.expect("agent side");
+    c.expect("client side");
+
+    let seen = seen.lock().expect("lock");
+    let calls: Vec<Value> = seen
+        .iter()
+        .filter_map(|u| match u {
+            SessionUpdate::UsageUpdate(u) => Some(
+                u.meta
+                    .as_ref()
+                    .map(|m| m["rufous"]["call"].clone())
+                    .unwrap_or_default(),
+            ),
+            _ => None,
+        })
+        .collect();
+    // The scripted model reads, then finishes: two calls, each with its own update.
+    assert_eq!(calls.len(), 2, "{seen:#?}");
+    for c in &calls {
+        assert_eq!(c["model"], "scripted:1b");
+        assert_eq!(c["purpose"], "turn");
+        assert_eq!(c["input_tokens"], 500);
+        assert_eq!(c["output_tokens"], Value::Null);
+        assert_eq!(c["engine"], json!({"label": "Ollama", "local": true}));
+    }
+}

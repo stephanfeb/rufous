@@ -4400,3 +4400,84 @@ fn a_greeting_is_not_a_mention_of_a_two_word_host_tool() {
     let out = run_host_turn("Hello!", &[], |_| ChatResponse::text("Hi!"));
     assert!(!out.iter().any(|m| m.content.starts_with("Hint:")));
 }
+
+// ---- per-call usage (docs/call-usage.md) ----
+
+/// Each model call is reported once, in order: the main calls on their context report, the
+/// compaction summary and the wrap-up as `ModelCall`. Calls are told apart by the scripted
+/// output count, which is the call's index.
+#[test]
+fn every_model_call_is_reported_once_with_its_purpose() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut params = RunParams::plain("gemma4:12b", d.path());
+    params.num_ctx = 100_000;
+    let mut a = Agent::new(
+        params,
+        Responder {
+            n: 0,
+            f: |n| {
+                let mut r = match n {
+                    1..=3 => ChatResponse::call(
+                        "",
+                        "create_file",
+                        json!({"path": format!("f{n}.txt"), "content": "x"}),
+                    ),
+                    // The third main call reports 95 % of the window: L3 compaction, whose
+                    // summary is call 4.
+                    4 => ChatResponse::text("summary of the work so far"),
+                    5 => ChatResponse::call("", "finish", json!({"summary": ""})),
+                    _ => ChatResponse::text("Wrapped up: three files."),
+                };
+                r.prompt_eval_count = Some(if n == 3 { 95_000 } else { 1_000 });
+                r.eval_count = Some(n as u64);
+                r
+            },
+        },
+        OkTools,
+    );
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
+    let sink = Arc::clone(&events);
+    a = a.with_sink(move |e| sink.lock().expect("lock").push(e));
+    a.run(start(TASK), None, None).expect("loop");
+
+    let ev = events.lock().expect("lock");
+    let calls: Vec<(&str, u64)> = ev
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ContextUsage { call: Some(c), .. }
+            | AgentEvent::ModelCall { call: c, .. } => {
+                Some((c.purpose, c.output_tokens.expect("count")))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        vec![
+            ("turn", 1),
+            ("turn", 2),
+            ("turn", 3),
+            ("compaction", 4),
+            ("turn", 5),
+            ("wrap_up", 6),
+        ]
+    );
+    assert!(ev.iter().all(|e| match e {
+        AgentEvent::ContextUsage { call, .. } => call.as_ref().is_some_and(|c| c.purpose == "turn"),
+        AgentEvent::ModelCall { call, .. } => call.purpose != "turn",
+        _ => true,
+    }));
+    // The model id is the one the loop names, the scripted backend having no override.
+    assert!(ev.iter().all(|e| match e {
+        AgentEvent::ModelCall { call, .. } => call.model == "gemma4:12b",
+        _ => true,
+    }));
+    // The wrap-up is reported before `Finished`, not lost after it.
+    let finished = ev
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Finished { .. }))
+        .expect("finished");
+    assert!(!ev[finished..]
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ModelCall { .. })));
+}

@@ -430,6 +430,11 @@ impl ConnectTo<AcpClient> for RufousAcp {
                         let turn_name = name;
                         let sessions = sessions.clone();
                         let turn_dir = sessions_dir.clone();
+                        // Each model call's usage names the engine as session/new did.
+                        let engine = factory
+                            .session_meta(offline)
+                            .and_then(|m| m.get("rufous")?.get("engine").cloned())
+                            .unwrap_or_default();
                         let task_cx = cx.clone();
                         cx.spawn(async move {
                             let cx = task_cx;
@@ -441,6 +446,7 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 plan_dir,
                                 turn_dir,
                                 turn_name,
+                                engine,
                                 rx,
                                 stop.clone(),
                             )
@@ -548,10 +554,13 @@ async fn drive_turn(
     plan_dir: PathBuf,
     sessions_dir: PathBuf,
     name: String,
+    engine: serde_json::Value,
     mut rx: mpsc::UnboundedReceiver<BridgeMsg>,
     stop: Arc<AtomicBool>,
 ) -> (rufous_kernel::Result<Vec<Message>>, TurnBridge) {
-    let mut bridge = TurnBridge::new(cwd).with_plan_dir(plan_dir);
+    let mut bridge = TurnBridge::new(cwd)
+        .with_plan_dir(plan_dir)
+        .with_engine(engine);
     let mut perm_n = 0u64;
     while let Some(msg) = rx.recv().await {
         match msg {

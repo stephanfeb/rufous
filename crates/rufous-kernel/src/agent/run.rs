@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use super::ablation;
 use super::chat::DynBackend;
-use super::chat::{ChatBackend, ChatError, StreamPiece};
+use super::chat::{ChatBackend, ChatError, Metered, StreamPiece};
 use super::corrector::{self, Verdict};
 use super::face::{self, ToolFace, PRODUCTIVE, RESEARCH_ALL};
 use super::history::{
@@ -867,8 +867,25 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         }
         // How the loop ended, for the session meta; `None` while it runs.
         let mut session_end: Option<&str> = None;
+        // Every model call of the run is metered here (docs/call-usage.md); `meter!` reports
+        // the calls recorded since the last report.
+        let mut metered = Metered::new(backend);
+        let backend = &mut metered;
+        let mut last_used: u64 = 0;
+        macro_rules! meter {
+            () => {
+                for call in backend.take() {
+                    sink(AgentEvent::ModelCall {
+                        call,
+                        used: last_used,
+                        limit: params.num_ctx,
+                    });
+                }
+            };
+        }
         macro_rules! save {
             () => {
+                meter!();
                 session::save_session(
                     sessions_dir,
                     session,
@@ -1425,8 +1442,27 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
             };
 
+            // The main call rides on its context report; side calls made since the last
+            // report go out first.
+            let mut main_call = {
+                let mut calls = backend.take();
+                let main = if calls.last().is_some_and(|c| c.purpose == "turn") {
+                    calls.pop()
+                } else {
+                    None
+                };
+                for call in calls {
+                    sink(AgentEvent::ModelCall {
+                        call,
+                        used: last_used,
+                        limit: params.num_ctx,
+                    });
+                }
+                main
+            };
             // Post-call context ladder from the real prompt token count.
             if let Some(pt) = r.prompt_eval_count.filter(|&p| p > 0) {
+                last_used = pt;
                 let pct = pt * 100 / u64::from(params.num_ctx.max(1));
                 log!("[ctx: {pt}/{} = {pct}%]", params.num_ctx);
                 if let Some(t) = r.timing {
@@ -1441,6 +1477,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 sink(AgentEvent::ContextUsage {
                     used: pt,
                     limit: params.num_ctx,
+                    call: main_call.take(),
                 });
                 if let Some(level) = compaction.observe(pt as f64, ctx_budget) {
                     let todo = if level >= 2 {
@@ -1453,6 +1490,13 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                     );
                     compaction.compacted(level);
                 }
+            }
+            if let Some(call) = main_call.take() {
+                sink(AgentEvent::ModelCall {
+                    call,
+                    used: last_used,
+                    limit: params.num_ctx,
+                });
             }
 
             let content = r.message.content.clone();
@@ -2312,6 +2356,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         wm.push(Message::user(
                             "The task is wrapped up. Summarise for the user in plain text (do not call any tool): what was done and what the key artefacts or conclusions are. Five sentences at most.",
                         ));
+                        backend.purpose = "wrap_up";
                         if let Ok(wr) = backend.chat(model, &wm, &[], &mut |p| {
                             if let StreamPiece::Token(t) = p {
                                 sink(AgentEvent::Text(t.to_string()));
@@ -2322,7 +2367,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                                 messages.push(Message::assistant(wt));
                             }
                         }
+                        backend.purpose = "turn";
                     }
+                    meter!();
                     log!("\n===== TASK COMPLETE =====");
                     log!("{res}");
                     sink(AgentEvent::Finished {
@@ -2353,6 +2400,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         && ledger.consult(&name, &sig_json, k)
                     {
                         let task_text = qa::task_original_text(&messages, 100_000);
+                        backend.purpose = "corrector";
                         let verdict = corrector::consult(
                             &mut *backend,
                             model,
@@ -2365,6 +2413,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                             },
                             &ct,
                         );
+                        backend.purpose = "turn";
                         match verdict {
                             Verdict::Retry {
                                 name: cname,
@@ -2773,8 +2822,8 @@ fn nap(secs: u64, scale: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compact<B: ChatBackend>(
-    backend: &mut B,
+fn compact<B: ChatBackend + ?Sized>(
+    backend: &mut Metered<'_, B>,
     model: &str,
     messages: Vec<Message>,
     level: u8,
@@ -2784,6 +2833,7 @@ fn compact<B: ChatBackend>(
     sink: &mut dyn FnMut(AgentEvent),
 ) -> Vec<Message> {
     let before = messages.len();
+    backend.purpose = "compaction";
     let c = compact_history(
         backend,
         model,
@@ -2793,6 +2843,7 @@ fn compact<B: ChatBackend>(
         files.as_deref(),
         &mut |s| sink(AgentEvent::Log(s)),
     );
+    backend.purpose = "turn";
     if c.summarised {
         transcript.mark_compacted();
     }
