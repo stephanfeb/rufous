@@ -205,6 +205,11 @@ pub trait ToolRunner {
     ) -> Vec<Value> {
         Vec::new()
     }
+    /// The session's host tools ([`crate::mcp::McpRegistry::host_face`]); none for a runner
+    /// without MCP.
+    fn host_face(&self, _offline: bool) -> crate::mcp::HostFace {
+        crate::mcp::HostFace::default()
+    }
     /// Child mode: the sandbox fuse has tripped; the loop must end with exit 53.
     fn child_terminated(&self) -> Option<String> {
         None
@@ -262,6 +267,9 @@ impl ToolRunner for Executor {
         offline: bool,
     ) -> Vec<Value> {
         self.mcp.tool_defs(cats, extra, offline)
+    }
+    fn host_face(&self, offline: bool) -> crate::mcp::HostFace {
+        self.mcp.host_face(offline, crate::mcp::host_tool_cap())
     }
     fn child_terminated(&self) -> Option<String> {
         Executor::child_terminated(self)
@@ -342,6 +350,8 @@ struct PromptInputs<'a> {
     /// used as it is when `hooks` is `None`.
     carried_context: Option<&'a str>,
     environment: &'a prompt::Environment,
+    /// [`face::host_note`]: the line naming the host's tools, on the task and chat prompts.
+    host_note: Option<&'a str>,
 }
 
 fn task_system(
@@ -357,6 +367,7 @@ fn task_system(
         hooks,
         carried_context,
         environment,
+        host_note: _,
     } = *inputs;
     // SessionStart hooks (a fresh session's first prompt build only): their context enters
     // the task prompt, capped, its size logged so the small-profile reading can see what a
@@ -418,11 +429,16 @@ fn task_system(
 /// The system prompt the turn's [`Prompt`] names. `task` is the text skills are matched on
 /// (the task prompt only).
 fn system_for(which: Prompt, inputs: &PromptInputs<'_>, sink: &mut Sink, task: &str) -> String {
-    match which {
+    let mut sys = match which {
         Prompt::Task(base) => task_system(base, inputs, sink, task),
         Prompt::Chat => prompt::chat_system(Some(&inputs.params.workdir)),
-        Prompt::Child => prompt::child_system(Some(&inputs.params.workdir)),
+        Prompt::Child => return prompt::child_system(Some(&inputs.params.workdir)),
+    };
+    if let Some(note) = inputs.host_note {
+        sys.push_str("\n\n");
+        sys.push_str(note);
     }
+    sys
 }
 
 /// The loop plus everything it owns between runs: tool face, transcript cursor, backend.
@@ -659,6 +675,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         let which = self.params.turn_policy().turn(Intent::Task, false).prompt;
         let session_hooks = (!self.hooks_started).then_some(&self.hooks);
         self.hooks_started = true;
+        let host_note = face::host_note(&self.tools.host_face(self.face.offline));
         let inputs = PromptInputs {
             params: &self.params,
             skill_dirs: &self.skill_dirs,
@@ -666,6 +683,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
             hooks: session_hooks,
             carried_context: None,
             environment: &self.environment,
+            host_note: host_note.as_deref(),
         };
         let sys = system_for(which, &inputs, &mut self.sink, task);
         vec![Message::system(sys), Message::user(task)]
@@ -706,6 +724,17 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
         }
         let model = params.model.as_str();
         let workdir = params.workdir.as_path();
+        // The host's tools (docs/host-tools.md): fixed for the run, on every turn and route.
+        let host = tools.host_face(face.offline);
+        let host_note = face::host_note(&host);
+        if !host.is_empty() {
+            sink(AgentEvent::Log(format!(
+                "[face] host tools: {} {}: {}",
+                host.names.len(),
+                if host.inlined { "inlined" } else { "over the cap, by mcp_call" },
+                host.names.join(", ")
+            )));
+        }
         // The harness's own files (plan, backups, trash, image queue): the workdir unless
         // relocated out of the user's project (`RunParams::harness_dir`).
         let hdir: &Path = params.harness_dir.as_deref().unwrap_or(workdir);
@@ -957,6 +986,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 hooks: session_hooks,
                 carried_context: carried.as_deref(),
                 environment,
+                host_note: host_note.as_deref(),
             };
             let sys = system_for(turn.prompt, &inputs, sink, &skill_text);
             if let Some(old) = messages.iter().find(|m| m.role == Role::System) {
@@ -1088,7 +1118,7 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 break;
             }
             dedupe_trailing_assistant(&mut messages);
-            let ct: Vec<Value> = match (&cats, turn.route == Route::Question) {
+            let mut ct: Vec<Value> = match (&cats, turn.route == Route::Question) {
                 (_, true) => face.chat_tool_defs(),
                 (Some(c), false) if !params.ablated(ablation::FLAT_PREFILL) => {
                     let mut defs = face.tools_for_categories(c);
@@ -1097,6 +1127,11 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                 }
                 _ => face.active_defs(),
             };
+            if host.inlined {
+                ct.extend(host.defs.iter().cloned());
+            } else if !host.is_empty() {
+                ct.extend(face.host_fallback(&ct));
+            }
             // Pre-call estimate: prune, then compact before the server has to refuse.
             // Recency pruning (boubou-65d.6) runs first, from half the window: deterministic,
             // keeps every step's outcome as a fact line, so the ladder has less to summarise
@@ -1827,7 +1862,9 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         }
                     }
                 }
-                let mcp_producing = is_mcp_tool(n) && face::is_mcp_producing(n);
+                // A host tool runs one of the host's automations: real work whatever its name.
+                let mcp_producing =
+                    is_mcp_tool(n) && (face::is_mcp_producing(n) || host.contains(n));
                 if matches!(n, "create_file" | "edit_file" | "append_file" | "run_bash")
                     || mcp_producing
                 {

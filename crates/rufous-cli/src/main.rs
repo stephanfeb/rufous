@@ -161,6 +161,11 @@ enum Cmd {
         /// `general` (a desktop app's assistant: the web chat's preset and skills).
         #[arg(long, default_value = "coding", value_parser = ["coding", "general"])]
         policy: String,
+        /// The MCP servers the client passes in `session/new` are the host app's own tools,
+        /// offered on every turn (docs/host-tools.md). Defaults to on under `--policy general`
+        /// and off under `coding`.
+        #[arg(long, value_parser = ["on", "off"])]
+        host_tools: Option<String>,
     },
     /// Serve the local web UI on 127.0.0.1 (Mingbird's `webui/server.py`).
     Serve {
@@ -476,7 +481,12 @@ fn main() -> Result<()> {
                 pc.enabled, pc.child_model, pc.hard_cap
             );
         }
-        Cmd::Acp { model, ctx, policy } => {
+        Cmd::Acp {
+            model,
+            ctx,
+            policy,
+            host_tools,
+        } => {
             let key = match model
                 .or_else(|| std::env::var("RUFOUS_MODEL").ok())
                 .or_else(|| std::env::var("BOUBOU_MODEL").ok())
@@ -494,13 +504,19 @@ fn main() -> Result<()> {
             {
                 eprintln!("[rufous acp] could not start ollama; run `ollama serve` first");
             }
+            let host_tools = acp_host_tools(&policy, host_tools.as_deref());
             let (policy, skills) = product(&policy);
-            eprintln!("[rufous acp] policy {}", policy.name);
+            eprintln!(
+                "[rufous acp] policy {}, host tools {}",
+                policy.name,
+                if host_tools { "on" } else { "off" }
+            );
             let factory = rufous_coding::runner::StandardFactory {
                 cfg: cfg.clone(),
                 num_ctx: ctx,
                 policy,
                 skills,
+                host_tools,
             };
             let agent = rufous_coding::RufousAcp::with_factory(
                 agent_home(),
@@ -577,6 +593,15 @@ struct RunOpts {
     append: bool,
     time_budget: Option<String>,
     policy: String,
+}
+
+/// `rufous acp --host-tools`: what the flag says, else on for a desktop app's `general`
+/// sessions and off for an editor's `coding` ones (docs/host-tools.md).
+fn acp_host_tools(policy: &str, flag: Option<&str>) -> bool {
+    match flag {
+        Some(v) => v == "on",
+        None => policy == "general",
+    }
 }
 
 /// The preset and the built-in skills `rufous run --policy <name>` runs under. `unattended`
@@ -1125,6 +1150,23 @@ mod tests {
             Err(clap::error::ErrorKind::InvalidValue)
         );
         assert_eq!(product("general").0, rufous_general::harness::policy());
+    }
+
+    #[test]
+    fn acp_host_tools_follow_the_policy_unless_the_flag_says() {
+        assert!(!acp_host_tools("coding", None));
+        assert!(acp_host_tools("general", None));
+        assert!(acp_host_tools("coding", Some("on")));
+        assert!(!acp_host_tools("general", Some("off")));
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.cmd) {
+            Ok(Cmd::Acp { host_tools, .. }) => host_tools,
+            _ => panic!("not acp"),
+        };
+        assert_eq!(parse(&["rufous", "acp"]), None);
+        assert_eq!(
+            parse(&["rufous", "acp", "--host-tools", "off"]).as_deref(),
+            Some("off")
+        );
     }
 
     #[test]

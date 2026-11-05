@@ -19,6 +19,59 @@ pub const CACHE_FILE: &str = "mcp_manifest_cache.json";
 /// When any probe failed the cache expires after this instead, so the retry comes soon.
 const FAILED_TTL: Duration = Duration::from_secs(60);
 const MAX_PARALLEL_PROBES: usize = 8;
+/// Description length of a routed MCP tool in its flattened definition.
+pub const DESC_CAP: usize = 60;
+/// Description length of a host tool: a host's descriptions say what an automation does and
+/// what it needs, which 60 characters cut off (docs/host-tools.md).
+pub const HOST_DESC_CAP: usize = 200;
+/// Host tools inlined as schemas; past this the face carries `mcp_call` and the prompt names
+/// the tools instead. `RUFOUS_HOST_TOOL_CAP` overrides it for the bench that sets it.
+pub const HOST_TOOL_CAP: usize = 15;
+
+/// The host tools of a session ([`McpRegistry::host_face`]): their qualified names, sorted,
+/// and their schemas when they fit under the cap. Fixed for the session, so the tool list
+/// stays the same from turn to turn (bead boubou-g11).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HostFace {
+    pub names: Vec<String>,
+    /// The flattened definitions; empty when `inlined` is false.
+    pub defs: Vec<Value>,
+    pub inlined: bool,
+}
+
+impl HostFace {
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.iter().any(|n| n == name)
+    }
+}
+
+/// The cap in effect: `RUFOUS_HOST_TOOL_CAP` when set to a number, else [`HOST_TOOL_CAP`].
+pub fn host_tool_cap() -> usize {
+    std::env::var("RUFOUS_HOST_TOOL_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(HOST_TOOL_CAP)
+}
+
+/// One flattened `server.tool` definition, its description on one line and cut to `cap`.
+fn flat_def(server: &str, t: &ManifestTool, cap: usize) -> Value {
+    let mut desc: String = t.desc.replace('\n', " ");
+    if desc.chars().count() > cap {
+        desc = format!("{}…", desc.chars().take(cap).collect::<String>());
+    }
+    if desc.is_empty() {
+        desc = format!("{server} tool");
+    }
+    json!({"type": "function", "function": {
+        "name": super::qualified_name(server, &t.name),
+        "description": desc,
+        "parameters": t.schema,
+    }})
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManifestTool {
@@ -305,9 +358,12 @@ impl McpRegistry {
             if offline && self.servers.get(server).is_some_and(ServerConfig::is_http) {
                 continue;
             }
+            // A host server's tools are assembled by `host_face`, every turn.
+            if self.servers.get(server).is_some_and(|c| c.host) {
+                continue;
+            }
             for t in &info.tools {
-                let full = super::qualified_name(server, &t.name);
-                let named = extra.contains(&full);
+                let named = extra.contains(&super::qualified_name(server, &t.name));
                 if !named {
                     if !t.categories.iter().any(|c| cats.contains(c)) {
                         continue;
@@ -326,21 +382,43 @@ impl McpRegistry {
                         continue;
                     }
                 }
-                let mut desc: String = t.desc.replace('\n', " ");
-                if desc.chars().count() > 60 {
-                    desc = format!("{}…", desc.chars().take(60).collect::<String>());
-                }
-                if desc.is_empty() {
-                    desc = format!("{server} tool");
-                }
-                defs.push(json!({"type": "function", "function": {
-                    "name": full,
-                    "description": desc,
-                    "parameters": t.schema,
-                }}));
+                defs.push(flat_def(server, t, DESC_CAP));
             }
         }
         defs
+    }
+
+    /// The session's host tools: every tool of every [`ServerConfig::host`] server, with no
+    /// category, `expose` or built-in-duplicate filter (the host chose them), sorted by
+    /// qualified name. Offline mode drops `url` servers here as in [`Self::tool_defs`].
+    pub fn host_face(&self, offline: bool, cap: usize) -> HostFace {
+        let hosts: Vec<&String> = self
+            .servers
+            .iter()
+            .filter(|(_, c)| c.host && !(offline && c.is_http()))
+            .map(|(n, _)| n)
+            .collect();
+        if hosts.is_empty() {
+            return HostFace::default();
+        }
+        let manifest = self.manifest(false);
+        let mut tools: Vec<(String, Value)> = hosts
+            .iter()
+            .filter_map(|s| manifest.get(*s).map(|m| (*s, m)))
+            .flat_map(|(s, m)| {
+                m.tools
+                    .iter()
+                    .map(|t| (super::qualified_name(s, &t.name), flat_def(s, t, HOST_DESC_CAP)))
+            })
+            .collect();
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
+        let inlined = tools.len() <= cap;
+        let (names, defs): (Vec<String>, Vec<Value>) = tools.into_iter().unzip();
+        HostFace {
+            names,
+            defs: if inlined { defs } else { Vec::new() },
+            inlined,
+        }
     }
 
     /// Expected parameter names of a tool, from the manifest (for argument-error hints).

@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 
 pub use client::{call_tool, probe_server, ProbedTool, CALL_TIMEOUT, PROBE_TIMEOUT};
 pub use manifest::{
-    compact_schema, is_path_key, resolve_mcp_paths, Manifest, ManifestTool, McpRegistry, Prober,
-    ServerManifest, CACHE_FILE, MANIFEST_TTL,
+    compact_schema, host_tool_cap, is_path_key, resolve_mcp_paths, HostFace, Manifest,
+    ManifestTool, McpRegistry, Prober, ServerManifest, CACHE_FILE, DESC_CAP, HOST_DESC_CAP,
+    HOST_TOOL_CAP, MANIFEST_TTL,
 };
 
 use crate::{Error, Result};
@@ -102,6 +103,11 @@ pub struct ServerConfig {
     /// Server-wide exposure: `auto` (default), `on-demand` or `disabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<String>,
+    /// A host's own server: an ACP client passed it in `session/new` and the session runs
+    /// with host tools on (`rufous acp --host-tools`). Its tools are on the face every turn,
+    /// on every route, whatever the routing (docs/host-tools.md). Never read from `mcp.json`.
+    #[serde(skip)]
+    pub host: bool,
 }
 
 impl ServerConfig {

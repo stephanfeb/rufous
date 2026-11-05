@@ -367,6 +367,9 @@ pub struct StandardFactory {
     pub policy: TurnPolicy,
     /// The built-in skills that go with [`Self::policy`]'s product.
     pub skills: Vec<Skill>,
+    /// `rufous acp --host-tools`: the client's `session/new` servers are the host's own
+    /// tools, on the face every turn (docs/host-tools.md). Off for an editor.
+    pub host_tools: bool,
 }
 
 impl StandardFactory {
@@ -377,6 +380,7 @@ impl StandardFactory {
             num_ctx,
             policy: crate::harness::policy(),
             skills: crate::harness::skills(),
+            host_tools: false,
         }
     }
 }
@@ -428,7 +432,13 @@ impl AgentFactory for StandardFactory {
         agent.tools.store = setup.files;
         if !setup.mcp_servers.is_empty() {
             let mut servers = agent.tools.mcp.servers.clone();
-            servers.extend(setup.mcp_servers);
+            let host = self.host_tools;
+            servers.extend(
+                setup
+                    .mcp_servers
+                    .into_iter()
+                    .map(|(name, cfg)| (name, ServerConfig { host, ..cfg })),
+            );
             agent.tools.set_mcp_servers(servers);
         }
         agent.checkpoint = Some(session::state_path(&setup.sessions_dir, &setup.session));

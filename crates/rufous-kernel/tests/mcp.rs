@@ -558,3 +558,45 @@ fn the_projects_servers_join_the_homes_and_win_a_name_clash() {
     e.set_mcp_servers(McpConfig::new());
     assert!(e.mcp.servers.is_empty());
 }
+
+#[test]
+fn host_servers_are_assembled_whole_sorted_and_long_described_not_routed() {
+    // docs/host-tools.md: a `session/new` server of a host is on the face every turn, with
+    // no category or expose filter, descriptions up to 200 characters; the routed path
+    // skips it so nothing is listed twice.
+    let d = tempfile::tempdir().expect("tmp");
+    let mut servers = McpConfig::new();
+    servers.insert(
+        "choreo".into(),
+        ServerConfig {
+            host: true,
+            ..cfg(json!({"url": "http://127.0.0.1:9/mcp", "tools": {"weekly": {"expose": "on-demand"}}}))
+        },
+    );
+    servers.insert("notes".into(), cfg(json!({"command": "x"})));
+    let p = Scripted::new(Some(vec![
+        probed("say_hello", &"Greets someone. ".repeat(20)),
+        probed("weekly", "w"),
+        probed("read_file", "a built-in's name"),
+    ]));
+    let reg = McpRegistry::with_prober(d.path(), servers, Box::new(Shared(p)));
+    let host = reg.host_face(false, 15);
+    assert!(host.inlined);
+    assert_eq!(
+        host.names,
+        vec!["choreo.read_file", "choreo.say_hello", "choreo.weekly"]
+    );
+    let desc = host.defs[1]["function"]["description"].as_str().unwrap_or("");
+    assert_eq!(desc.chars().count(), rufous_kernel::mcp::HOST_DESC_CAP + 1);
+    // The routed path lists only the configured server.
+    let routed: Vec<String> = reg
+        .tool_defs(&set(&["mcp"]), &set(&[]), false)
+        .iter()
+        .map(|d| d["function"]["name"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(routed.iter().all(|n| n.starts_with("notes.")), "{routed:?}");
+    // Past the cap the names stay, the schemas go; offline drops a url host server.
+    let over = reg.host_face(false, 2);
+    assert!(!over.inlined && over.defs.is_empty() && over.names.len() == 3);
+    assert!(reg.host_face(true, 15).is_empty());
+}

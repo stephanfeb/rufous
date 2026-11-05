@@ -4122,3 +4122,119 @@ fn no_write_a_question_the_ablation_or_an_unattended_run_never_holds() {
     assert!(user_msgs(&msgs, HELD).is_empty());
     assert!(!logs.iter().any(|l| l.contains("[claims]")), "{logs:#?}");
 }
+
+// ---- host tools (docs/host-tools.md, bead boubou-c9a) ----
+
+/// A runner whose session has host tools: `choreo.say_hello` inlined, or past the cap.
+struct HostTools {
+    inlined: bool,
+}
+
+impl ToolRunner for HostTools {
+    fn run_tool(&mut self, name: &str, _args: &Value) -> String {
+        match name {
+            "choreo.say_hello" => "Hello, Ada!".to_string(),
+            "finish" => "[TASK_COMPLETE] ok".to_string(),
+            _ => "[ok]".to_string(),
+        }
+    }
+    fn host_face(&self, _offline: bool) -> rufous_kernel::mcp::HostFace {
+        let def = json!({"type": "function", "function": {
+            "name": "choreo.say_hello",
+            "description": "Say Hello: greets someone by name.",
+            "parameters": {"type": "object", "properties": {"who": {"type": "string"}}},
+        }});
+        rufous_kernel::mcp::HostFace {
+            names: vec!["choreo.say_hello".into()],
+            defs: if self.inlined { vec![def] } else { Vec::new() },
+            inlined: self.inlined,
+        }
+    }
+}
+
+struct Offered<F: FnMut(usize) -> ChatResponse> {
+    n: usize,
+    f: F,
+    offered: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl<F: FnMut(usize) -> ChatResponse> ChatBackend for Offered<F> {
+    fn chat(
+        &mut self,
+        _m: &str,
+        _msgs: &[Message],
+        t: &[Value],
+        _on: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        self.n += 1;
+        let names = t
+            .iter()
+            .filter_map(|d| d["function"]["name"].as_str().map(String::from))
+            .collect();
+        self.offered.lock().expect("lock").push(names);
+        Ok((self.f)(self.n))
+    }
+}
+
+#[test]
+fn a_question_turn_is_offered_the_host_tools_and_named_them() {
+    // Session acp_1105_105519: "…then tell me exactly what it returned" went to the question
+    // route, which offered no MCP tools, and the model said the automation did not exist.
+    let d = tempfile::tempdir().expect("tmp");
+    let offered = Arc::new(Mutex::new(Vec::new()));
+    let mut a = Agent::new(
+        RunParams::plain("qwen3.5:4b", d.path()),
+        Offered {
+            n: 0,
+            offered: offered.clone(),
+            f: |n| match n {
+                1 => ChatResponse::call("", "choreo.say_hello", json!({"who": "Ada"})),
+                _ => ChatResponse::text("It returned: Hello, Ada!"),
+            },
+        },
+        HostTools { inlined: true },
+    );
+    let out = a
+        .run(start("What did Say Hello return for Ada?"), None, None)
+        .expect("loop");
+    assert!(out[0].content.contains("chatting with the user"), "a question turn");
+    assert!(out[0].content.contains("HOST TOOLS") && out[0].content.contains("choreo.say_hello"));
+    let first = offered.lock().expect("lock")[0].clone();
+    assert!(first.iter().any(|n| n == "choreo.say_hello"), "{first:?}");
+    assert!(out
+        .iter()
+        .any(|m| m.role == Role::Tool && m.content == "Hello, Ada!"));
+}
+
+#[test]
+fn host_tools_past_the_cap_ride_on_mcp_call() {
+    let d = tempfile::tempdir().expect("tmp");
+    let offered = Arc::new(Mutex::new(Vec::new()));
+    let mut a = Agent::new(
+        RunParams::plain("qwen3.5:4b", d.path()),
+        Offered {
+            n: 0,
+            offered: offered.clone(),
+            f: |n| match n {
+                1 => ChatResponse::call(
+                    "",
+                    "mcp_call",
+                    json!({"server": "choreo", "tool": "say_hello", "args": {"who": "Ada"}}),
+                ),
+                _ => ChatResponse::text("Done."),
+            },
+        },
+        HostTools { inlined: false },
+    );
+    let out = a
+        .run(start("What did Say Hello return for Ada?"), None, None)
+        .expect("loop");
+    assert!(out[0].content.contains("call mcp_call"));
+    let first = offered.lock().expect("lock")[0].clone();
+    assert!(first.iter().any(|n| n == "mcp_call"), "{first:?}");
+    assert!(!first.iter().any(|n| n == "choreo.say_hello"), "{first:?}");
+    assert!(out
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .all(|m| !m.content.contains("is not available")));
+}

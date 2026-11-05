@@ -91,7 +91,7 @@ async fn list_probed(client: &Running) -> Result<Vec<ProbedTool>, String> {
         .into_iter()
         .map(|t| ProbedTool {
             name: t.name.to_string(),
-            desc: head(t.description.as_deref().unwrap_or(""), 150).to_string(),
+            desc: head(t.description.as_deref().unwrap_or(""), super::HOST_DESC_CAP).to_string(),
             schema: super::compact_schema(&Value::Object((*t.input_schema).clone())),
         })
         .collect())

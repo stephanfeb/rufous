@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use serde_json::Value;
 
-use crate::mcp::{CAT_CODE, CAT_FILES, CAT_MCP, CAT_MEMORY, CAT_WEB};
+use crate::mcp::{HostFace, CAT_CODE, CAT_FILES, CAT_MCP, CAT_MEMORY, CAT_WEB};
 use crate::tools::{advanced_tools, core_tools, CORE_TOOL_NAMES};
 
 /// Tools every task gets regardless of category.
@@ -235,6 +235,25 @@ pub fn session_categories<S: AsRef<str>>(instructions: &[S]) -> BTreeSet<String>
         .collect()
 }
 
+/// The prompt line for a session with host tools (docs/host-tools.md). A small model follows
+/// the text it is given, not the state behind it, so the text names the tools; `None` when
+/// the session has none.
+pub fn host_note(host: &HostFace) -> Option<String> {
+    if host.is_empty() {
+        return None;
+    }
+    let names = host.names.join(", ");
+    Some(if host.inlined {
+        format!(
+            "HOST TOOLS: the app you are running in gave you its own tools: {names}. They are in your tool list: call them directly (no enable_tools) whenever the user asks for one of the app's automations, by its name or in their own words, or asks what one returned. Report what the tool returned."
+        )
+    } else {
+        format!(
+            "HOST TOOLS: the app you are running in has its own tools: {names}. To run one, call mcp_call with server and tool (the parts before and after the dot) and its arguments, whenever the user asks for one of the app's automations, by its name or in their own words, or asks what one returned."
+        )
+    })
+}
+
 fn schema_map() -> &'static BTreeMap<String, Value> {
     static MAP: LazyLock<BTreeMap<String, Value>> = LazyLock::new(|| {
         core_tools()
@@ -372,6 +391,19 @@ impl ToolFace {
             .filter_map(|n| schema_of(n).cloned())
             .collect();
         self.filter_offline(defs)
+    }
+
+    /// Host tools past the cap: `mcp_call` on every route, activated so the call-time gate
+    /// lets it through; nothing when `defs` already carry it or it is disabled.
+    pub fn host_fallback(&mut self, defs: &[Value]) -> Vec<Value> {
+        const NAME: &str = "mcp_call";
+        if self.disabled.contains(NAME) || defs.iter().any(|d| d["function"]["name"] == NAME) {
+            return Vec::new();
+        }
+        if !self.is_active(NAME) {
+            self.active.push(NAME.to_string());
+        }
+        schema_of(NAME).cloned().into_iter().collect()
     }
 
     /// `active_tool_defs`: everything currently active (the flat-prefill fallback). A
