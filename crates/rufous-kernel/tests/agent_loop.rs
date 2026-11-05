@@ -4302,14 +4302,10 @@ fn run_host_turn(
 #[test]
 fn a_named_host_tool_gets_a_note_before_the_first_call() {
     // Arm A (bead boubou-8c4): "Say Hello" in the instruction is choreo.say_hello, in text.
-    let out = run_host_turn(
-        "What did Say Hello return for Ada?",
-        &["host_mention_hold"],
-        |n| match n {
-            1 => ChatResponse::call("", "choreo.say_hello", json!({"who": "Ada"})),
-            _ => ChatResponse::text("It returned: Hello, Ada!"),
-        },
-    );
+    let out = run_host_turn("What did Say Hello return for Ada?", &[], |n| match n {
+        1 => ChatResponse::call("", "choreo.say_hello", json!({"who": "Ada"})),
+        _ => ChatResponse::text("It returned: Hello, Ada!"),
+    });
     let note = out
         .iter()
         .find(|m| m.role == Role::User && m.content.starts_with("Hint:"))
@@ -4323,48 +4319,23 @@ fn a_named_host_tool_gets_a_note_before_the_first_call() {
 }
 
 #[test]
-fn a_reply_that_skips_a_named_host_tool_is_held_once() {
-    // Arm B (bead boubou-8c4): the first text reply without the call is held; the second
-    // text reply always passes.
+fn a_reply_that_skips_a_named_host_tool_ends_the_turn() {
+    // No hold behind the note (bead boubou-8c4): arm B ran Weekly Report after "Don't run
+    // Weekly Report" 5/6 on qwen3.5:4b. "Don't run" is the user's to say.
     let out = run_host_turn(
-        "What did Say Hello return for Ada?",
-        &["host_mention_note"],
-        |_| ChatResponse::text("I have no record of that."),
+        "Don't run Say Hello, just tell me what it does.",
+        &[],
+        |_| ChatResponse::text("It greets someone by name."),
     );
-    let holds: Vec<&Message> = out
-        .iter()
-        .filter(|m| {
-            m.role == Role::User
-                && m.content
-                    .contains("you answered without running choreo.say_hello")
-        })
-        .collect();
-    assert_eq!(holds.len(), 1, "{out:?}");
-    assert!(
-        !out.iter().any(|m| m.content.starts_with("Hint:")),
-        "arm A is off"
+    assert_eq!(
+        out.iter().filter(|m| m.role == Role::Assistant).count(),
+        1,
+        "{out:?}"
     );
-}
-
-#[test]
-fn a_reply_after_the_named_host_tool_ran_is_not_held() {
-    let out = run_host_turn(
-        "What did Say Hello return for Ada?",
-        &["host_mention_note"],
-        |n| match n {
-            1 => ChatResponse::call("", "choreo.say_hello", json!({"who": "Ada"})),
-            _ => ChatResponse::text("It returned: Hello, Ada!"),
-        },
-    );
-    assert!(!out
-        .iter()
-        .any(|m| m.content.contains("Your reply was held")));
 }
 
 #[test]
 fn a_greeting_is_not_a_mention_of_a_two_word_host_tool() {
     let out = run_host_turn("Hello!", &[], |_| ChatResponse::text("Hi!"));
-    assert!(!out
-        .iter()
-        .any(|m| m.content.starts_with("Hint:") || m.content.contains("Your reply was held")));
+    assert!(!out.iter().any(|m| m.content.starts_with("Hint:")));
 }

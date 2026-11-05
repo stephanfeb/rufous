@@ -87,6 +87,29 @@ Run three arms: none, A and B.
 Kept when: qwen passes the first prompt at least 8 of 9 in both N cells; the negation and
 "Hello!" prompts make no host call; and the existing prompts hold their 2026-11-05 numbers.
 
+## Reading, 2026-11-05: arm A kept, arm B removed
+
+`bench/results/host_tools/2026-11-05_arm_{none,note,hold}`, N=5 and 15, 3 runs each. The table
+counts the runs where the named automation was called, out of 6. For hello_q, the brackets count
+replies that also quoted the run id.
+
+| Prompt | Model | none | note (A) | hold (B) |
+|---|---|---|---|---|
+| What did Say Hello return for Ada? | qwen3.5:4b | 1 (1) | 6 (3) | 6 (5) |
+| What did Say Hello return for Ada? | gemma4:e2b | 6 (6) | 6 (6) | 6 (6) |
+| Don't run Weekly Report… | qwen / gemma | 0 / 0 | 0 / 0 | 5 / 1 |
+| What does Tidy Downloads do? | qwen / gemma | 0 / 0 | 0 / 3 | 6 / 6 |
+| Has Weekly Report run today? | qwen / gemma | 1 / 4 | 4 / 6 | 6 / 6 |
+| Hello! and the four plain prompts | both | no host call | no host call | no host call |
+
+- **B is removed.** Held once, the model answers with the call whatever the user said. It ran Weekly
+  Report after "Don't run Weekly Report" and Tidy Downloads, which moves files, on a question about
+  what it does. Every Choreo call is a real run with real effects.
+- **A is kept.** qwen makes the call 6/6, against 1/6 before, and A causes no false calls. It misses the
+  8-of-9 bar on the strict check only by quoting. Three of the six replies gave "Hello, Ada!" without
+  the `(run …)` the result carried. The call happens, so that miss is a quoting bead of its own, not
+  this one.
+
 ## Open questions
 
 - **Choreo:** will each automation's tool carry an MCP `title` set to the name the user sees

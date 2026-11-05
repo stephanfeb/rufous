@@ -46,12 +46,11 @@ PROMPTS = [
     ("haiku", "Write a haiku about autumn.", None, 0, "none"),
     ("file", "Create a file ideas.md with three ideas for a birthday party.", None, 0, "none"),
 ]
-# --arm: what AGENT_ABLATION switches off (bead boubou-8c4).
+# --arm: what AGENT_ABLATION switches off (bead boubou-8c4). The hold arm was removed after
+# the 2026-11-05 reading (results/host_tools/2026-11-05_arm_*); `note` is the default build.
 ARMS = {
-    "none": "host_mention_note,host_mention_hold",
-    "note": "host_mention_hold",
-    "hold": "host_mention_note",
-    "both": "",
+    "none": "host_mention_note",
+    "note": "",
 }
 TIMING = re.compile(r"\[timing: load [\d.]+s · prompt (\d+) tok ([\d.]+)s · gen (\d+) tok ([\d.]+)s\]")
 
@@ -181,8 +180,8 @@ def main():
     ap.add_argument("--binary", default=DEFAULT_BINARY)
     ap.add_argument("--turn-timeout-min", type=float, default=5)
     ap.add_argument("--user-home", default=os.path.expanduser("~/.ollama_agent"))
-    ap.add_argument("--arm", default="both", choices=sorted(ARMS),
-                    help="host mention arms on (bead boubou-8c4); none = both switched off")
+    ap.add_argument("--arm", default="note", choices=sorted(ARMS),
+                    help="host mention note on (bead boubou-8c4); none = switched off")
     ap.add_argument("--summary", action="store_true")
     a = ap.parse_args()
     if a.summary:

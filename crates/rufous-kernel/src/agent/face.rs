@@ -287,7 +287,9 @@ pub fn host_mentions<'a>(host: &'a HostFace, text: &str) -> Vec<(&'a str, &'a st
         .collect()
 }
 
-/// Arm A's note: the named automation is a tool the model can call now.
+/// The mention note (bead boubou-8c4, arm A, kept on the 2026-11-05 bench): the named
+/// automation is a tool the model can call now. There is no hold behind it: arm B turned
+/// "Don't run Weekly Report" into a run 5/6 on qwen3.5:4b.
 pub fn host_mention_note(mentions: &[(&str, &str)]) -> String {
     let named = mentions
         .iter()
@@ -295,16 +297,6 @@ pub fn host_mention_note(mentions: &[(&str, &str)]) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!("Hint: {named}. If the user wants it run or wants its result, call it; it runs now.")
-}
-
-/// Arm B's hold: the reply came without running the automation the user named.
-pub fn host_mention_hold_note(mentions: &[(&str, &str)]) -> String {
-    let names = mentions
-        .iter()
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("⚠️ Your reply was held: you answered without running {names}, which the user named. If they want it run or want its result, call it now; if not, reply again and say why.")
 }
 
 fn schema_map() -> &'static BTreeMap<String, Value> {
