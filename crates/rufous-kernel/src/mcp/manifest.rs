@@ -25,6 +25,9 @@ pub const DESC_CAP: usize = 60;
 /// Description length of a host tool: a host's descriptions say what an automation does and
 /// what it needs, which 60 characters cut off (docs/host-tools.md).
 pub const HOST_DESC_CAP: usize = 200;
+/// Length of a parameter description kept in a compacted schema. Only host tools are sent
+/// them (docs/mcp-schemas.md).
+pub const PARAM_DESC_CAP: usize = 120;
 /// Host tools inlined as schemas; past this the face carries `mcp_call` and the prompt names
 /// the tools instead. `RUFOUS_HOST_TOOL_CAP` overrides it for the bench that sets it.
 pub const HOST_TOOL_CAP: usize = 15;
@@ -62,7 +65,8 @@ pub fn host_tool_cap() -> usize {
 }
 
 /// One flattened `server.tool` definition, its description on one line and cut to `cap`.
-fn flat_def(server: &str, t: &ManifestTool, cap: usize) -> Value {
+/// Parameter descriptions stay only for a host tool (`param_desc`, docs/mcp-schemas.md).
+fn flat_def(server: &str, t: &ManifestTool, cap: usize, param_desc: bool) -> Value {
     let mut desc: String = t.desc.replace('\n', " ");
     if desc.chars().count() > cap {
         desc = format!("{}…", desc.chars().take(cap).collect::<String>());
@@ -70,10 +74,20 @@ fn flat_def(server: &str, t: &ManifestTool, cap: usize) -> Value {
     if desc.is_empty() {
         desc = format!("{server} tool");
     }
+    let mut params = t.schema.clone();
+    if !param_desc {
+        if let Some(props) = params.get_mut("properties").and_then(Value::as_object_mut) {
+            for v in props.values_mut() {
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("description");
+                }
+            }
+        }
+    }
     json!({"type": "function", "function": {
         "name": super::qualified_name(server, &t.name),
         "description": desc,
-        "parameters": t.schema,
+        "parameters": params,
     }})
 }
 
@@ -111,8 +125,10 @@ pub struct ServerManifest {
 /// `server → {categories, tools}`.
 pub type Manifest = BTreeMap<String, ServerManifest>;
 
-/// `_compact_schema`: parameter names + types + required only, and only the required
-/// ones when there are more than eight (prefill stays small).
+/// `_compact_schema`: per parameter its type, its `enum` and its description (one line, cut
+/// to [`PARAM_DESC_CAP`]); `required` as the server sent it, a missing list meaning none.
+/// With more than eight parameters only the required ones stay, when some are named
+/// (prefill stays small). docs/mcp-schemas.md.
 pub fn compact_schema(js: &Value) -> Value {
     let Some(obj) = js.as_object() else {
         return json!({"type": "object", "properties": {}, "required": []});
@@ -120,21 +136,44 @@ pub fn compact_schema(js: &Value) -> Value {
     let mut props: Vec<(String, Value)> = Vec::new();
     if let Some(p) = obj.get("properties").and_then(Value::as_object) {
         for (k, v) in p {
-            if let Some(t) = v.get("type") {
-                if !t.is_null() {
-                    props.push((k.clone(), json!({"type": t})));
+            let Some(t) = v.get("type").filter(|t| !t.is_null()) else {
+                continue;
+            };
+            let mut e = serde_json::Map::new();
+            e.insert("type".into(), t.clone());
+            if let Some(vals) = v.get("enum").and_then(Value::as_array) {
+                if !vals.is_empty()
+                    && vals
+                        .iter()
+                        .all(|x| x.is_string() || x.is_number() || x.is_boolean())
+                {
+                    e.insert("enum".into(), Value::Array(vals.clone()));
                 }
             }
+            if let Some(d) = v.get("description").and_then(Value::as_str) {
+                let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !d.is_empty() {
+                    let d = if d.chars().count() > PARAM_DESC_CAP {
+                        format!("{}…", d.chars().take(PARAM_DESC_CAP).collect::<String>())
+                    } else {
+                        d
+                    };
+                    e.insert("description".into(), Value::String(d));
+                }
+            }
+            props.push((k.clone(), Value::Object(e)));
         }
     }
-    let req: Vec<String> = match obj.get("required").and_then(Value::as_array) {
-        Some(r) if !r.is_empty() => r
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect(),
-        _ => props.iter().map(|(k, _)| k.clone()).collect(),
-    };
-    if props.len() > 8 {
+    let req: Vec<String> = obj
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| {
+            r.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if props.len() > 8 && !req.is_empty() {
         props.retain(|(k, _)| req.contains(k));
     }
     let mut m = serde_json::Map::new();
@@ -413,7 +452,7 @@ impl McpRegistry {
                         continue;
                     }
                 }
-                defs.push(flat_def(server, t, DESC_CAP));
+                defs.push(flat_def(server, t, DESC_CAP, false));
             }
         }
         defs
@@ -445,7 +484,7 @@ impl McpRegistry {
                     (
                         super::qualified_name(s, &t.name),
                         title,
-                        flat_def(s, t, HOST_DESC_CAP),
+                        flat_def(s, t, HOST_DESC_CAP, true),
                     )
                 })
             })

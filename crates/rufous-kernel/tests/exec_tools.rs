@@ -19,19 +19,26 @@ fn a_raised_stop_flag_terminates_a_running_command() {
     let (_d, mut e) = ex();
     let stop = Arc::new(AtomicBool::new(false));
     e.stop = Some(stop.clone());
+    // The flag goes up once the command has started: a fixed 300 ms raced the shell's
+    // start when the whole suite ran at once, and the output was empty.
+    let ready = _d.path().join("ready");
     let raiser = {
         let stop = stop.clone();
+        let ready = ready.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
+            let t = Instant::now();
+            while !ready.exists() && t.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             stop.store(true, Ordering::SeqCst);
         })
     };
     let t0 = Instant::now();
     // run_bash runs `cmd /C` on Windows, where `;` is not a separator (bead boubou-tfr).
     let command = if cfg!(windows) {
-        "echo started & sleep 30 & echo late"
+        "echo started & echo x > ready & sleep 30 & echo late"
     } else {
-        "echo started; sleep 30; echo late"
+        "echo started; touch ready; sleep 30; echo late"
     };
     let out = e.run_tool("run_bash", &json!({ "command": command }));
     raiser.join().expect("raiser");

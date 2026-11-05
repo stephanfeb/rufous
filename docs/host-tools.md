@@ -43,7 +43,9 @@ tool list stays byte-identical from turn to turn and the prefix cache holds (bou
    `tool_defs` skips host servers so nothing is listed twice. In `run.rs`, all three `ct` arms append
    `host_defs`: the question route, the routed task route and the flat-prefill fallback. The question
    route keeps its other limits: `QA_BLOCKED` covers only the file mutators, so a host call is allowed there.
-4. **Descriptions.** Host tools keep up to 200 characters (`HOST_DESC_CAP`); others keep 60.
+4. **Descriptions.** Host tools keep up to 200 characters (`HOST_DESC_CAP`); others keep 60. Their parameters also keep
+   their descriptions, and every MCP tool keeps its `enum`s and its `required` list as sent
+   (docs/mcp-schemas.md, boubou-erw).
 5. **Prompt.** When the session has host tools, one line replaces the MCP half of `prompt.rs:25`:
    *"Your host app's tools are in your tool list as `<server>.<tool>`; use them when the user asks
    for one of its automations or what one returned."* The server name comes from the config, so the

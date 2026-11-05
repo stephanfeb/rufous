@@ -92,31 +92,85 @@ fn server_categories_filter_unknown_tags_and_unknown_keys_are_ignored() {
 }
 
 #[test]
-fn compact_schema_keeps_names_types_required() {
+fn compact_schema_keeps_names_types_enums_descriptions_and_required_as_sent() {
+    // docs/mcp-schemas.md (boubou-erw).
     let js = json!({"type": "object", "properties": {
-        "q": {"type": "string", "description": "long text"},
-        "n": {"type": "integer"},
+        "kind": {"type": "string", "enum": ["master", "document", "log"],
+                 "description": "master: a list of things;\n  document: one per event"},
+        "n": {"type": "integer", "description": ""},
+        "odd": {"type": "string", "enum": [{"not": "scalar"}]},
         "weird": {"description": "no type"}
-    }, "required": ["q"]});
+    }, "required": ["kind"]});
     let c = compact_schema(&js);
     assert_eq!(
         c["properties"],
-        json!({"q": {"type": "string"}, "n": {"type": "integer"}})
+        json!({
+            "kind": {"type": "string", "enum": ["master", "document", "log"],
+                     "description": "master: a list of things; document: one per event"},
+            "n": {"type": "integer"},
+            "odd": {"type": "string"}
+        })
     );
-    assert_eq!(c["required"], json!(["q"]));
-    // no `required` → every property is required
+    assert_eq!(c["required"], json!(["kind"]));
+    // A long description is cut to the cap.
+    let c = compact_schema(
+        &json!({"properties": {"a": {"type": "string", "description": "x".repeat(300)}}}),
+    );
+    let d = c["properties"]["a"]["description"].as_str().unwrap_or("");
+    assert_eq!(d.chars().count(), rufous_kernel::mcp::PARAM_DESC_CAP + 1);
+    // No `required` → nothing is required (bizframe's `show.name` is optional).
     let c = compact_schema(&json!({"properties": {"a": {"type": "string"}}}));
-    assert_eq!(c["required"], json!(["a"]));
-    // > 8 properties → only the required ones survive
+    assert_eq!(c["required"], json!([]));
+    // > 8 properties → only the required ones survive, when some are named
     let mut props = Map::new();
     for i in 0..10 {
         props.insert(format!("p{i}"), json!({"type": "string"}));
     }
-    let c = compact_schema(&json!({"properties": props, "required": ["p1", "p7"]}));
+    let c = compact_schema(&json!({"properties": props.clone(), "required": ["p1", "p7"]}));
     assert_eq!(c["properties"].as_object().map(|m| m.len()), Some(2));
+    let c = compact_schema(&json!({"properties": props}));
+    assert_eq!(c["properties"].as_object().map(|m| m.len()), Some(10));
     assert_eq!(
         compact_schema(&json!("nope")),
         json!({"type": "object", "properties": {}, "required": []})
+    );
+}
+
+#[test]
+fn a_host_tool_keeps_parameter_descriptions_a_routed_tool_keeps_only_enums() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut servers = McpConfig::new();
+    servers.insert(
+        "bizframe".into(),
+        ServerConfig {
+            host: true,
+            ..cfg(json!({"url": "http://127.0.0.1:9/mcp"}))
+        },
+    );
+    servers.insert("notes".into(), cfg(json!({"command": "x"})));
+    let mut t = probed("set_entity", "Adds an entity");
+    t.schema = compact_schema(&json!({"properties": {
+        "kind": {"type": "string", "enum": ["master", "document", "log"], "description": "what it records"}
+    }, "required": ["kind"]}));
+    let reg = McpRegistry::with_prober(
+        d.path(),
+        servers,
+        Box::new(Shared(Scripted::new(Some(vec![t])))),
+    );
+    let host = reg.host_face(false, 15);
+    assert_eq!(
+        host.defs[0]["function"]["parameters"]["properties"]["kind"],
+        json!({"type": "string", "enum": ["master", "document", "log"], "description": "what it records"})
+    );
+    let routed = reg.tool_defs(&set(&["mcp"]), &set(&[]), false);
+    assert_eq!(routed[0]["function"]["name"], "notes.set_entity");
+    assert_eq!(
+        routed[0]["function"]["parameters"]["properties"]["kind"],
+        json!({"type": "string", "enum": ["master", "document", "log"]})
+    );
+    assert_eq!(
+        routed[0]["function"]["parameters"]["required"],
+        json!(["kind"])
     );
 }
 

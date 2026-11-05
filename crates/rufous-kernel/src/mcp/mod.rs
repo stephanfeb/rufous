@@ -20,7 +20,7 @@ pub use client::{call_tool, probe_server, ProbedTool, CALL_TIMEOUT, PROBE_TIMEOU
 pub use manifest::{
     compact_schema, host_tool_cap, is_path_key, resolve_mcp_paths, HostFace, Manifest,
     ManifestTool, McpRegistry, Prober, ServerManifest, CACHE_FILE, DESC_CAP, HOST_DESC_CAP,
-    HOST_TOOL_CAP, MANIFEST_TTL,
+    HOST_TOOL_CAP, MANIFEST_TTL, PARAM_DESC_CAP,
 };
 
 use crate::{Error, Result};
