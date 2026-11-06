@@ -3381,6 +3381,719 @@ limit") and the website guide now say that the limit is hard. They give the two 
 hits it and the rule of thumb that prompt speed × the limit is the largest prompt a model can
 start on, and they explain how to raise the limit in Zed.
 
+## 2026-11-04: prefix diff across turns (boubou-xwi, measurement)
+
+The SESSION CONTEXT fix held in the sessions since 4c98db6 that have a follow-up turn
+(acp_1103_124522, acp_1104_092436, acp_1104_104411, acp_1104_112408; acp_1104_123606 had one
+turn): every follow-up logged
+`[prompt] system prompt unchanged`. But the first call of a follow-up turn was still a full
+prefill in half the cases, with load 0.0 s and no compaction before it:
+- 12:49:15 qwen3.5:9b, 11,092 tokens in 18.6 s.
+- 09:30:08 bonsai-2:27b, 5,135 tokens in 56.1 s (all of it, at about 90 tok/s cold). The
+  previous turn was one text reply.
+- 10:55:04 and 11:04:48 qwen3.5:4b, 12,385 tokens in 13.0 s and 26,459 in 48.3 s.
+- 11:27:55 gemma4:12b, 8,529 tokens in 40.3 s.
+
+Other follow-ups hit the cache (0.6–3.2 s). Intent did not separate the two groups. None of the
+slow turns had a `[prefix]` line, because `last_request` lived inside `run()` and ACP builds an
+agent per turn: a turn's first call was never compared with anything. The suspects were the
+tool face, which is re-chosen per turn from the instruction text, and on qwen the template
+re-rendering the previous turn's assistant messages. The old diff also compared tool names
+only, so a changed description or schema would pass unseen.
+
+This change is measurement only; nothing sent to the model changes.
+- The previous request is kept as a `RequestDigest`, not as messages: the tool names, a
+  `tools_hash` over the serialised definitions, and per message a `MessageDigest` (a hash of
+  the serialised message, so thinking, calls and images count; a hash of the text alone; and
+  the excerpt for the log line). Hashes are the first 8 bytes of SHA-1.
+- `prefix_change` compares two digests. When the names match but the hash moved it logs
+  `tools changed: same names, descriptions or schemas differ`.
+- Each sent request's digest is written to `<sessions>/<name>.request.json`
+  (`session::save_request`, atomic and best effort, named sessions only). A continued run loads
+  it as `last_request`, and the first call's lines read `[prefix] since the previous turn: …`.
+- A continued named session with no sidecar logs `[prefix] no request recorded for the previous
+  turn` once, so missing coverage shows.
+
+Tests: `a_request_that_does_not_extend_the_previous_one_is_located` in `tests/prompt_bias.rs`
+now covers a description-only and a thinking-only change, and
+`a_follow_up_turn_compares_its_first_request_with_the_previous_turn` in `tests/hooks.rs` runs
+four turns through the sidecar. That test already shows the first suspect: "Tidy the notes"
+then "Now sort them" logs `since the previous turn: tools changed: +batch_tools,web_fetch,
+web_search,web_search_multi`, because a message with no category keyword gets the default
+face. The workspace tests pass, apart from `ollama_proc`'s port test, which races under a
+parallel run and passes alone. Next: for each follow-up first call, its `[prefix]` line (or
+none) beside its `[timing]`.
+
+## 2026-11-04: a session keeps its tool set across turns (boubou-g11)
+
+Session acp_1104_132038 (gemma4:12b) was the first on the cross-turn `[prefix]` build. At 13:22
+the follow-up had no `[prefix]` line and cost 1.3 s for 7,507 tokens. At 13:23 it logged
+`since the previous turn: tools changed: + −batch_tools,web_fetch,web_search,web_search_multi`
+and cost 39.3 s for 8,217 tokens. At 13:25 "proceed" logged the same four tools added back and
+cost 51.1 s for 10,440 tokens. Both slow calls ran at gemma's cold rate (about 200 tok/s), so
+each was a full prefill. Templates render the tools at the top of the prompt, so any change to
+them re-prefills everything.
+
+The cause: a turn's categories came from its latest user message alone
+(`face::route_categories` over `qa::task_routing_text`). Files and code are always offered;
+web, memory and MCP follow keywords; and a message with no keyword gets the files+code+web
+default. So a keyworded follow-up dropped the web tools and a keywordless one ("proceed")
+added them back.
+
+Changes:
+- The categories are now a property of the session: the union of `route_categories` over
+  every instruction in the history (`face::session_categories`). Each instruction is routed as
+  before, default included, so a first turn gets what it got before, and a later turn can add
+  a category but never drop one.
+- `qa::instruction_texts` lists the instructions: user messages that are not harness notes or
+  the compaction summary. Tool results, ledger lines and reminders never count.
+- No new state: the set is a function of the saved history, so ACP's agent per turn computes
+  the same set, and the request sidecar stays measurement only.
+- At the turn start, `[face] tools kept from earlier instructions: X` or `[face] +X from this
+  instruction` is logged when the union differs from this instruction's own routing. Files and
+  code are left out of these lines.
+- Ablation `session_face` (in `KERNEL`) restores per-instruction routing.
+
+A category that first appears later still changes the tools once. A compaction that drops an
+early instruction can shrink the set, but it rewrites the history anyway. The cost to watch: a
+small model keeps the web tools (about four schemas) on turns whose own text would have dropped
+them. Rejected: always the full set, which undoes the routing small models rely on, and taking
+the previous turn's names from the sidecar, which would turn a measurement file into state.
+
+Tests: `a_session_keeps_every_category_its_instructions_routed_to` and
+`harness_notes_and_the_summary_are_not_instructions` in `tests/routing.rs`. The two-turn test
+in `tests/hooks.rs` now logs `+web` and one tools change on "Now sort them", and only the kept
+line on a later turn. The workspace tests pass (the `ollama_proc` port race failed once and
+passed on rerun) and clippy is clean. An offline replay of acp_1104_132038's instructions gives
+{code,files,web} on all four turns, so the 13:23 and 13:25 flips would not occur. Not measured
+yet: follow-up first calls with a tools-changed `[prefix]` line in Zed sessions, and the convo
+bench (n ≥ 3) with the count of `web_*` calls on non-web tasks.
+
+## 2026-11-05: profiles match LM Studio and Hugging Face model ids (boubou-eie)
+
+LM Studio, served through the OpenAI-compatible backend, names models
+`org/name-size[-variant][@quant]`, for example `google/gemma-4-12b`. `family_of` took
+`gemma-4-12b` as the family, so no built-in profile matched and the model ran on the default
+profile: no think-off, no finish-prose rescue and no honest-failure note. An LM Studio trial was
+therefore not comparable with the Ollama gemma4:12b sessions.
+
+Changes:
+- `profile::ollama_tag` turns an id with no `:` into an Ollama-style tag before the lookup. It
+  takes the last path segment and drops `@quant`, then splits on `-` and `_`. The first size
+  token (`12b`, `e2b`, `0.6b`, `270m`) ends the name. A bare version number joins the word
+  before it (`gemma` `4` → `gemma4`), and variant words after the size (`it`, `qat`, `mlx`, …)
+  are dropped.
+- So `google/gemma-4-12b` → `gemma4:12b`, `qwen/qwen3.5-9b@q4_k_m` → `qwen3.5:9b` and
+  `meta-llama/llama-3.1-8b-instruct` → `llama3.1:8b`.
+- An id with a `:` already (an Ollama tag, `hf.co/…:Q4_K_M`) is left as it is, and so is an id
+  with no size token, lower-cased.
+- `resolve` matches the built-ins on the normalised family and tag. Config overrides apply for
+  the family, the tag, and also the raw id as the user wrote it.
+
+One test, `lm_studio_ids_resolve_to_the_ollama_profiles` in `profile.rs`: eight ids map to
+their tags, `google/gemma-4-12b` resolves to the same profile as `gemma4:12b` (finish-prose
+rescue on), `lmstudio-community/gemma-4-e2b-it` gets the `gemma4:e2b` profile, and an override
+keyed by the LM Studio id still applies.
+
+## 2026-11-05: plan hold at the text ending (boubou-ear, boubou-uzl)
+
+Under the coding preset any reply without a tool call ends the turn. Gate 3c (named writes) was
+the only hold, and nothing looked at the plan. So turns ended with the model's own plan still
+open, often while the reply declared the task done or proposed the next one, and the user had
+to say "proceed". In acp_1104_132038 (gemma4:12b) turn endings left plans at 1/5, 0/6, 4/6,
+3/4, 4/6, 2/4, 3/4, 0/4 and 3/4. Every "proceed" in that session followed such an ending, and
+at 15:46:18 the user wrote "Your plan has one pending task left hanging. Clean it up." In
+acp_1104_112408 a plan of 0/2 ("Mark todo_4-8g5 as complete", "Claim the next logical task")
+ended with a reply proposing the next bead. The open items were mostly verification steps and
+first steps never ticked. Turns that did not touch the plan never needed a nudge.
+
+Announcing the next task and stopping is wanted; the agent must not pick up new work itself.
+The fault is stopping while the current task is unfinished.
+
+Separately (boubou-uzl): after the stale-plan reminder the model marked the same item done
+three times in acp_1102_200337 (steps 27, 36, 44). A todo update that changed nothing reset the
+counter.
+
+Gate 5 (PlanSync) already refused a `finish` with open items, but the coding preset never ends
+on `finish`. Its two waivers stay: a passing check last (`integrity::verified_at_end`) and an
+honest failure report (`admits_failure_about`). `npm run build` and `curl` are not checks, and
+in acp_1104_132038 and 112408 no check ran in any turn.
+
+Changes:
+- The Gate 5 body is now `plan_sync_check(plan, reply, cmds)` → `PlanCheck::Pass`,
+  `Waived(reason)` or `Hold`, called at `finish` as before and at the text reply that ends a
+  turn, after gate 3c.
+- At the text ending it applies only when the plan's content changed this turn
+  (`plan_at_start`). A plan left from an earlier turn never holds a question or a new
+  instruction.
+- At most two holds a turn. A second needs progress since the first: the plan's content changed
+  or a producing call landed. Otherwise `plan hold released: no progress since the last hold`.
+- `plan_hold_note` names up to three of this plan's open items, 80 chars each, and says to do
+  each, tick it, or remove it with a reason if it goes beyond the instruction (for example
+  claiming another task). Log lines: `⚠️ plan hold (4/6), reply held` and `plan open (…) at
+  the text ending; waived: …`.
+- The `todo(action=update, all=true)` shortcut left both notes; it invited ticking everything.
+- `todo_stale` resets only when the plan's content changed (boubou-uzl).
+- The coding preset's gates are NamedWrites+PlanSync; the general preset gets PlanSync.
+  Ablation `plan_hold` (in `KERNEL`).
+
+Five tests in `tests/agent_loop.rs`: held twice then done; released on no progress; an
+untouched plan, a failure report or the ablation never hold; a no-op update keeps the stale
+count; and `plan_sync_check_passes_holds_and_waives` (a build is no waiver). The workspace
+tests pass (52/52) and clippy is clean. An offline replay over the Zed transcripts of
+11-02..11-05: 12 endings would hold, 6 of them followed by an unsolicited reminder from the
+user; 0 waived. Afterwards acp_1105_074445 turn 3 made a plan of 5 and ticked all 5 before its
+text reply, with no hold needed. Not measured yet: per model, nudges per session, holds,
+releases for no progress, and items ticked with no work behind them.
+
+## 2026-11-05: circling ladder (boubou-m5d)
+
+Session acp_1103_083226 (qwen3.5:9b, "the static assets 404") ran three user turns over about
+2 h and 366 steps: 236 `run_bash` (72 gradlew, 45 npm, 41 `cat >` rewrites), 48 `read_file`, 39
+`edit_file`, 14 `delete_file`. `build.gradle.kts` was written 12 times and
+`frontend/vite.config.js` 9, and generated outputs were edited directly. 15 safety-gate
+refusals, 7 failed edits, 4 blocked duplicates and 9 hints changed nothing. Turns 1 and 2 ended
+"Fixed the 404 error…" with no request against a running server. In turn 3 the model's own
+`|| echo "404 still exists"` turned "connection refused" into "404", and it kept editing.
+
+In Zed the coding and general presets end a turn only on a text reply or at 200 iterations,
+and ACP passes no time budget. A per-turn profile of the 17 Zed turns of 20 or more steps
+(11-02..11-04) separated them by call count: the turns the user answered with a complaint, or
+that ended the session, ran 81–111 calls; those followed by a normal instruction ran at most
+57. The designed signal, one exact command repeated with the same result, did not work: the
+models vary flags and tails. With a two-word key, the long same-result streaks were all exit 0
+(a rebuild after each edit, a normal loop), in good and bad turns alike. So only failing
+streaks count.
+
+Changes (conversation policy only):
+- `CirclingLadder` in `ladders.rs` counts a turn's tool calls and, per `command_key` (first two
+  words, `cd …&&` and `VAR=` stripped, flags dropped; file-writing commands excluded), how many
+  runs in a row failed with the same exit code. Exit 0 resets the streak.
+- Stage 1, once a turn, at 60 calls or 8 failing runs (`CIRCLING_HYPOTHESIS_*`): a note asks
+  for a hypothesis about what still blocks the task and the one check that would show it done.
+- Stage 2, the checkpoint, at 80 calls, a failing streak of 12 or two stuck commands after the
+  note, or a scope-gate deny (`CIRCLING_CHECKPOINT_*`): a note asks for a short report to
+  the user and says no more tool calls this turn.
+- After it, every tool call gets `[checkpoint: report to the user in text; no more tool calls
+  this turn]`; the tools stay in the request. After two refusals `circling_report` (calls,
+  minutes, files written with counts, shell count, the longest failing run and its last output
+  line) is the reply and ends the turn. A text reply after the checkpoint ends the turn with no
+  stop hook or gate, so the plan hold never holds it.
+- `TurnPolicy::checkpoint` is on for the conversation presets and off for unattended runs and
+  children. Ablation `checkpoint`. Log lines start `[circling]`. `bench/acp_convo.py` counts
+  `[checkpoint` as a refusal.
+
+Testing caught a bug: the refusal branch also caught text replies; it now applies only to
+replies with calls. Tests: four unit tests in `ladders.rs` and four loop tests in
+`tests/agent_loop.rs`. On the Zed logs the ladder reaches stage 2 in 215800, 083226 08:36 and
+12:12, 150502 and 020709 (all at 80 calls), and not in 190002; 083226 08:59 (46 calls over
+49 min) is missed. acp_1105_074445 (longest turn 17 calls) logged no `[circling]` line. Not
+measured yet: a long or failing live turn that shows the ladder firing or staying quiet.
+
+## 2026-11-05: Gemma 4 native tool calls salvaged from text (boubou-5hg)
+
+LM Studio session acp_1105_001847 (`~/.rufous-lmstudio/sessions`, 00:53:35) ended its turn on a
+text reply that was a tool call in Gemma 4's own syntax:
+`<|channel>::<|channel>call:todo{action:<|"|>update<|"|>,done:true,index:1}<tool_call|>`. The
+model opened the thought channel twice and dropped the `<|tool_call>` opener, so LM Studio's
+parser passed it through as content. The salvage in `guards/leak.rs` missed it: `PLACEHOLDER`
+covers only one `<|"|>`-quoted string argument, and `FUNC_CALL` needs `name(k=v)`. The turn
+ended on "text reply ends the turn", Zed showed the raw tokens, and the plan was left open. The
+same leak can reach us from Ollama when its gemma4 parser misses an opener.
+
+The syntax is unambiguous, so the new shape is not profile-gated.
+
+Changes:
+- `parse_gemma_native` is a new salvage shape, tried after the JSON shapes and before
+  `PLACEHOLDER`. It needs one of the Gemma markers in the text (`<|"|>`, `<|tool_call>`,
+  `<tool_call|>`, `<|channel>`, `<channel|>`), so prose that mentions `call:x{}` is left alone.
+- Closed `<|channel>…<channel|>` thought spans are dropped first. Each `call:NAME{…}` then
+  needs a known tool name or a dotted MCP name.
+- `GemmaReader` reads the arguments: bare keys, `<|"|>…<|"|>` or JSON strings (which may hold
+  commas, braces and newlines), numbers, `true`/`false`/`null`, arrays and objects. A call
+  whose arguments do not read cleanly to the closing brace is not salvaged. Several calls in
+  one reply are all salvaged, in order.
+- `Salvaged.gemma` marks the shape, and the log line reads `⚡ salvaged tool call(s) from text
+  (gemma native): …`. It sits under the existing `salvage` ablation.
+
+Five tests. Four in `tests/guards.rs`: the exact 00:53 leak; arrays, nested objects and
+strings containing `}` and `,`; two calls in order with a closed thought dropped; and an
+unknown name, a truncated call, a bare word and marker-free prose all rejected. One in
+`tests/agent_loop.rs`: the leaked call runs and the turn goes on instead of ending.
+
+The user reports no more leaked Gemma call tokens in Zed (2026-11-05). No `gemma native`
+salvage has fired in the logs since the install; the one session since ran on Ollama, where the
+leak was not seen. Live reading: grep `gemma native` in the session logs of both homes.
+
+## 2026-11-05: the backend is named by a flag or a config key (boubou-56g)
+
+Choosing LM Studio over Ollama took a separate `RUFOUS_HOME` with its own `config.json` whose
+`local_backend.type` was `openai`. The Zed entry showed no backend, and nothing logged which
+engine ran or which config chose it. A running agent kept the old choice after the settings
+changed. At 01:23 on 2026-11-05, pid 79106 was still on `RUFOUS_HOME=~/.rufous-lmstudio` after
+the user had removed it from Zed, and a failed request to LM Studio read `agent loop: ollama:
+error sending request for url (http://127.0.0.1:1234/v1/chat/completions)`. Model ids also
+differ per engine (`gemma-4-12b` against `gemma4:12b`), and nothing warned.
+
+One choice, one resolver.
+
+Changes:
+- `BackendKind` (`ollama`, `lmstudio`, `openai`) is a new top-level config key `backend` and a
+  global CLI flag `--backend`. The flag is kept in `Config::backend_flag` (`#[serde(skip)]`), so
+  it is never written to `config.json`. The web UI's per-request config reads take it too
+  (`AppState.backend_flag`).
+- `Config::local_backend()` resolves the flag, then the `backend` key, then the older
+  `local_backend.type`, then Ollama. `lmstudio` uses `local_backend.base_url` when set, else
+  `LMSTUDIO_BASE_URL` (`http://127.0.0.1:1234/v1`).
+- `openai` needs `local_backend.base_url`. Named without one, `backend_problem` makes
+  `Agent::standard` and `rufous acp` fail with a config error naming the key, instead of
+  quietly using Ollama.
+- A named backend turns an enabled cloud provider off. Cloud is used only when no backend is
+  named, as before.
+- `OpenAiEngine.label` (`LM Studio` or `OpenAI-compatible`) names the engine. At run start the
+  loop logs `[engine] <label> · <url> (from <source>)`. `backend_source` gives `--backend`,
+  `config.json backend`, `config.json cloud`, `config.json local_backend` or `default`.
+- `model_id_warning` logs `[engine] ⚠️ …` for a model id written for the other engine: on
+  Ollama, an id that `profile::ollama_tag` rewrites (`hf.co/` ids exempt); on an
+  OpenAI-compatible engine, an id with `:`. It is a warning only; nothing is rewritten.
+- `Error::Ollama` now reads `model server: <engine>: …`.
+- `docs/acp.md` shows a Zed entry with `--backend lmstudio`. `RUFOUS_HOME` keeps working.
+
+Seven tests in `tests/openai_backend.rs`: the resolver order and its sources, the LM Studio
+default URL and the `openai` problem, the key read from JSON with the flag never written, cloud
+losing to a named backend, the two model-id warnings, the error text naming the server, and the
+agent refusing to start on `openai` without a URL. On the release build, `--help` lists the flag,
+`--backend openai` without a URL exits 1 with the config error, and clap rejects an unknown name.
+
+Session acp_1105_074445 logs `[engine] Ollama · http://127.0.0.1:11434 (from --backend)` on
+every turn. The user confirmed the change on 2026-11-05.
+
+## 2026-11-05: claims hold (boubou-bcs)
+
+The reply that ends a Zed turn claimed outcomes that no check backed. In acp_1104_132038
+(gemma4:12b) and 112408, no check command of any kind ran in any turn, yet the
+replies said "The UI successfully displays a list of three sample todos…" and "The backend
+infrastructure is now fully set up". The Tailwind classes it added did nothing; the user found
+that by looking. In acp_1103_083226 (qwen3.5:9b), turns 1 and 2 ended "Fixed the 404 error…"
+with no curl run. Gate 2b Claims existed, but it ran only at `finish`, the coding preset did not
+take it, and its detector looked for test-style claims, not behaviour claims.
+
+Offline measurement first (`bench/claims_replay.py`, every Zed transcript since 11-02, both
+homes): 106 turns, 44 wrote a file, and 30 of those ended with a reply. Exit codes alone back
+nothing. In acp_1103_083226 every command exited 0 while its output said `FAILURE: Build
+failed`, `Page Not Found` or `index.html also 404`, because a `| tail` or `|| echo` swallowed the
+status. Inline `python3 << PYEOF … open()` scripts that rewrote files looked like runs.
+
+Changes:
+- `outcome_claim` finds an outcome claim (`OUTCOME_CLAIM`: "Fixed the…", "now loads", "works
+  correctly", "is now functional", "<feature> … is complete"), a claim to have checked
+  (`DID_VERIFY_CLAIM`: "verified that…", "has been tested") or the old `VERIFIED_CLAIM`. A reply
+  that hedges (`CLAIM_HEDGE`: "not yet run", "please verify", "still fails", "unable to")
+  passes. `admits_failure_about` was not used as the escape, since "Fixed the 404 error" counts
+  as admitting one.
+- `CommandRecord.output_failure` keeps a shell result's first line that matches `FAILURE_MARK`
+  (`FAILURE`, `Build failed`, `Traceback`, `error:`, `Not Found`, `404`, `Connection refused`, …),
+  whatever the exit code. Only this hold reads it.
+- `shell_writes` counts heredocs, redirects, `tee`, `sed -i`, inline interpreter code, installs,
+  file-rewriting git commands (`git checkout` among them) and an `rm` of anything but logs, temp,
+  output and pid files. `runs_something` counts a check, a build or run task, a script, the
+  program itself or an HTTP request.
+- `claim_backing` returns `NoWrite`, `Backed` or `Unbacked`. A claim is backed by a run after the
+  last landed write that exited 0 with no failure line, or by the user saying it works in this
+  turn's instruction (`USER_REPORTS_WORKING`).
+- `claims_hold_step` runs where a text reply ends a conversation turn, after the plan hold, and
+  at `finish`; 6 of the 10 replies the first replay held ended on `finish`. It does not run
+  on the question route or in unattended runs. The first unbacked claim is held with `claims_hold_note`, which quotes
+  the claim and names why. The log reads `⚠️ [claims] hold: "<claim>" (<why>), reply held`; a
+  second one is let through with `[claims] released: … still unbacked`.
+- `Gate::Claims` joins the coding and general presets, which also turns on the finish-time Gate
+  2b there. Ablation switch `claims_hold`.
+
+`examples/claims_replay.rs` runs the Rust detector over the replay's export and agrees with the
+Python replay turn for turn: 9 holds and 4 backed. Two corrections came from that comparison:
+`git checkout` after the build is a write (083226 turn 1 now held), and removing `build.log` or
+`run.log` is not (215800 now backed by its passing run). All 3 "still broken" complaints that
+followed a claim in the data come after a held reply. Accepted misses: design-intent wording
+("ensuring a consistent typography") and "Completed X" summaries, which the plan hold covers.
+
+Nine tests: four in `tests/guards.rs` (claims found and descriptions not; failure output read
+whatever the exit code; what writes and what runs; a claim needs a clean run after the last
+write) and five in `tests/agent_loop.rs` (held once then backed by a clean run; a failing run
+does not back and a second claim is released; a reworded reply ends the turn; a `finish` is
+held the same way; no write, a question, the ablation or an unattended run never holds).
+
+Known: `is_verification_command` reads only the first Gradle task, so the log names
+`gradlew stop` over `gradlew clean test` in 215800; the verdict is unaffected. Not measured
+yet: `[claims]` lines in live Zed sessions per model, and the share of holds that end in a
+check rather than a reword. The bead is still open.
+
+## 2026-11-05: `rufous acp --policy` and HTTP MCP servers (boubou-5xj)
+
+This is Choreo's item 1: a desktop app drives rufous over ACP for everyday work, not code.
+`rufous acp` ran every session under the coding preset, and it did not advertise HTTP MCP
+servers. rufous already served the HTTP servers a client passes in `session/new`, but a client
+that follows the spec sends them only when the agent says so.
+
+Changes:
+- `rufous acp --policy coding|general` picks the turn policy for every session. `coding` (an
+  editor's agent, with the coding skills) is the default. `general` is the web chat's preset and
+  skills. The batch harness (`unattended`) is not offered over ACP.
+- `StandardFactory` carries the `policy` and its `skills`; `StandardFactory::coding` builds the
+  editor's factory. `turn_params` takes the policy instead of always using the coding preset.
+- The start is logged as `[rufous acp] policy <name>`.
+- The `initialize` response sets `mcpCapabilities.http` (`McpCapabilities::new().http(true)`).
+- `docs/acp.md` and the README describe the flag.
+
+Tests: `acp_policy_is_coding_unless_asked_for_general` in the CLI's unit tests (the default,
+`--policy general`, and `--policy unattended` rejected as an invalid value), and
+`tests/acp_turn.rs` now asserts `mcp_capabilities.http` in the `initialize` response.
+
+## 2026-11-05: host tools (boubou-c9a)
+
+Choreo's item 2. A desktop host starts `rufous acp --policy general` and passes its own MCP
+server in `session/new`, one tool per automation. Session `acp_1105_105519` failed: the model
+reached for `skills load "Say Hello"` and replied that no such automation exists. Session
+`acp_1105_105645`, with the prompt worded around MCP, worked first time. The code showed why:
+- A question turn got `face.chat_tool_defs()` and no MCP tools at all.
+- On a task turn the server had no categories, so its tools landed in `mcp`, which routes only
+  on words such as "mcp", "plugin" or "api" (`CAT_KEYWORDS`).
+- `McpRegistry::tool_defs` cut every description to 60 characters.
+- The prompt said "call enable_tools first" and did not name the tools.
+
+The design is in docs/host-tools.md. A server the client passes is the host's own tool set, not
+a library to discover. Its tools are on the face on every turn and every route, and the system
+prompt names them. The set is fixed for the session, so the tool list stays byte-identical from
+turn to turn and the prefix cache holds (boubou-g11). `mcp.json` servers keep their routing.
+
+Changes:
+- `ServerConfig.host` (`#[serde(skip)]`, never read from `mcp.json`). The runner sets it on the
+  `session/new` servers when host tools are on.
+- `rufous acp --host-tools on|off`. Without the flag it is on under `--policy general` and off
+  under `coding` (`acp_host_tools`). The start line says `policy …, host tools on|off`.
+- `McpRegistry::host_face` returns a `HostFace`: every tool of every host server, with no
+  category, `expose` or built-in-duplicate filter, sorted by qualified name. Offline drops a
+  `url` host server, as before. `tool_defs` skips host servers, so nothing is listed twice.
+- Host tools keep up to 200 characters of description (`HOST_DESC_CAP`); routed tools keep 60
+  (`DESC_CAP`). The probe now stores descriptions up to `HOST_DESC_CAP`, not 150.
+- At most `HOST_TOOL_CAP` = 15 host tools are inlined; `RUFOUS_HOST_TOOL_CAP` overrides it for
+  the bench. Past the cap the names stay in the prompt, the schemas go, and `mcp_call` is put on
+  every route (`face.host_fallback`).
+- `face::host_note` adds a `HOST TOOLS:` line to the task and chat prompts that names the tools.
+  The log line is `[face] host tools: N inlined|over the cap, by mcp_call: …`.
+- A host-tool call counts as productive for the anti-loop counters, whatever its name.
+- `bench/host_mcp.py` is a stand-in for Choreo's server (loopback HTTP, one tool per automation,
+  every call recorded). `bench/host_tools.py` sweeps the tool count over 4 host prompts and 3
+  plain ones, one fresh session per prompt.
+
+The cap is set by accuracy; prefill is recorded, not gated (80bf278). A percentage rule is
+unstable when the base is under a second (gemma4:e2b) or noisy (qwen3.5:4b measured faster at
+N=5 than at N=0). The +25 % prefill rule would have given 10 for qwen.
+
+Reading, 2026-11-05 (`bench/results/host_tools/2026-11-05`, N=0, 5, 10, 15, 25, 3 runs):
+- Plain prompts made no host call, 9/9 at every N on both models.
+- Choreo's prompt passed 3/3 on qwen3.5:4b up to N=15 and 2/3 at N=25, where qwen dropped the run
+  id it was asked to quote. gemma4:e2b passed 3/3 at every N.
+- About 75 prompt tokens per host tool. qwen went from 1738 tokens and 3.3 s at N=0 to 3083 and
+  4.4 s at N=15; gemma from 1406 to 3114 tokens and 0.44 to 0.92 s over N=0–25.
+- "What did Say Hello return for Ada?" in a fresh session failed on qwen at every N (0–1/3), so
+  it is not a cap effect: boubou-8c4.
+
+Tests: `host_servers_are_assembled_whole_sorted_and_long_described_not_routed`
+(`tests/mcp.rs`); a question turn is offered the host tools and the prompt names them, and past
+the cap the tools ride on `mcp_call` (`tests/agent_loop.rs`); the flag default follows the
+policy (`rufous-cli`). The safety gate still does not vet MCP calls; Choreo approves each run on
+its side.
+
+## 2026-11-05: host tool mentions (boubou-8c4)
+
+The 2026-11-05 sweep (boubou-c9a) found that in a fresh session qwen3.5:4b answers "What did
+Say Hello return for Ada?" without calling `choreo.say_hello`: 0–1 of 3 at every N. gemma4:e2b
+passed 11 of 12. The tools were sent (`acp_1105_123214.request.json`), and the route is the same
+as Choreo's original prompt, which passes. The replies either guessed from the description or
+said there was no record. docs/host-tool-mentions.md gives three causes in the text the model
+reads: `TASK_BASE` opens by telling it not to call a tool for greetings ("hello"); the user says
+"Say Hello" where the list says `choreo.say_hello`; and "what did … return" reads as a question
+about history.
+
+Changes (a91d374):
+- `HostFace.titles`: a display name per tool, the MCP `title` (or `annotations.title`), else the
+  tool name with `_` and `-` read as spaces. The `HOST TOOLS` line shows `choreo.say_hello (Say
+  Hello)`.
+- `face::host_mentions`: a message mentions a host tool when its display name, or its qualified
+  name, occurs on word boundaries, ignoring case and punctuation. A one-word display name is never
+  a mention on its own. The instruction is `qa::task_routing_text`, and the log line is `[host]
+  mention: …`.
+- Arm A, `host_mention_note`: a `Hint: "Say Hello" is the app's automation choreo.say_hello. If
+  the user wants it run or wants its result, call it; it runs now.` goes in after the user
+  message, once per turn, only on a mention.
+- Arm B, `host_mention_hold`: a text reply that ends a turn whose instruction named a host tool
+  that never ran is held once.
+- `bench/host_tools.py --arm none|note|hold` and four new prompts: "What did Say Hello return for
+  Ada?", "Has Weekly Report run today?", "What does Tidy Downloads do?" and "Don't run Weekly
+  Report, just tell me what it would make."
+
+Reading, 2026-11-05 (`bench/results/host_tools/2026-11-05_arm_{none,note,hold}`, N=5 and 15, 3
+runs; runs where the named automation was called, out of 6):
+- "What did Say Hello return": qwen 1 with no arm, 6 with the note, 6 with the hold; gemma 6 in
+  every arm.
+- "Don't run Weekly Report": 0/0 with no arm and with the note, 5/1 (qwen/gemma) with the hold.
+- "What does Tidy Downloads do?": 0/0, 0/3 and 6/6. "Has Weekly Report run today?": 1/4, 4/6
+  and 6/6.
+- "Hello!" and the plain prompts made no host call in any arm.
+
+The hold is removed (dcc1a65). Held once, the model answered with the call whatever the user
+said. It ran Weekly Report after "Don't run Weekly Report", and Tidy Downloads, which moves
+files, on a question about what it does. Every Choreo call is a real run with real effects. The
+note is kept and is on by default; the bench's default arm is `note`. With it qwen calls
+`say_hello` 6/6, against 1/6 before, and the note caused no false calls.
+
+The note misses the design's 8-of-9 bar only on quoting. Three of qwen's six replies gave "Hello,
+Ada!" without the `(run …)` id the result carried; gemma quoted it whole 6/6. That is bead
+boubou-caf.
+
+Tests in `tests/agent_loop.rs`: a named host tool gets the note before the first call; a reply
+that skips it ends the turn ("Don't run Say Hello, just tell me what it does.", one reply, no
+hint); a greeting is not a mention of a two-word tool. In `face.rs`, mentions need the whole
+display name or the qualified name. In `tests/mcp.rs`, the display name is the title, else the
+name read as words. Open: whether Choreo's tools will carry an MCP `title`, and whether "What
+does X do?" should ever run X.
+
+## 2026-11-05: rufous as a sandboxed helper (boubou-f8d)
+
+Choreo's item 3. Choreo ships rufous in `Choreo.app/Contents/Helpers`, signed with
+`app-sandbox` + `inherit`, and starts `rufous acp --policy general` itself. Inside the sandbox
+`HOME` is Choreo's container, `ollama` cannot be started, and a path the user did not share fails
+with `EPERM`. Checked on 2026-11-05 (docs/sandboxed-helper.md):
+- The engine URL could only come from `config.json`.
+- `rufous acp` started Ollama, restarted it after four 500s, and retried a refused connection
+  for eight attempts, about 4.5 minutes, before the turn failed.
+- A refused path read as `[not found: …]`, `[not a dir: …]` or `(no matches)`.
+- The `Home directory:` line named the container.
+- On stdin close a `run_bash` command was left behind, re-parented to launchd (`sleep 301`,
+  ppid 1).
+
+Changes:
+- `--base-url <url>`, global: overrides `local_backend.base_url` for `--backend lmstudio|openai`
+  and is never written to `config.json`. Without one of those backends it is an error, since
+  Ollama's setting is `OLLAMA_HOST`.
+- `--no-start-engine`, global (`Config::no_start_engine`): rufous never starts or restarts
+  Ollama. At start it probes for 2 s and logs `[rufous acp] engine <host> not answering; not
+  starting it (--no-start-engine)`, then serves anyway. A refused or unresolvable connection is
+  `ChatError::Unreachable`. With `RunParams::engine_unmanaged`, `RetryLadder` has
+  `fail_fast_unreachable` and gives up at once. The turn ends with `model server: <engine>: not
+  reachable (<reason>); rufous does not start the engine under --no-start-engine`. Without the
+  flag, `Unreachable` keeps the back-off.
+- `--user-home <path>` sets `RUFOUS_USER_HOME`. `config::user_home` takes it, else nothing inside
+  an App Sandbox (`APP_SANDBOX_CONTAINER_ID`), else the home directory. `fill_base` drops the line
+  when there is none. Sandbox detection, not `RUFOUS_HOME`, because every bench sets `RUFOUS_HOME`.
+- `[no access: <path> (not shared with this assistant)]` for `PermissionDenied` (`EPERM` and
+  `EACCES`) in `read_file`, `delete_file`, `list_dir`, `search_files` and the writes. It is in
+  `ERROR_OPENINGS` and `FAIL_MARKERS`. Other errors are unchanged.
+- `exec.rs` keeps a registry of live process groups (`LiveGroup`). `run_bash` commands and stdio
+  MCP servers (now `process_group(0)`) register. `rufous acp` calls `kill_live_groups()` when
+  stdin closes and on `SIGTERM`, `SIGHUP` or `SIGINT`, then exits. An `ollama serve` that rufous
+  started is not touched (boubou-t70).
+- `scripts/macos-universal.sh` builds arm64 and x86_64 with `MACOSX_DEPLOYMENT_TARGET=11.0` and
+  default features and joins them with `lipo`. It fails if `otool -L` lists anything outside
+  `/System/Library/` and `/usr/lib/`, and prints `minos` and the SHA-256.
+- docs/acp.md gains "Inside a host app", the table of the host's settings.
+
+Tests: an unreachable engine gives up at once only when it is not ours (`ladders.rs`); it ends
+the turn after one call, and a managed one is retried (`tests/agent_loop.rs`); a closed port is
+`Unreachable` on both engines, and `--base-url` overrides the config and needs a backend that
+takes one (`tests/openai_backend.rs`); a refused path is `[no access: …]` and live groups are
+killed with everything they started (`tests/exec_tools.rs`); no `Home directory:` line without a
+user home, and `--no-start-engine` fails fast (`tests/run_params.rs`). By hand with a fake
+engine, a refused connection failed in 0.1 s with no Ollama spawned, and a `sleep` under
+`run_bash` was gone after both stdin close and a signal. The workspace tests and clippy pass.
+Not yet confirmed: that the hardened runtime with no entitlements works once Choreo signs the
+universal binary.
+
+## 2026-11-05: where data goes (boubou-45n)
+
+Choreo's item 4. For every run, Choreo shows the user which hosts were contacted and from which
+step; that record is its main privacy claim. rufous's own traffic bypasses Choreo, so rufous has
+to report it. Checked on 2026-11-05, Choreo could not see redirects from `web_fetch`, the search
+engines behind `web_search`, any `url` MCP server or its tools/list probe, or the model engine.
+Offline mode worked by hiding tools, so a web tool reached another way (`batch_tools`, a name
+remembered from an earlier turn) still ran. A LAN engine or an `OLLAMA_HOST` elsewhere was used
+as normal.
+
+Changes (design in docs/egress.md, contract in docs/acp.md "Where data goes"):
+- `egress.rs`: `Egress { host, purpose, local }` and `EgressLog`. The host carries `:port` when
+  the port is not the scheme's default; `local` is true for loopback. A cache hit records
+  nothing.
+- `Web::get` records `web_search` or `web_fetch`, and a redirect policy records every hop as
+  `redirect`. `McpRegistry` records `mcp:<server>` when it calls or probes a `url` server.
+- After each tool runs, the loop drains the log (`ToolRunner::take_egress`), logs `[egress] …`
+  and sends `AgentEvent::Egress` before that call's result. The ACP bridge puts it on the call's
+  `tool_call_update` as `_meta.rufous.egress = [{host, purpose, local}]`. Traffic outside a call
+  (the MCP probes) becomes an Info `notice` titled `Contacted <hosts>`.
+- The `session/new` and `session/load` responses carry `_meta.rufous.engine = {label, url,
+  host, local}` and `_meta.rufous.offline` (`AgentFactory::session_meta`).
+- A host's `_meta.rufous.offline: true` on `session/new` or `session/load` keeps that session
+  offline (`Config::offline_forced`, which wins over `AGENT_OFFLINE=0`). It can only turn
+  offline on.
+- Offline is enforced in the executor: `web_search`, `web_search_multi`, `web_fetch` and calls
+  to a non-loopback `url` MCP server are refused with `[offline: <tool> would reach the
+  network; this session stays on this machine]`. Loopback `url` servers, such as a host's own,
+  are kept.
+- Offline refuses a model engine off this machine: `offline: the model engine at <url> is not on
+  this machine`. This changes behaviour for anyone running offline with a LAN engine.
+
+Tests: unit tests in `egress.rs`, `bridge.rs` and `runner.rs`;
+`a_call_s_egress_is_reported_before_its_result_and_logged` (`tests/agent_loop.rs`); redirects,
+cache hits and offline refusals of the web tools and a remote MCP server
+(`tests/web_memory.rs`); `offline_means_this_machine_for_the_model_engine_too`
+(`tests/openai_backend.rs`); the loopback host server kept offline (`tests/mcp.rs`); and
+`a_host_can_keep_one_session_offline_and_is_told_the_engine` (`tests/acp_turn.rs`). Checked end
+to end with the debug binary against a fake engine.
+
+Not covered: `run_bash` and stdio MCP servers. rufous cannot see their traffic, and Choreo labels
+shell use as unrecorded.
+
+## 2026-11-05: permission waits that survive a restart (boubou-lbo)
+
+Choreo's item 5. Choreo runs on an always-on Mac and may answer `session/request_permission`
+hours later, from a notification, without reading the conversation. Checked on 2026-11-05, the
+request carried only `{tool, action, target, workdir}`: not the new file text, not the command.
+The diff arrived only after the call had run. And if rufous died mid-wait, `session/load`
+replayed the previous turn's end. The user's prompt and the call asked about were both gone,
+and nothing said so.
+
+Changes (design in docs/permission-waits.md):
+- The request carries the whole proposed action (`permission_fields`, `current_args` in the
+  bridge). `rawInput.args` holds the call's complete arguments beside the existing keys. The
+  content is the write's diff, the `run_bash` command, the `web_fetch` URL, or an MCP call's
+  server, tool and arguments. The locations are added as for the `tool_call`.
+- While a question is open, `drive_turn` keeps `<sessions>/<name>.asking.json` = `{tool, args,
+  asked_at}`, and removes it on an answer, a cancellation or an error.
+- `session/load` that finds the marker runs `session::recover_asking`. When the checkpoint ends
+  in a tool-call message without results, it becomes the history. The asked call gets `[not
+  run: rufous stopped while this call was waiting for the user's permission, …]`. An earlier
+  call in the message gets `[interrupted: …]`, and a later one `[not run: rufous stopped before
+  this call started, …]`. The meta status becomes `interrupted`. A marker without a matching
+  checkpoint tail is stale and is removed.
+- `[not run:` and `[interrupted:` join `FAIL_MARKERS` and `ERROR_OPENINGS`, so the replay shows
+  the call failed.
+- "Go ahead" asks again: the model makes the same call, and the gate asks, because an allow from
+  an earlier turn never carries over.
+
+Tests: `a_permission_request_carries_the_whole_proposed_action` (`bridge.rs`);
+`a_turn_stopped_at_a_question_comes_back_with_its_calls_answered` and
+`a_stale_marker_is_removed_and_changes_nothing` (`session.rs`); and
+`a_turn_killed_at_a_permission_question_is_recovered_on_load` (`tests/acp_turn.rs`).
+
+Checked by hand with the debug binary against a fake engine that proposes a `create_file`
+outside the workspace. The request carried the args, the diff and the location, and the marker
+was on disk. After a `SIGKILL` mid-question, the file was not written. On restart the replay
+showed the prompt and the call failed with the not-run text. "go ahead" asked again; allowed,
+the file was written and the turn ended `end_turn`.
+
+Not changed: the wait has no timeout, and nothing on the rufous side wakes a sleeping host.
+
+## 2026-11-05: per-call token usage on usage_update (boubou-70l)
+
+Choreo's item 6. Choreo meters cost per run and per model, so it needs the input tokens, output
+tokens, model id and engine of every model call. Checked on 2026-11-05, `usage_update` carried
+only the context occupancy, after the main call. The compaction summary, the corrector's
+consultation and the wrap-up were reported nowhere except, for some, the session log. The model
+id the loop passed was not always the one billed: the cloud backend sends its `model_override`.
+
+Changes (design in docs/call-usage.md):
+- `chat.rs`: `CallUsage { model, purpose, input_tokens, output_tokens }` and `Metered`, a
+  `ChatBackend` that wraps the loop's backend for the whole run. Every successful call records
+  one entry; a failed or cancelled call records nothing. `purpose` is `turn`, `compaction`,
+  `corrector` or `wrap_up`; `compact` sets and restores it itself.
+- `ChatBackend::model_id` returns the id billed. `OpenAiBackend` returns its `model_override`.
+- `ContextUsage` gains `call`. Side calls go out as `AgentEvent::ModelCall { call, used, limit }`
+  with the last context numbers. Calls after the last main call are drained before `Finished`.
+- ACP: each model call is exactly one `usage_update` with `_meta.rufous.call = {model, engine,
+  purpose, input_tokens, output_tokens}`. `engine` is the same object as the `session/new`
+  response's `_meta.rufous.engine`, so a host can tell free local calls from paid ones. A count
+  the engine did not report is `null`, not 0.
+- The CLI and the web UI ignore `ModelCall` beyond the existing `[timing:]` line.
+
+Tests: `each_successful_call_is_recorded_under_the_billed_model` and
+`a_failed_call_records_nothing` (`chat.rs`); `every_model_call_is_reported_once_with_its_purpose`
+(`tests/agent_loop.rs`); `each_model_call_is_one_usage_update_carrying_the_call_and_the_engine`
+(`bridge.rs`); `every_model_call_reports_its_tokens_model_and_engine` (`tests/acp_turn.rs`).
+
+Also in this commit: the live-group kill test moved out of `tests/exec_tools.rs` into its own
+binary, `tests/live_groups.rs`. `kill_live_groups` kills every group registered in the process,
+so run beside the other exec tests it killed their running commands too.
+
+Not covered: the children of a parallel dispatch, the local decision model, and a local engine
+that streams without reporting usage, whose counts stay `null`.
+
+## 2026-11-05: MCP tool schemas keep enums, required and descriptions (boubou-erw)
+
+A request from Choreo's bizframe eval (qwen3.5:2b, qwen3.5:4b, gemma4:e2b over ACP, `--policy
+general --host-tools on`). `compact_schema` (`mcp/manifest.rs`), ported from the Python harness,
+kept only `{type}` per parameter:
+- `enum` was dropped. bizframe's `set_entity.kind` (`master`, `document`, `log`) reached the
+  model as a bare string, and `set_field.type` lost its 12 values. The models wrote free-text
+  labels for `kind`, and gemma4:e2b put the field type in `options`.
+- Parameter descriptions were dropped.
+- A schema with no `required` list was sent as all-required, so `show.name`, which is optional,
+  had to be passed.
+
+Changes (design in docs/mcp-schemas.md):
+- Every MCP tool, routed or host, keeps an `enum` that is a list of strings, numbers or booleans.
+- `required` is kept as the server sends it; a missing or empty list means none. The rule that a
+  tool with more than eight parameters keeps only the required ones applies only when some are
+  required.
+- The probe keeps each parameter description on one line, cut to `PARAM_DESC_CAP` (120
+  characters). `flat_def` strips them again for routed tools; `host_face` keeps them, so only
+  host tools send them. docs/host-tools.md says so.
+- Not changed: a parameter without a `type` is still dropped, and array `items` are still not
+  described. A cache entry written before this change expires within the five-minute TTL.
+
+Tests in `tests/mcp.rs`:
+`compact_schema_keeps_names_types_enums_descriptions_and_required_as_sent` and
+`a_host_tool_keeps_parameter_descriptions_a_routed_tool_keeps_only_enums`.
+
+Also in this commit: a race in `a_raised_stop_flag_terminates_a_running_command`
+(`tests/exec_tools.rs`). The stop went up after a fixed 300 ms, which under a loaded suite was
+before the shell had printed. The command now touches a `ready` file, and the flag goes up once
+it exists.
+
+Not measured yet: Choreo's bizframe before/after bench on the three models, run against the
+commit that closes this bead.
+
+## 2026-11-05: the MCP tool cache follows each server's config and binary (boubou-gj0)
+
+A request from Choreo: when a host app rebuilds its MCP server (bizframe), rufous should not
+serve the old tool descriptions for up to five minutes, if the fix is cheap. The cache
+(`<home>/mcp_manifest_cache.json`, `{ts, data}`) kept one timestamp for the whole file and was
+served as it was within the TTL:
+- a rebuilt server, or one with new `command` or `args`, was served its old tools;
+- a server that arrived in `session/new` under a fresh cache got no tools until the TTL ran out.
+  `rufous mcp add` and `remove` delete the cache, but `session/new` bypasses them;
+- a removed server's tools were still listed.
+
+Changes (design in docs/mcp-cache.md):
+- `fingerprint` hashes the server's serialised configuration (`command`, `args`, `env`, `url`,
+  `headers`, `categories`, `tools`, `expose`) and, for a stdio server, the size and modification
+  time of its command binary (`command_path`: the path, or the first match on `PATH`). Files
+  named in `args` are left out: bizframe's `--app` file changes with every edit. Headers and env
+  are hashed, never stored.
+- The cache file keeps Mingbird's `{ts, data}` and gains `servers: {name: {fp, ts}}` (`Stamp`). A
+  file without it, or a server missing from it, counts as stale.
+- Only servers whose stamp is stale or does not match are probed. A failed probe keeps that
+  server's previous tools and retries after 60 s. `force` probes them all.
+- The manifest returns configured servers only. Entries for servers this registry does not
+  configure stay in the file for a day (`PRUNE_AFTER`).
+
+Four tests in `tests/mcp.rs`: `a_changed_server_is_probed_again_and_only_it`,
+`a_server_added_under_a_fresh_cache_is_probed_and_a_removed_one_is_not_served`,
+`a_changed_server_whose_probe_fails_keeps_its_old_tools_and_retries_soon` and
+`a_cache_file_in_the_old_shape_is_read_as_stale`.
+
+Not covered: a server launched through an interpreter or launcher (`node server.js`, `uvx
+bizframe`), whose code changes while the binary stays the same, and a `url` server. Both refresh
+at the TTL, or sooner when their configuration changes.
+
 ## v0.4.0 (2026-11-06)
 
 CI run 42151908646 on 7df9edf is green on all three systems.
