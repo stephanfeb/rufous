@@ -3380,3 +3380,62 @@ The workspace tests, clippy and rustfmt pass. The guide (§2 "Model speed and th
 limit") and the website guide now say that the limit is hard. They give the two ways a call
 hits it and the rule of thumb that prompt speed × the limit is the largest prompt a model can
 start on, and they explain how to raise the limit in Zed.
+
+## v0.4.0 (2026-11-06)
+
+CI run 42151908646 on 7df9edf is green on all three systems.
+
+v0.4.0 adds the following since v0.3.2. It is a minor release because `rufous acp` gains new
+flags and new protocol fields for desktop hosts.
+
+ACP and desktop hosts:
+- `rufous acp --policy coding|general` picks the turn policy for a desktop host, and the agent
+  advertises `mcpCapabilities.http` so a client that follows the spec sends its HTTP MCP servers
+  (boubou-5xj).
+- Host tools: the MCP servers a client passes in `session/new` reach the model on every turn and
+  are routed, with 200-character descriptions and display names on the HOST TOOLS line. Above 15
+  tools (`RUFOUS_HOST_TOOL_CAP`) the rest go through `mcp_call`. Turn on with `--host-tools`; it is
+  on by default under `--policy general` (boubou-c9a). When the instruction names a host tool, a
+  note is added before the call. The end-of-reply hold was benched and removed, because it ran
+  tools the user had told it not to run (boubou-8c4; docs/host-tool-mentions.md).
+- Sandboxed helper: `--base-url`, `--no-start-engine`, `--user-home`, `[no access: …]` for
+  permission errors in the file tools, and child process groups killed when stdin closes or on
+  a signal; `scripts/macos-universal.sh` (boubou-f8d; docs/acp.md "Inside a host app").
+- Egress: each tool call reports the hosts it reached in `_meta.rufous.egress`. The
+  `session/new` and `session/load` responses name the model engine and whether offline is on.
+  A host can keep one session on this machine with `_meta.rufous.offline`. Offline mode now
+  refuses the web tools, keeps loopback MCP servers and refuses a model engine on another
+  machine (boubou-45n; docs/egress.md).
+- A permission question survives a restart: the request carries the whole proposed action, and
+  `session/load` recovers a turn that was waiting for an answer (boubou-lbo;
+  docs/permission-waits.md).
+- Every model call in a turn is reported as a `usage_update` with
+  `_meta.rufous.call` (model, engine, purpose, input and output tokens), including compaction and
+  the wrap-up call (boubou-70l; docs/call-usage.md).
+
+Model engines:
+- `--backend` flag and config `backend` key (`ollama`, `lmstudio`, `openai`). The log names the
+  engine and where the choice came from, and request errors name the engine (boubou-56g).
+- Model profiles also match LM Studio and Hugging Face model ids (boubou-eie).
+- Gemma 4 tool calls that the server passes through as text are recovered and run (boubou-5hg).
+- A reply timeout ends the turn with a message instead of sending the request again
+  (boubou-yqu).
+
+MCP:
+- MCP tool schemas keep their enums and the required list as the server sent it. Host tools also
+  keep their parameter descriptions (boubou-erw; docs/mcp-schemas.md).
+- The MCP tool cache is checked per server against its configuration and binary, so a rebuilt,
+  added or removed server is seen at once (boubou-gj0; docs/mcp-cache.md).
+
+The agent loop:
+- Claims hold: a reply that says a change works is held once unless a clean run after the last
+  write shows it (boubou-bcs).
+- Plan hold: the plan check also runs when a turn ends with a text reply, and a todo update that
+  changes nothing does not count as progress (boubou-ear, boubou-uzl).
+- Circling ladder: after many calls or repeated failing runs of one command, the model is asked
+  for a hypothesis, then a checkpoint ends the turn with a report. This applies to conversations
+  only, not unattended runs (boubou-m5d).
+- A follow-up turn keeps the session's tools, so the server's prefix cache still matches
+  (boubou-g11). The log compares each request's prefix with the previous turn's (boubou-xwi).
+- Compaction does not run again straight away: it shortens old call arguments and re-arms only
+  below 45 % (boubou-4e1).
