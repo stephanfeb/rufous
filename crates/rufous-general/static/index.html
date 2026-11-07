@@ -534,6 +534,11 @@ function argSummary(args){
     }
   }
   if (typeof a !== "object") return String(a).slice(0, 80);
+  // batch_tools: name the tools it runs, not the call objects.
+  if (Array.isArray(a.calls)){
+    const names = a.calls.map(c => c && typeof c === "object" ? (c.tool || c.name) : null).filter(n => typeof n === "string");
+    if (names.length) return (a.calls.length + (a.calls.length === 1 ? " call: " : " calls: ") + names.join(", ")).slice(0, 90);
+  }
   const parts = [];
   for (const k of ARG_KEYS){
     if (a[k] === undefined || a[k] === null) continue;
@@ -542,7 +547,14 @@ function argSummary(args){
     parts.push(k === "path" || k === "command" || k === "query" || k === "url" || k === "summary" ? s : k + "=" + s);
     if (parts.length === 2) break;
   }
-  if (!parts.length){ const first = Object.keys(a)[0]; if (first) parts.push(first + "=" + String(a[first]).slice(0, 60)); }
+  if (!parts.length){
+    const first = Object.keys(a)[0];
+    if (first){
+      const v = a[first];
+      const s = typeof v === "string" ? v : (Array.isArray(v) ? v.length + " items" : JSON.stringify(v));
+      parts.push(first + "=" + String(s).slice(0, 60));
+    }
+  }
   return parts.join(" · ").slice(0, 90);
 }
 function argPath(args){
