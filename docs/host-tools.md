@@ -1,6 +1,8 @@
 # Host tools: MCP servers from `session/new` reach the model (boubou-c9a)
 
-Choreo's item 2 (requirements doc: https://claude.ai/artifact/3LnyuZaigSjibqGMGrfTDM). Draft, 2026-11-05.
+Choreo's item 2 (requirements doc: https://claude.ai/artifact/3LnyuZaigSjibqGMGrfTDM). Designed
+2026-11-05, shipped in c6d54ce (v0.4.0). The design below describes the code as built; "Today" in
+"The problem" means before that commit.
 
 ## The problem
 
@@ -31,37 +33,44 @@ They are flattened `server.tool` schemas with longer descriptions, and the syste
 tool list stays byte-identical from turn to turn and the prefix cache holds (boubou-g11).
 
 1. **Marking.** `ServerConfig` gets `host: bool` (`#[serde(skip)]`, never read from `mcp.json`).
-   `mcp_config_from_acp` sets it when the session runs with host tools on. A host server's name wins
-   over a same-named `mcp.json` server: `runner.rs` already extends the configured servers with the
-   `session/new` ones.
+   `runner.rs` sets it on the `session/new` servers when the session runs with host tools on, as it
+   extends the configured servers with them. A host server's name wins over a same-named `mcp.json`
+   server.
 2. **Opt-in.** `rufous acp --host-tools on|off`. The default follows the policy: `on` for `general`,
    `off` for `coding`. Editors (Zed passing its own context servers) stay as they are, and
    Choreo needs no extra flag. A per-server `_meta` hint can come later if the ACP schema carries one;
    the flag is enough for one host process per app.
-3. **Assembly.** `McpRegistry::host_defs(offline) -> Vec<Value>`: every tool of every host server,
-   sorted by server and then tool name, with no category, `expose` or built-in-duplicate filter.
-   `tool_defs` skips host servers so nothing is listed twice. In `run.rs`, all three `ct` arms append
-   `host_defs`: the question route, the routed task route and the flat-prefill fallback. The question
-   route keeps its other limits: `QA_BLOCKED` covers only the file mutators, so a host call is allowed there.
+3. **Assembly.** `McpRegistry::host_face(offline, cap) -> HostFace`: every tool of every host
+   server, sorted by qualified name, with no category, `expose` or built-in-duplicate filter.
+   `HostFace` holds the qualified `names`, a display name per tool in `titles` (the MCP title, else
+   the tool name read as words; docs/host-tool-mentions.md), the flattened `defs`, and `inlined`.
+   The run builds it once, so it is fixed for the session. `tool_defs` skips host servers so nothing
+   is listed twice. In `run.rs`, after the `ct` match, the host part is added on every route: the
+   question route, the routed task route and the flat-prefill fallback. The question route keeps its
+   other limits: `QA_BLOCKED` covers only the file mutators, so a host call is allowed there.
 4. **Descriptions.** Host tools keep up to 200 characters (`HOST_DESC_CAP`); others keep 60. Their parameters also keep
    their descriptions, and every MCP tool keeps its `enum`s and its `required` list as sent
    (docs/mcp-schemas.md, boubou-erw).
-5. **Prompt.** When the session has host tools, one line replaces the MCP half of `prompt.rs:25`:
-   *"Your host app's tools are in your tool list as `<server>.<tool>`; use them when the user asks
-   for one of its automations or what one returned."* The server name comes from the config, so the
-   line says `choreo.say_hello`, not a placeholder.
-6. **Cap.** At most `HOST_TOOL_CAP` host tools are inlined (a constant to start, set from the
-   bench below). Past the cap, host servers fall back to category `mcp` with `mcp` always in `cats`,
-   so `mcp_call` and `enable_tools` are on the face. The prompt line then lists the tool names (no
-   schemas) and says to call `enable_tools` with one. That is still better than today: the names are
-   in the text. A `[face] host tools: N inlined | over cap N>M, on demand` log line records which.
-7. **Offline.** A host server is a `url` server, so `AGENT_OFFLINE` drops it as today, even though
-   Choreo's is loopback. A per-session offline switch (item 4) will need to exempt `127.0.0.1` host
-   servers; noted here, decided there.
+5. **Prompt.** When the session has host tools, `face::host_note` appends a `HOST TOOLS:` line to
+   the task and chat system prompts. The `enable_tools` line in `prompt.rs` stays as it is. Inlined,
+   the line reads *"HOST TOOLS: the app you are running in gave you its own tools: `choreo.say_hello`
+   (Say Hello), …. They are in your tool list: call them directly (no enable_tools) whenever the user
+   asks for one of the app's automations, by its name or in their own words, or asks what one
+   returned. Report what the tool returned."* The names come from the config, not a placeholder.
+6. **Cap.** At most `HOST_TOOL_CAP` = 15 host tools are inlined (set from the bench below;
+   `RUFOUS_HOST_TOOL_CAP` overrides it). Past the cap no host schema is sent: `face.host_fallback`
+   puts `mcp_call` on every route and activates it, so the call-time gate lets it through, unless the
+   route already carries it or it is disabled. The prompt line still names every tool and says *"To
+   run one, call mcp_call with server and tool (the parts before and after the dot) and its
+   arguments, …"*. There is no `enable_tools` step. At the run start the log reads `[face] host tools:
+   N inlined: <names>` or `[face] host tools: N over the cap, by mcp_call: <names>`.
+7. **Offline.** Offline drops a host server only when it is remote (`ServerConfig::is_remote`: a
+   `url` that is not loopback). Choreo's loopback server stays on, and the per-session offline
+   switch keeps it too (boubou-45n, docs/egress.md).
 
 Not changed: the safety gate does not vet MCP calls today and still won't. Choreo approves each
-run on its side, which is what it asked for. `is_mcp_producing` counts `say_hello` as unproductive;
-see the risks below.
+run on its side, which is what it asked for. A host-tool call counts as productive for the
+anti-loop counters, whatever its name (see the risks below).
 
 ## Measure, don't guess: the cap
 
@@ -95,10 +104,10 @@ every N, so it is not a cap effect: bead boubou-8c4.
 
 - **Distraction.** Host tools on every turn may pull the small model toward them on unrelated
   turns. The no-host-tool set in the bench is there to catch that.
-- **Anti-loop counters.** A host tool not named like `create_`/`write_` does not reset the
-  research/todo counters (`PRODUCTIVE`, `is_mcp_producing`). Two runs of one automation in a turn
-  could trip a streak guard. Proposal: count any host-tool call that returns without error as
-  productive.
+- **Anti-loop counters.** A host tool not named like `create_`/`write_` would not reset the
+  research/todo counters (`PRODUCTIVE`, `is_mcp_producing`), so two runs of one automation in a turn
+  could trip a streak guard. Resolved: `run.rs` counts any call to a host tool as productive
+  (`is_mcp_producing(n) || host.contains(n)`).
 - **Question-route finish.** A question turn ends on text. It needs a test that the model can make
   the host call and then answer in the same turn.
 
