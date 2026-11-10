@@ -1632,3 +1632,250 @@ async fn every_model_call_reports_its_tokens_model_and_engine() {
         assert_eq!(c["engine"], json!({"label": "Ollama", "local": true}));
     }
 }
+
+// ---- images in session/prompt (bd boubou-bs3) ----
+
+/// A 1×1 PNG.
+const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const JPG_HEAD: &str = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDAwM";
+
+/// Every request's (message content, images) for the messages that carry images.
+type ImageLog = Arc<Mutex<Vec<Vec<(String, Vec<String>)>>>>;
+
+struct SeesImages {
+    log: ImageLog,
+}
+
+impl ChatBackend for SeesImages {
+    fn chat(
+        &mut self,
+        _model: &str,
+        messages: &[Message],
+        _tools: &[Value],
+        _on: &mut dyn FnMut(StreamPiece<'_>),
+    ) -> Result<ChatResponse, ChatError> {
+        self.log.lock().expect("lock").push(
+            messages
+                .iter()
+                .filter(|m| !m.images.is_empty())
+                .map(|m| (m.content.clone(), m.images.clone()))
+                .collect(),
+        );
+        let mut r = ChatResponse::call("done", "finish", json!({"summary": "a receipt"}));
+        r.prompt_eval_count = Some(500);
+        Ok(r)
+    }
+}
+
+/// Like the real factory (`runner::turn_params`): the loop's harness directory is the
+/// session's, where the ACP layer queues the prompt's images.
+struct ImageFactory {
+    log: ImageLog,
+    sessions_dir: Arc<Mutex<Option<PathBuf>>>,
+    /// What the engine says about the model's vision (`/api/show` in production).
+    sees: Option<bool>,
+}
+
+impl AgentFactory for ImageFactory {
+    fn new_turn(&self, setup: TurnSetup) -> rufous_kernel::Result<Box<dyn TurnRunner>> {
+        let mut params = RunParams::plain(setup.model, &setup.cwd);
+        params.policy = rufous_coding::harness::policy();
+        params.harness_dir = Some(rufous_kernel::agent::session::harness_dir(
+            &setup.sessions_dir,
+            &setup.session,
+        ));
+        *self.sessions_dir.lock().expect("lock") = Some(setup.sessions_dir.clone());
+        let tools = Tools {
+            confirmer: setup.confirmer,
+            cwd: setup.cwd.clone(),
+        };
+        let mut a = Agent::new(
+            params,
+            SeesImages {
+                log: self.log.clone(),
+            },
+            tools,
+        )
+        .with_sink(setup.sink)
+        .with_stop(setup.stop);
+        a.sessions_dir = setup.sessions_dir.clone();
+        Ok(Box::new(ImageTurn(a)))
+    }
+
+    fn model_takes_images(&self, _model: &str) -> Option<bool> {
+        self.sees
+    }
+}
+
+struct ImageTurn(Agent<SeesImages, Tools>);
+
+impl TurnRunner for ImageTurn {
+    fn task_messages(&mut self, task: &str) -> Vec<Message> {
+        self.0.task_messages(task)
+    }
+    fn run(
+        &mut self,
+        messages: Vec<Message>,
+        session: Option<&str>,
+    ) -> rufous_kernel::Result<Vec<Message>> {
+        self.0.run(messages, session, None)
+    }
+}
+
+fn image(data: &str, mime: &str) -> ContentBlock {
+    ContentBlock::Image(agent_client_protocol::schema::v1::ImageContent::new(
+        data, mime,
+    ))
+}
+
+#[tokio::test]
+async fn prompt_images_reach_the_model_on_the_prompts_message_and_age_out() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let log: ImageLog = Arc::default();
+    let sessions_dir: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+    let factory = ImageFactory {
+        log: log.clone(),
+        sessions_dir: sessions_dir.clone(),
+        sees: Some(true),
+    };
+    let agent = RufousAcp::with_factory(cwd.join("home"), "scripted:1b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    let five: Vec<ContentBlock> = std::iter::once("five pictures".into())
+        .chain((0..5).map(|_| image(PNG_1X1, "image/png")))
+        .collect();
+    let client = Client.builder().connect_with(client_ch, async |cx| {
+        let init = cx
+            .send_request(InitializeRequest::new(ProtocolVersion::V1))
+            .block_task()
+            .await?;
+        let ns = cx
+            .send_request(NewSessionRequest::new(cwd.clone()))
+            .block_task()
+            .await?;
+        let mut stops = Vec::new();
+        for prompt in [
+            vec![
+                "Add this receipt as a record.".into(),
+                image(PNG_1X1, "image/png"),
+                image(JPG_HEAD, "image/jpeg"),
+            ],
+            vec!["What was the total?".into()],
+            vec!["Thanks, something else now.".into()],
+            five.clone(),
+        ] {
+            let p = cx
+                .send_request(PromptRequest::new(ns.session_id.clone(), prompt))
+                .block_task()
+                .await?;
+            stops.push(p.stop_reason);
+        }
+        Ok((init, stops))
+    });
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    let (init, stops) = client_res.expect("client side");
+
+    assert!(init.agent_capabilities.prompt_capabilities.image);
+    assert!(stops.iter().all(|s| *s == StopReason::EndTurn), "{stops:?}");
+    let log = log.lock().expect("lock");
+    assert_eq!(log.len(), 4, "one request per turn: {log:#?}");
+
+    // Turn 1: one message, the prompt's own, carrying both images in order.
+    assert_eq!(log[0].len(), 1, "{:#?}", log[0]);
+    let (text, imgs) = &log[0][0];
+    assert_eq!(imgs, &vec![PNG_1X1.to_string(), JPG_HEAD.to_string()]);
+    assert!(text.starts_with("Add this receipt as a record."), "{text}");
+    assert!(text.contains("[image 1: image/png, 1 KB]"), "{text}");
+    assert!(text.contains("[image 2: image/jpeg, 1 KB]"), "{text}");
+    assert!(!text.contains("omitted"), "{text}");
+    // Turn 2 still shows the picture; turn 3 no longer sends it.
+    assert_eq!(log[1].len(), 1);
+    assert!(log[2].is_empty(), "{:#?}", log[2]);
+    // Turn 4: four go, the fifth becomes a marker and the turn completes.
+    assert_eq!(log[3].len(), 1);
+    assert_eq!(log[3][0].1.len(), 4);
+    assert!(
+        log[3][0].0.contains("[image 5 not sent: image/png"),
+        "{}",
+        log[3][0].0
+    );
+
+    let sd = sessions_dir
+        .lock()
+        .expect("lock")
+        .clone()
+        .expect("a turn ran");
+    let logs: String = std::fs::read_dir(&sd)
+        .expect("sessions dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect();
+    if rufous_kernel::agent::session::session_log_enabled() {
+        assert!(
+            logs.contains("[prompt] image 1: image/png 1 KB attached"),
+            "{logs}"
+        );
+        assert!(
+            logs.contains("[prompt] image 5: image/png 1 KB not sent (too many images)"),
+            "{logs}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_model_without_vision_gets_a_marker_and_the_user_a_notice() {
+    let d = tempfile::tempdir().expect("tmp");
+    let cwd = d.path().to_path_buf();
+    let log: ImageLog = Arc::default();
+    let factory = ImageFactory {
+        log: log.clone(),
+        sessions_dir: Arc::default(),
+        sees: Some(false),
+    };
+    let agent = RufousAcp::with_factory(cwd.join("home"), "textonly:4b".into(), Arc::new(factory));
+    let (agent_ch, client_ch) = Channel::duplex();
+    let seen: Arc<Mutex<Vec<SessionUpdate>>> = Arc::default();
+    let client_seen = seen.clone();
+    let client = Client
+        .builder()
+        .on_receive_notification(
+            async move |n: SessionNotification, _cx| {
+                client_seen.lock().expect("lock").push(n.update);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(client_ch, async |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let ns = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            let p = cx
+                .send_request(PromptRequest::new(
+                    ns.session_id.clone(),
+                    vec!["What is this?".into(), image(PNG_1X1, "image/png")],
+                ))
+                .block_task()
+                .await?;
+            Ok(p.stop_reason)
+        });
+    let (agent_res, client_res) = tokio::join!(agent.connect_to(agent_ch), client);
+    agent_res.expect("agent side");
+    assert_eq!(client_res.expect("client side"), StopReason::EndTurn);
+    let log = log.lock().expect("lock");
+    assert!(log.iter().all(Vec::is_empty), "no image was sent: {log:#?}");
+    let seen = seen.lock().expect("lock");
+    let notice = seen
+        .iter()
+        .find_map(|u| match u {
+            SessionUpdate::Notice(n) if n.title.contains("does not take images") => Some(n),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a notice: {seen:#?}"));
+    assert!(notice.title.contains("textonly:4b"), "{notice:?}");
+}

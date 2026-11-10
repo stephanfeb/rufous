@@ -444,25 +444,20 @@ impl ChatBackend for OllamaBackend {
     }
 }
 
-// ---------------- `_model_can_think` ----------------
+// ---------------- `_model_can_think` / model capabilities ----------------
 
-static THINK_CAP_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, Option<bool>>>,
+static CAPS_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Option<Vec<String>>>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// `_model_can_think`: does the model advertise `thinking` in `/api/show` capabilities?
+/// The model's `/api/show` capabilities (`completion`, `tools`, `thinking`, `vision`…).
 /// `None` = unknown (probe failed, or the engine is OpenAI-compatible and has no
-/// `/api/show`). Cached per model for the process. Diagnostics only: the request path
-/// sends the tri-state `think` and relies on the 400 retry instead.
-pub fn model_can_think(cfg: &crate::config::Config, model: &str) -> Option<bool> {
+/// `/api/show`). Cached per model for the process.
+pub fn model_capabilities(cfg: &crate::config::Config, model: &str) -> Option<Vec<String>> {
     if cfg.backend_openai().is_some() {
         return None;
     }
-    if let Some(v) = THINK_CAP_CACHE
-        .lock()
-        .ok()
-        .and_then(|c| c.get(model).copied())
-    {
+    if let Some(v) = CAPS_CACHE.lock().ok().and_then(|c| c.get(model).cloned()) {
         return v;
     }
     let host = cfg.ollama_host();
@@ -486,13 +481,33 @@ pub fn model_can_think(cfg: &crate::config::Config, model: &str) -> Option<bool>
         Some(
             r.get("capabilities")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.iter().any(|c| c.as_str() == Some("thinking"))),
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
         )
     });
-    if let Ok(mut c) = THINK_CAP_CACHE.lock() {
-        c.insert(model.to_string(), v);
+    if let Ok(mut c) = CAPS_CACHE.lock() {
+        c.insert(model.to_string(), v.clone());
     }
     v
+}
+
+/// `_model_can_think`: does the model advertise `thinking` in `/api/show` capabilities?
+/// `None` = unknown. Diagnostics only: the request path sends the tri-state `think` and
+/// relies on the 400 retry instead.
+pub fn model_can_think(cfg: &crate::config::Config, model: &str) -> Option<bool> {
+    model_capabilities(cfg, model).map(|c| c.iter().any(|x| x == "thinking"))
+}
+
+/// Does the model take images (`vision` in `/api/show` capabilities)? `None` = unknown,
+/// as on an OpenAI-compatible engine: send, and let a refusal take the drop path
+/// (bead boubou-bs3).
+pub fn model_can_see(cfg: &crate::config::Config, model: &str) -> Option<bool> {
+    model_capabilities(cfg, model).map(|c| c.iter().any(|x| x == "vision"))
 }
 
 #[cfg(test)]

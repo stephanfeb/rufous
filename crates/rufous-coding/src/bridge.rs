@@ -18,11 +18,12 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, Diff, EmbeddedResourceResource, Notice, NoticeSeverity, Plan,
-    PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate, StopReason, ToolCall,
-    ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    BlobResourceContents, ContentBlock, ContentChunk, Diff, EmbeddedResourceResource, Notice,
+    NoticeSeverity, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate, StopReason,
+    ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
     ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
+use rufous_kernel::agent::history::{ImageQueued, IMG_MAX_BYTES, IMG_PER_TURN};
 use rufous_kernel::agent::AgentEvent;
 use rufous_kernel::ollama::{Message, Role};
 use rufous_kernel::todo::TodoItem;
@@ -565,15 +566,187 @@ fn absolute(cwd: &Path, p: &str) -> PathBuf {
     }
 }
 
+/// One image a prompt carries (an image block, or an embedded blob with an `image/*` type).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptImage {
+    /// 1-based, in prompt order; the marker in the text says `image N`.
+    pub n: usize,
+    pub mime: String,
+    /// Plain base64: whitespace and a `data:…;base64,` prefix are removed.
+    pub b64: String,
+    /// Decoded size in bytes.
+    pub size: u64,
+    /// The block's URI, if the client gave one.
+    pub uri: Option<String>,
+}
+
+impl PromptImage {
+    fn new(n: usize, mime: &str, data: &str, uri: Option<&str>) -> Self {
+        let data = data.trim();
+        let data = match data
+            .strip_prefix("data:")
+            .and_then(|r| r.split_once(";base64,"))
+        {
+            Some((_, rest)) => rest,
+            None => data,
+        };
+        let b64: String = data.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        let pad = b64.bytes().rev().take_while(|&c| c == b'=').count() as u64;
+        let size = (b64.len() as u64 / 4 * 3).saturating_sub(pad);
+        Self {
+            n,
+            mime: mime.to_string(),
+            b64,
+            size,
+            uri: uri.map(uri_display),
+        }
+    }
+
+    /// How the size reads in a marker: KB, or MB from 1 MB up.
+    fn size_text(&self) -> String {
+        if self.size >= 1024 * 1024 {
+            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{} KB", self.size.div_ceil(1024))
+        }
+    }
+
+    fn named(&self) -> String {
+        let mut t = format!("{}, {}", self.mime, self.size_text());
+        if let Some(u) = &self.uri {
+            t.push_str(", ");
+            t.push_str(u);
+        }
+        t
+    }
+}
+
+/// An embedded blob that is an image (`image/*`), carried like an image block.
+fn image_blob(r: &EmbeddedResourceResource) -> Option<&BlobResourceContents> {
+    match r {
+        EmbeddedResourceResource::BlobResourceContents(b)
+            if b.mime_type
+                .as_deref()
+                .is_some_and(|m| m.starts_with("image/")) =>
+        {
+            Some(b)
+        }
+        _ => None,
+    }
+}
+
+/// Does the prompt carry an image (an image block or an embedded `image/*` blob)?
+pub fn has_images(blocks: &[ContentBlock]) -> bool {
+    blocks.iter().any(|b| match b {
+        ContentBlock::Image(_) => true,
+        ContentBlock::Resource(r) => image_blob(&r.resource).is_some(),
+        _ => false,
+    })
+}
+
+/// What became of one prompt image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFate {
+    /// The queue's answer ([`ImageQueued`]).
+    Queued(ImageQueued),
+    /// Not sent: the model does not take images.
+    NoVision,
+}
+
+impl From<ImageQueued> for ImageFate {
+    fn from(q: ImageQueued) -> Self {
+        Self::Queued(q)
+    }
+}
+
+/// The prompt as the loop gets it: the text, and a session-log line per image.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptInput {
+    pub text: String,
+    pub image_log: Vec<String>,
+    /// How many images were not sent because the model takes none.
+    pub no_vision: usize,
+}
+
 /// The user's prompt as one text for the loop: text blocks as they are, embedded text
 /// resources quoted with their URI, resource links as a line the model can act on.
-pub fn prompt_text(blocks: &[ContentBlock]) -> String {
+///
+/// Images (bead boubou-bs3): each image block, and each embedded blob with an `image/*`
+/// type, is handed to `queue` (in practice [`history::queue_image`], which the loop empties
+/// onto the prompt's message before the first request) and leaves a marker where it stood:
+/// `[image 1: image/png, 340 KB]`, or `[image 1 not sent: …]` with the reason when a limit
+/// refused it. A refused image never fails the turn.
+///
+/// [`history::queue_image`]: rufous_kernel::agent::history::queue_image
+pub fn prompt_input(
+    blocks: &[ContentBlock],
+    mut queue: impl FnMut(&PromptImage) -> ImageFate,
+) -> PromptInput {
     let mut parts: Vec<String> = Vec::new();
+    let mut image_log = Vec::new();
+    let mut n = 0;
+    let mut no_vision = 0;
+    let mut image = |img: PromptImage, parts: &mut Vec<String>| {
+        let (marker, log) = if img.b64.is_empty() {
+            (
+                format!("[image {} not sent: the block held no image data]", img.n),
+                "not sent (no data)".to_string(),
+            )
+        } else {
+            match queue(&img) {
+                ImageFate::NoVision => {
+                    no_vision += 1;
+                    (
+                        format!(
+                            "[image {} not sent: {}; this model does not take images]",
+                            img.n,
+                            img.named()
+                        ),
+                        "not sent (the model has no vision)".to_string(),
+                    )
+                }
+                ImageFate::Queued(ImageQueued::Attached) => (
+                    format!("[image {}: {}]", img.n, img.named()),
+                    "attached".to_string(),
+                ),
+                ImageFate::Queued(ImageQueued::TooLarge) => (
+                    format!(
+                        "[image {} not sent: {}; the limit is {} MB]",
+                        img.n,
+                        img.named(),
+                        IMG_MAX_BYTES / 1024 / 1024
+                    ),
+                    "not sent (over the size limit)".to_string(),
+                ),
+                ImageFate::Queued(ImageQueued::QueueFull) => (
+                    format!(
+                        "[image {} not sent: {}; at most {IMG_PER_TURN} images go with one prompt]",
+                        img.n,
+                        img.named()
+                    ),
+                    "not sent (too many images)".to_string(),
+                ),
+            }
+        };
+        image_log.push(format!(
+            "[prompt] image {}: {} {} {log}",
+            img.n,
+            img.mime,
+            img.size_text()
+        ));
+        parts.push(marker);
+    };
     for b in blocks {
         match b {
             ContentBlock::Text(t) => parts.push(t.text.clone()),
             ContentBlock::ResourceLink(r) => {
                 parts.push(format!("Attached: {} ({})", r.name, uri_display(&r.uri)));
+            }
+            ContentBlock::Resource(r) if image_blob(&r.resource).is_some() => {
+                let b = image_blob(&r.resource).expect("checked");
+                n += 1;
+                let mime = b.mime_type.as_deref().unwrap_or("image/png");
+                image(PromptImage::new(n, mime, &b.blob, Some(&b.uri)), &mut parts);
             }
             ContentBlock::Resource(r) => match &r.resource {
                 EmbeddedResourceResource::TextResourceContents(t) => parts.push(format!(
@@ -589,13 +762,23 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
                 }
                 _ => parts.push("[resource omitted]".to_string()),
             },
-            ContentBlock::Image(_) => parts.push("[image omitted]".to_string()),
+            ContentBlock::Image(i) => {
+                n += 1;
+                image(
+                    PromptImage::new(n, &i.mime_type, &i.data, i.uri.as_deref()),
+                    &mut parts,
+                );
+            }
             ContentBlock::Audio(_) => parts.push("[audio omitted]".to_string()),
             // Non-exhaustive enum: a block this version does not know is skipped.
             _ => {}
         }
     }
-    parts.join("\n\n")
+    PromptInput {
+        text: parts.join("\n\n"),
+        image_log,
+        no_vision,
+    }
 }
 
 fn uri_display(uri: &str) -> String {
@@ -871,8 +1054,75 @@ mod tests {
                 "file:///w/src/main.rs",
             )),
         ];
-        let t = prompt_text(&blocks);
+        let t = prompt_input(&blocks, |_| unreachable!("no images")).text;
         assert!(t.starts_with("Fix the bug\n\nAttached: main.rs (/w/src/main.rs)"));
+    }
+
+    #[test]
+    fn prompt_images_are_queued_with_markers_and_refusals_never_fail() {
+        use agent_client_protocol::schema::v1::{
+            BlobResourceContents, EmbeddedResource, ImageContent,
+        };
+        let blob = |mime: Option<&str>, uri: &str| {
+            let mut b = BlobResourceContents::new("iVBORw0KGgo=", uri);
+            b.mime_type = mime.map(str::to_string);
+            ContentBlock::Resource(EmbeddedResource::new(
+                EmbeddedResourceResource::BlobResourceContents(b),
+            ))
+        };
+        let blocks = vec![
+            ContentBlock::from("Read these"),
+            ContentBlock::Image(ImageContent::new(
+                "data:image/png;base64,iVBO\nRw0K\nGgo=",
+                "image/png",
+            )),
+            blob(Some("image/jpeg"), "file:///w/scan.jpg"),
+            ContentBlock::Image(ImageContent::new("", "image/png")),
+            ContentBlock::Image(ImageContent::new("QUJDRA==", "image/webp")),
+            blob(Some("application/pdf"), "file:///w/form.pdf"),
+        ];
+        let mut queued = Vec::new();
+        let out = prompt_input(&blocks, |img| {
+            queued.push((img.n, img.b64.clone(), img.size));
+            if img.mime == "image/webp" {
+                ImageQueued::TooLarge.into()
+            } else {
+                ImageQueued::Attached.into()
+            }
+        });
+        assert_eq!(
+            queued,
+            vec![
+                (1, "iVBORw0KGgo=".to_string(), 8),
+                (2, "iVBORw0KGgo=".to_string(), 8),
+                (4, "QUJDRA==".to_string(), 4),
+            ],
+            "data: prefix and line breaks removed; empty data never queued"
+        );
+        let t = &out.text;
+        assert!(t.contains("[image 1: image/png, 1 KB]"), "{t}");
+        assert!(
+            t.contains("[image 2: image/jpeg, 1 KB, /w/scan.jpg]"),
+            "{t}"
+        );
+        assert!(
+            t.contains("[image 3 not sent: the block held no image data]"),
+            "{t}"
+        );
+        assert!(
+            t.contains("[image 4 not sent: image/webp, 1 KB; the limit is 20 MB]"),
+            "{t}"
+        );
+        assert!(t.contains("[binary resource omitted: /w/form.pdf]"), "{t}");
+        assert_eq!(out.image_log.len(), 4);
+        assert_eq!(
+            out.image_log[0],
+            "[prompt] image 1: image/png 1 KB attached"
+        );
+        assert_eq!(
+            out.image_log[3],
+            "[prompt] image 4: image/webp 1 KB not sent (over the size limit)"
+        );
     }
 
     fn history_call(name: &str, args: Value) -> LoopCall {

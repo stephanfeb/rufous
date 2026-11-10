@@ -95,6 +95,30 @@ harness files in any mode.
 | `mcpServers` in `session/new` / `session/load` (rufous advertises `mcpCapabilities.http`) | added to rufous's `mcp.json` and the project's `.mcp.json` for that session (stdio, HTTP; SSE tried as HTTP), routed by category like any other server |
 | the loop's protocol lines (`⚙`, `[ctx: …]`, `🐚`, `⚠️`, `[prompt]`, `[hooks]`) | not sent to the editor; written to `<sessions>/<name>.log` behind a timestamp, with a `[turn] <prompt head>` line per prompt and tracing warnings mirrored in, so `bench/session_metrics.py <log>` reads a live session with the bench's counters (`AGENT_SESSION_LOG=0` switches it off) |
 
+## Images in a prompt
+
+rufous advertises `promptCapabilities.image`. Each `image` block in `session/prompt`, and each
+embedded `blob` resource with an `image/*` type, goes to the model with the prompt's text, on
+every engine (beads boubou-bs3, boubou-2cr):
+
+- The text gets a marker where the image stood, `[image 1: image/png, 340 KB]` (with the
+  block's URI when it has one), so the model, the session log and the saved history can all
+  refer to it. The log also gets `[prompt] image 1: image/png 340 KB attached`.
+- The image rides on the prompt's user message: Ollama `images`, or `image_url` content parts
+  with a `data:` URL on an OpenAI-compatible engine. The `data` may be plain base64 or a
+  `data:…;base64,` URL; line breaks are ignored.
+- `read_file`'s limits apply: 20 MB per image and 4 per prompt. An image over a limit, or a
+  block with no data, becomes `[image N not sent: …]` with the reason; the turn goes on.
+- On Ollama a model whose `/api/show` capabilities lack `vision` is sent no image: the marker
+  says the model does not take images, and the editor gets a notice. On an OpenAI-compatible
+  engine rufous cannot ask, so it sends the image; a server that refuses it (or cannot decode
+  it) gets the request again without it, and the model reads a note saying why.
+- The image is sent for the rest of the turn and the next one, then dropped (bead
+  boubou-fky). Session files keep only the last turn's images and the transcript none
+  (boubou-080), so a loaded session sees what one kept in memory sees.
+
+Resource links (`Attached: x.png`) stay links: the model can `read_file` them.
+
 ## Turn semantics
 
 An editor turn runs under the `coding` turn policy (`docs/refactor.md`), or `general` with

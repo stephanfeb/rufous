@@ -211,7 +211,7 @@ pub fn write_checkpoint(workdir: &Path, messages: &[Message]) {
 /// [`write_checkpoint`] to an explicit path; the parent directory is created.
 pub fn write_checkpoint_to(p: &Path, messages: &[Message]) {
     let tmp = p.with_extension("json.tmp");
-    let Ok(s) = serde_json::to_string(messages) else {
+    let Ok(s) = serde_json::to_string(&*super::history::for_storage(messages)) else {
         return;
     };
     if let Some(dir) = p.parent() {
@@ -336,7 +336,10 @@ pub fn recover_asking(dir: &Path, name: &str) -> bool {
     };
     let recovered = recovered_history(dir, name, &marker);
     if let Some(msgs) = &recovered {
-        let _ = atomic_write_json(&dir.join(format!("{name}.json")), msgs);
+        let _ = atomic_write_json(
+            &dir.join(format!("{name}.json")),
+            &*super::history::for_storage(msgs),
+        );
         let mut upd = Map::new();
         upd.insert("status".into(), Value::String("interrupted".into()));
         upd.insert("msgs".into(), Value::from(msgs.len()));
@@ -482,7 +485,16 @@ fn append_lines<'a>(dir: &Path, p: &Path, msgs: impl Iterator<Item = &'a Message
     };
     let mut wrote = false;
     for m in msgs {
-        if let Ok(line) = serde_json::to_string(m) {
+        // The transcript is a permanent record: the marker text says an image was there,
+        // the base64 itself is not kept (bead boubou-080).
+        let line = if m.images.is_empty() {
+            serde_json::to_string(m)
+        } else {
+            let mut bare = m.clone();
+            bare.images.clear();
+            serde_json::to_string(&bare)
+        };
+        if let Ok(line) = line {
             wrote |= writeln!(f, "{line}").is_ok();
         }
     }
@@ -546,7 +558,10 @@ pub fn save_session(
     };
     transcript.flush(dir, Some(name), msgs);
     let _ = std::fs::create_dir_all(dir);
-    let _ = atomic_write_json(&dir.join(format!("{name}.json")), msgs);
+    let _ = atomic_write_json(
+        &dir.join(format!("{name}.json")),
+        &*super::history::for_storage(msgs),
+    );
 
     let snap = dir.join(format!("{name}.todo.json"));
     match plan_dir.map(todo_file) {

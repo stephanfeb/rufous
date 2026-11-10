@@ -2989,7 +2989,11 @@ fn a_relocated_harness_dir_takes_the_plan_and_the_session_snapshot_follows() {
 struct RejectsImages {
     inner: Scripted,
     refused: usize,
+    /// The 400 body; Ollama's wording unless a test sets an OpenAI-compatible server's.
+    body: &'static str,
 }
+
+const OLLAMA_IMAGE_400: &str = r#"{"error":"decode image: png: invalid format: invalid checksum"}"#;
 
 impl ChatBackend for RejectsImages {
     fn chat(
@@ -3003,8 +3007,7 @@ impl ChatBackend for RejectsImages {
             self.refused += 1;
             return Err(ChatError::Status {
                 status: 400,
-                body: r#"{"error":"decode image: png: invalid format: invalid checksum"}"#
-                    .to_string(),
+                body: self.body.to_string(),
             });
         }
         self.inner.chat(model, messages, tools, on)
@@ -3013,6 +3016,21 @@ impl ChatBackend for RejectsImages {
 
 #[test]
 fn an_image_the_server_cannot_decode_is_dropped_and_the_run_goes_on() {
+    image_refused_then_dropped(OLLAMA_IMAGE_400);
+}
+
+/// LM Studio / OpenAI wording for a model without vision (bd boubou-2cr).
+#[test]
+fn an_image_an_openai_server_refuses_is_dropped_and_the_run_goes_on() {
+    image_refused_then_dropped(
+        r#"{"error":{"message":"Invalid content type. image_url is only supported by certain models.","type":"invalid_request_error"}}"#,
+    );
+    image_refused_then_dropped(
+        r#"{"error":"Model does not support images. Please use a model that does."}"#,
+    );
+}
+
+fn image_refused_then_dropped(body: &'static str) {
     let d = tempfile::tempdir().expect("tmp");
     let calls: Vec<Call> = vec![(
         "read_file",
@@ -3033,6 +3051,7 @@ fn an_image_the_server_cannot_decode_is_dropped_and_the_run_goes_on() {
             finish_summary: "Looked at the folder.".to_string(),
         },
         refused: 0,
+        body,
     };
     let tools = ScriptedTools {
         calls,

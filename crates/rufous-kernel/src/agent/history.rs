@@ -511,18 +511,128 @@ fn matching_chars(a: &[char], b: &[char]) -> usize {
         + matching_chars(&a[best_i + best_len..], &b[best_j + best_len..])
 }
 
-/// How many recent messages keep their images (`_IMG_KEEP_MSGS`).
+/// How many of the most recent image-carrying messages keep their images (`_IMG_KEEP_MSGS`).
 pub const IMG_KEEP_MSGS: usize = 2;
+
+/// How many turns keep their images: the current one and the one before (bead boubou-fky).
+/// Without it a single image rode along on every request for the rest of the session, since
+/// [`IMG_KEEP_MSGS`] only counts messages that carry images.
+pub const IMG_KEEP_TURNS: usize = 2;
+
+/// Where each user turn starts: user messages that are not harness notes or tool echoes.
+pub fn turn_starts(messages: &[Message]) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.role == Role::User && {
+                let t = m.content.trim();
+                !t.is_empty() && !crate::guards::qa::is_harness_note(t) && !t.starts_with("[tool")
+            }
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Strip images that are out of date: those before the start of the turn [`IMG_KEEP_TURNS`]
+/// back, and those beyond the [`IMG_KEEP_MSGS`] most recent image-carrying messages.
+/// Returns how many images went.
+pub fn prune_images(messages: &mut [Message]) -> usize {
+    prune_images_to(messages, IMG_KEEP_TURNS)
+}
+
+fn prune_images_to(messages: &mut [Message], keep_turns: usize) -> usize {
+    let starts = turn_starts(messages);
+    let cutoff = starts
+        .len()
+        .checked_sub(keep_turns)
+        .map_or(0, |k| starts[k]);
+    let mut seen = 0;
+    let mut pruned = 0;
+    for (i, m) in messages.iter_mut().enumerate().rev() {
+        if m.images.is_empty() {
+            continue;
+        }
+        seen += 1;
+        if i < cutoff || seen > IMG_KEEP_MSGS {
+            pruned += m.images.len();
+            m.images.clear();
+        }
+    }
+    pruned
+}
 
 /// The image queue, in the harness directory (the workdir unless relocated).
 pub fn pending_images_path(harness_dir: &Path) -> std::path::PathBuf {
     harness_dir.join(".hb_pending_images.json")
 }
 
-/// What a message that carried a rejected image says afterwards.
-pub const IMAGE_DROPPED_NOTE: &str = "\n[image could not be decoded by the model server and was removed from the request; the file may be empty, truncated or not an image]";
+/// The largest image sent to the model, in bytes (`read_file` and ACP prompt images).
+pub const IMG_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// How many images may wait in the queue for the next request.
+pub const IMG_PER_TURN: usize = 4;
 
-/// The server rejected an attached image (HTTP 400 "decode image …"): remove every image
+/// What [`queue_image`] did with an image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageQueued {
+    /// In the queue; the next request carries it.
+    Attached,
+    /// Over [`IMG_MAX_BYTES`].
+    TooLarge,
+    /// [`IMG_PER_TURN`] images already wait.
+    QueueFull,
+}
+
+/// Put one base64 image in the queue [`attach_pending_images`] empties before each request.
+/// `size` is the image's size in bytes; `label` names it in the queue (a path or a marker).
+/// The one place the size and queue limits are applied (`read_file` and ACP prompts).
+pub fn queue_image(harness_dir: &Path, label: &str, b64: String, size: u64) -> ImageQueued {
+    if size > IMG_MAX_BYTES {
+        return ImageQueued::TooLarge;
+    }
+    let path = pending_images_path(harness_dir);
+    let mut pending: Vec<Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if pending.len() >= IMG_PER_TURN {
+        return ImageQueued::QueueFull;
+    }
+    pending.push(serde_json::json!({"path": label, "b64": b64}));
+    if let Ok(s) = serde_json::to_string(&pending) {
+        let _ = std::fs::create_dir_all(harness_dir);
+        let _ = std::fs::write(&path, s);
+    }
+    ImageQueued::Attached
+}
+
+/// Empty the image queue: a new prompt starts from its own images, not ones an interrupted
+/// turn queued and never sent.
+pub fn clear_image_queue(harness_dir: &Path) {
+    let path = pending_images_path(harness_dir);
+    if path.exists() {
+        let _ = std::fs::write(&path, "[]");
+    }
+}
+
+/// The history as it goes to disk (session file, checkpoint; bead boubou-080): images only
+/// in the last turn. The next turn would prune older ones anyway ([`IMG_KEEP_TURNS`]), so a
+/// reloaded session sees what one kept in memory sees, and a 5 MB picture is not rewritten
+/// into `<name>.json` for the rest of the session. Borrows when there is nothing to strip.
+pub fn for_storage(messages: &[Message]) -> std::borrow::Cow<'_, [Message]> {
+    if messages.iter().all(|m| m.images.is_empty()) {
+        return std::borrow::Cow::Borrowed(messages);
+    }
+    let mut v = messages.to_vec();
+    prune_images_to(&mut v, 1);
+    std::borrow::Cow::Owned(v)
+}
+
+/// What a message that carried a rejected image says afterwards.
+pub const IMAGE_DROPPED_NOTE: &str = "\n[image could not be decoded by the model server and was removed from the request; the file may be empty, truncated or not an image, or this model may not take images]";
+
+/// The server rejected an attached image (HTTP 400 "decode image …", or an OpenAI-compatible
+/// server's "does not support images"): remove every image
 /// from the history and say so on the last message that carried one, so the same request
 /// can be retried and the model knows why it sees no picture. Returns how many images went.
 pub fn drop_images(messages: &mut [Message], note: &str) -> usize {
@@ -542,7 +652,7 @@ pub fn drop_images(messages: &mut [Message], note: &str) -> usize {
     dropped
 }
 
-/// `_attach_pending_images`: strip images from older messages, then hang the queued images
+/// `_attach_pending_images`: strip out-of-date images ([`prune_images`]), then hang the queued images
 /// (`.hb_pending_images.json`, written by `read_file`) on the last tool/user message.
 /// Returns how many were attached.
 pub fn attach_pending_images(messages: &mut [Message], workdir: &Path) -> usize {
@@ -551,15 +661,7 @@ pub fn attach_pending_images(messages: &mut [Message], workdir: &Path) -> usize 
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    let mut seen = 0;
-    for m in messages.iter_mut().rev() {
-        if matches!(m.role, Role::User | Role::Tool | Role::Assistant) && !m.images.is_empty() {
-            seen += 1;
-            if seen > IMG_KEEP_MSGS {
-                m.images.clear();
-            }
-        }
-    }
+    prune_images(messages);
     if pending.is_empty() {
         return 0;
     }
@@ -596,17 +698,7 @@ const DECLINED_OPENING: &str = "[safety gate: the user declined";
 /// written.` Turns are delimited by user messages that are not harness notes; the current
 /// (last) turn is never changed. A view: the stored history is untouched.
 pub fn reattribute_declined(messages: &[Message]) -> Option<Vec<Message>> {
-    let starts: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| {
-            m.role == Role::User && {
-                let t = m.content.trim();
-                !t.is_empty() && !crate::guards::qa::is_harness_note(t) && !t.starts_with("[tool")
-            }
-        })
-        .map(|(i, _)| i)
-        .collect();
+    let starts = turn_starts(messages);
     if starts.len() < 2 {
         return None;
     }

@@ -183,3 +183,50 @@ fn a_session_records_the_policy_it_ran_under() {
     save_session(d.path(), Some(S), &ctx, None, None, "coding", None, &mut t);
     assert_eq!(recorded_policy(d.path(), S).as_deref(), Some("coding"));
 }
+
+// ---- images on disk (bd boubou-080) ----
+
+fn with_image(mut m: Message, b64: &str) -> Message {
+    m.images = vec![b64.to_string()];
+    m
+}
+
+#[test]
+fn saved_sessions_keep_only_the_last_turns_images_and_the_transcript_none() {
+    let d = tempfile::tempdir().expect("tmp");
+    let mut t = Transcript::new();
+    let mut msgs = vec![
+        Message::system("sys"),
+        with_image(
+            Message::user("[image 1: image/png, 1 KB] what is this?"),
+            "T0xE",
+        ),
+        Message::assistant("a receipt"),
+        with_image(
+            Message::user("[image 1: image/png, 1 KB] and this?"),
+            "TkVX",
+        ),
+    ];
+    save_session(d.path(), Some(S), &msgs, None, None, "", None, &mut t);
+    let raw = std::fs::read_to_string(d.path().join(format!("{S}.json"))).expect("saved");
+    assert!(
+        !raw.contains("T0xE"),
+        "an earlier turn's image is not written"
+    );
+    assert!(
+        raw.contains("TkVX"),
+        "the last turn's image survives a reload"
+    );
+    assert!(
+        lines(d.path()).iter().all(|m| m.images.is_empty()),
+        "the transcript keeps markers, not base64"
+    );
+    assert!(lines(d.path())[1].content.contains("[image 1: image/png"));
+    // In memory, nothing was stripped: the caller's history is untouched.
+    assert_eq!(msgs[1].images.len(), 1);
+    msgs.push(Message::assistant("a ticket"));
+    msgs.push(Message::user("thanks"));
+    save_session(d.path(), Some(S), &msgs, None, None, "", None, &mut t);
+    let raw = std::fs::read_to_string(d.path().join(format!("{S}.json"))).expect("saved");
+    assert!(!raw.contains("TkVX") && !raw.contains("T0xE"));
+}

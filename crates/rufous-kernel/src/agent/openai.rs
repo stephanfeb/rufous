@@ -32,13 +32,29 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(900);
 /// `_cloud_to_openai_messages`: Ollama-shaped history → OpenAI shape. Tool results are
 /// paired with the preceding assistant's `tool_calls` in order (FIFO), since Ollama tool
 /// messages carry no `tool_call_id`.
+///
+/// Images (bead boubou-2cr): a user message's images go with its text as `image_url` content
+/// parts. A tool message cannot carry parts, and nothing may stand between an assistant's
+/// calls and their results, so images on tool results follow the run of results as one user
+/// message ([`TOOL_IMAGES_TEXT`]).
 pub fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());
     let mut pending: std::collections::VecDeque<String> = Default::default();
+    let mut tool_images: Vec<Value> = Vec::new();
     for m in messages {
+        if m.role != Role::Tool {
+            flush_tool_images(&mut out, &mut tool_images);
+        }
         match m.role {
             Role::System => out.push(json!({"role": "system", "content": m.content})),
-            Role::User => out.push(json!({"role": "user", "content": m.content})),
+            Role::User if m.images.is_empty() => {
+                out.push(json!({"role": "user", "content": m.content}))
+            }
+            Role::User => {
+                let mut parts = vec![json!({"type": "text", "text": m.content})];
+                parts.extend(m.images.iter().map(|b| image_part(b)));
+                out.push(json!({"role": "user", "content": parts}));
+            }
             Role::Assistant => {
                 let mut om = Map::new();
                 om.insert("role".into(), json!("assistant"));
@@ -73,10 +89,54 @@ pub fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
             Role::Tool => {
                 let cid = pending.pop_front().unwrap_or_else(|| "call_0".to_string());
                 out.push(json!({"role": "tool", "tool_call_id": cid, "content": m.content}));
+                tool_images.extend(m.images.iter().map(|b| image_part(b)));
             }
         }
     }
+    flush_tool_images(&mut out, &mut tool_images);
     out
+}
+
+/// The text of the user message that carries tool results' images on an OpenAI wire.
+pub const TOOL_IMAGES_TEXT: &str = "[the image(s) attached by the tool results above]";
+
+fn flush_tool_images(out: &mut Vec<Value>, parts: &mut Vec<Value>) {
+    if parts.is_empty() {
+        return;
+    }
+    let mut content = vec![json!({"type": "text", "text": TOOL_IMAGES_TEXT})];
+    content.append(parts);
+    out.push(json!({"role": "user", "content": content}));
+}
+
+/// One base64 image as an OpenAI `image_url` content part with a `data:` URL.
+pub fn image_part(b64: &str) -> Value {
+    json!({
+        "type": "image_url",
+        "image_url": {"url": format!("data:{};base64,{b64}", image_mime(b64))},
+    })
+}
+
+/// The image type from the first bytes of its base64 (the queue keeps no mime type).
+/// Unknown data is called PNG; a server that cannot decode it answers 4xx and the image is
+/// dropped like any other undecodable one.
+pub fn image_mime(b64: &str) -> &'static str {
+    let b = b64.trim_start();
+    if b.starts_with("iVBORw0KGgo") {
+        "image/png"
+    } else if b.starts_with("/9j/") {
+        "image/jpeg"
+    } else if b.starts_with("R0lGOD") {
+        "image/gif"
+    } else if b.starts_with("UklGR") && b.get(11..16) == Some("XRUJQ") {
+        // RIFF<size>WEBP: "WEBP" (bytes 8..12) encodes to base64 chars 11..16 "XRUJQ",
+        // whatever the size field holds.
+        "image/webp"
+    } else if b.starts_with("Qk") {
+        "image/bmp"
+    } else {
+        "image/png"
+    }
 }
 
 // ---------------- inline <think> handling ----------------

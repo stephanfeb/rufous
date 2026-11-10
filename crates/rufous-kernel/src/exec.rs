@@ -154,8 +154,7 @@ pub const SOURCES_DIR: &str = "sources";
 /// Under a relocated harness directory: deleted files.
 pub const RELOCATED_TRASH_DIR: &str = "trash";
 pub const IMG_EXTS: [&str; 6] = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
-const IMG_MAX_BYTES: u64 = 20 * 1024 * 1024;
-const IMG_PER_TURN: usize = 4;
+use crate::agent::history::{ImageQueued, IMG_MAX_BYTES, IMG_PER_TURN};
 const CLOBBER_MIN_OLD: u64 = 300;
 const CLOBBER_RATIO: f64 = 0.5;
 const READ_CHARS: usize = 6000;
@@ -893,10 +892,6 @@ impl Executor {
         format!("{body}{meta}")
     }
 
-    fn pending_images_path(&self) -> PathBuf {
-        crate::agent::history::pending_images_path(&self.harness_dir)
-    }
-
     fn read_image(&self, display: &str, real: &Path) -> String {
         let size = std::fs::metadata(real).map(|m| m.len()).unwrap_or(0);
         if size > IMG_MAX_BYTES {
@@ -908,21 +903,18 @@ impl Executor {
         let Ok(bytes) = std::fs::read(real) else {
             return format!("[not found: {display}]");
         };
-        let mut pending: Vec<Value> = std::fs::read_to_string(self.pending_images_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        if pending.len() >= IMG_PER_TURN {
-            return format!(
+        let b64 = text::base64_encode(&bytes);
+        match crate::agent::history::queue_image(&self.harness_dir, display, b64, size) {
+            ImageQueued::QueueFull => format!(
                 "[image queued: {display} ({} KB). The attachment queue is full ({IMG_PER_TURN} images); analyse the attached images first, then read the next one.]",
                 size / 1024
-            );
+            ),
+            ImageQueued::TooLarge => format!(
+                "[image too large: {display} ({} MB, limit 20 MB)]",
+                size / 1024 / 1024
+            ),
+            ImageQueued::Attached => format!("[image attached: {display} ({} KB)] The image is loaded with this turn's request; you can describe it, read its text or analyse its content directly.", size / 1024),
         }
-        pending.push(serde_json::json!({"path": display, "b64": text::base64_encode(&bytes)}));
-        if let Ok(s) = serde_json::to_string(&pending) {
-            let _ = std::fs::write(self.pending_images_path(), s);
-        }
-        format!("[image attached: {display} ({} KB)] The image is loaded with this turn's request; you can describe it, read its text or analyse its content directly.", size / 1024)
     }
 
     fn edit_file(&mut self, path: &str, old: &str, new: &str, all: bool) -> String {

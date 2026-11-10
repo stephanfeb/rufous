@@ -1311,10 +1311,17 @@ impl<B: ChatBackend, T: ToolRunner> Agent<B, T> {
                         // ended tier7 CH-03 unattended, 2026-10-30, bd boubou-am3).
                         let structural = low.contains("assistant messages at the end")
                             || low.contains("consecutive");
-                        let image = low.contains("image")
+                        // OpenAI-compatible servers word it differently: "image_url is
+                        // only supported by certain models", "model does not support
+                        // images", "vision is not supported" (bead boubou-2cr).
+                        let image = (low.contains("image")
                             && (low.contains("decode")
                                 || low.contains("invalid format")
-                                || low.contains("unsupported"));
+                                || low.contains("invalid image")
+                                || low.contains("unsupported")
+                                || low.contains("not support")
+                                || low.contains("only supported")))
+                            || (low.contains("vision") && low.contains("not support"));
                         let before = messages.len();
                         if structural {
                             dedupe_trailing_assistant(&mut messages);

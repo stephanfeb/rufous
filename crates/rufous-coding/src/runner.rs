@@ -361,6 +361,13 @@ pub trait AgentFactory: Send + Sync {
     fn session_meta(&self, _offline: bool) -> Option<serde_json::Map<String, serde_json::Value>> {
         None
     }
+
+    /// Does `model` take images? `Some(false)` keeps a prompt's images from being sent, with a
+    /// marker and a notice in their place (bead boubou-bs3); `None` = unknown, send them and
+    /// let a refusal take the drop path. Blocking: may ask the engine.
+    fn model_takes_images(&self, _model: &str) -> Option<bool> {
+        None
+    }
 }
 
 /// The production factory: `Agent::standard` on the user's `config.json`, the real executor
@@ -421,6 +428,10 @@ impl AgentFactory for StandardFactory {
     fn notice(&self) -> Option<String> {
         // Both conversation presets consult the decider on every turn.
         self.cfg.decider.notice()
+    }
+
+    fn model_takes_images(&self, model: &str) -> Option<bool> {
+        rufous_kernel::agent::chat::model_can_see(&self.cfg, model)
     }
 
     fn session_meta(&self, offline: bool) -> Option<serde_json::Map<String, serde_json::Value>> {

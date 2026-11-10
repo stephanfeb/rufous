@@ -4152,3 +4152,37 @@ The agent loop:
   (boubou-g11). The log compares each request's prefix with the previous turn's (boubou-xwi).
 - Compaction does not run again straight away: it shortens old call arguments and re-arms only
   below 45 % (boubou-4e1).
+
+## 2026-11-10: images in ACP prompts, and images on every engine (boubou-bs3, fky, 080, 2cr)
+
+Asked for by bizframe (`../bizframe/docs/requests/rufous-acp-image-prompts.md`), which drives a
+small vision model through `rufous acp` to read a scanned form or receipt into a record.
+
+- ACP: `promptCapabilities.image` is advertised. `bridge::prompt_input` turns image blocks and
+  `image/*` blobs into `[image N: <mime>, <size>]` markers and hands the base64 to
+  `history::queue_image`, the queue `read_file` already fills; `lib.rs` empties the queue at
+  the start of each prompt and queues into the session's harness directory, so the loop's
+  `attach_pending_images` hangs the images on the prompt's message before the first request.
+  The loop itself is unchanged. `queue_image` is now the one place the 20 MB and 4-image limits
+  live (`read_image` calls it). On Ollama, `chat::model_can_see` (`/api/show` `vision`, cached
+  with `model_can_think` in one capability cache) keeps images from a model without vision:
+  marker plus notice.
+- Pruning (fky): `IMG_KEEP_MSGS` counted image-carrying messages, so one image rode along on
+  every request for the rest of the session. `prune_images` now also drops images from before
+  the previous turn (`IMG_KEEP_TURNS = 2`; turns split as `reattribute_declined` splits them,
+  now `history::turn_starts`).
+- Storage (080): `history::for_storage` writes the session file and the checkpoint with only
+  the last turn's images; the transcript keeps none. A 5 MB picture was rewritten into
+  `<name>.json` every save and replayed after `session/load`.
+- OpenAI-compatible engines (2cr): `to_openai_messages` sent no images, while `read_file` told
+  the model one was attached. A user message's images go as `image_url` parts; tool results'
+  images follow the run of results as one user message, since nothing may stand between calls
+  and their results. The mime type comes from the base64's first bytes. The 400 that drops an
+  image now also matches the OpenAI wording ("only supported by certain models", "does not
+  support images"), and `IMAGE_DROPPED_NOTE` says the model may not take images.
+
+Checked live on `gemma4:e4b`: a generated receipt read correctly (merchant, date, total) over
+`rufous acp` on Ollama's native API and on its OpenAI-compatible `/v1`; after the third turn
+the saved session and checkpoint held no image and the transcript no base64. The two-turn
+drop itself is checked in `acp_turn.rs` with a scripted model.
+

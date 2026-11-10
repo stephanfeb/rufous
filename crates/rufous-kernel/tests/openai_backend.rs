@@ -10,8 +10,8 @@ use std::sync::mpsc;
 
 use rufous_kernel::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
 use rufous_kernel::agent::openai::{
-    normalize_message, parse_completion, split_inline_thinking, tc_args_from_str,
-    to_openai_messages, Flavor, InlineThinkSplitter, OpenAiBackend, SseAssembler,
+    image_mime, normalize_message, parse_completion, split_inline_thinking, tc_args_from_str,
+    to_openai_messages, Flavor, InlineThinkSplitter, OpenAiBackend, SseAssembler, TOOL_IMAGES_TEXT,
 };
 use rufous_kernel::agent::run::model_id_warning;
 use rufous_kernel::agent::{Agent, AgentEvent, RunParams, ToolRunner};
@@ -922,4 +922,104 @@ fn offline_means_this_machine_for_the_model_engine_too() {
         )
     };
     assert!(cloud.cloud_provider().is_none());
+}
+
+// ---------------- images (bd boubou-2cr) ----------------
+
+const PNG: &str = "iVBORw0KGgoAAAANSUhEUg==";
+const JPG: &str = "/9j/4AAQSkZJRgABAQ==";
+
+#[test]
+fn image_types_come_from_the_first_bytes() {
+    assert_eq!(image_mime(PNG), "image/png");
+    assert_eq!(image_mime(JPG), "image/jpeg");
+    assert_eq!(image_mime("R0lGODlhAQABAAAAACw="), "image/gif");
+    assert_eq!(image_mime("UklGRhAAAABXRUJQVlA4IA=="), "image/webp");
+    assert_eq!(image_mime("UklGRv////9XRUJQVlA4IA=="), "image/webp");
+    assert_eq!(image_mime("Qk02AAAAAAAAADYAAAA="), "image/bmp");
+    assert_eq!(
+        image_mime("QUJD"),
+        "image/png",
+        "unknown data is sent as PNG"
+    );
+}
+
+#[test]
+fn a_user_messages_images_go_as_image_url_parts_in_order() {
+    let mut u =
+        Message::user("[image 1: image/png, 1 KB] [image 2: image/jpeg, 1 KB] what are these?");
+    u.images = vec![PNG.to_string(), JPG.to_string()];
+    let out = to_openai_messages(&[Message::system("s"), u]);
+    let parts = out[1]["content"].as_array().expect("parts");
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[0]["type"], "text");
+    assert!(parts[0]["text"]
+        .as_str()
+        .expect("text")
+        .contains("what are these?"));
+    assert_eq!(parts[1]["type"], "image_url");
+    assert_eq!(
+        parts[1]["image_url"]["url"],
+        format!("data:image/png;base64,{PNG}")
+    );
+    assert_eq!(
+        parts[2]["image_url"]["url"],
+        format!("data:image/jpeg;base64,{JPG}")
+    );
+    let plain = to_openai_messages(&[Message::user("hi")]);
+    assert_eq!(
+        plain[0]["content"], "hi",
+        "no images: content stays a string"
+    );
+}
+
+#[test]
+fn tool_result_images_follow_the_run_of_results_as_one_user_message() {
+    let mut call = Message::assistant("");
+    for p in ["a.png", "b.txt"] {
+        call.tool_calls.push(rufous_kernel::ollama::ToolCall {
+            function: rufous_kernel::ollama::FunctionCall {
+                name: "read_file".into(),
+                arguments: json!({"path": p}),
+            },
+        });
+    }
+    let mut r1 = Message::tool_output("[image attached: a.png (1 KB)]");
+    r1.images = vec![PNG.to_string()];
+    let msgs = vec![
+        Message::system("s"),
+        Message::user("look"),
+        call,
+        r1,
+        Message::tool_output("text"),
+        Message::assistant("it is a chart"),
+    ];
+    let out = to_openai_messages(&msgs);
+    let roles: Vec<&str> = out
+        .iter()
+        .map(|m| m["role"].as_str().expect("role"))
+        .collect();
+    assert_eq!(
+        roles,
+        [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "user",
+            "assistant"
+        ],
+        "both results stay next to their calls; the images come after them"
+    );
+    assert!(out[3]["content"].is_string(), "a tool message stays text");
+    let parts = out[5]["content"].as_array().expect("parts");
+    assert_eq!(parts[0]["text"], TOOL_IMAGES_TEXT);
+    assert_eq!(
+        parts[1]["image_url"]["url"],
+        format!("data:image/png;base64,{PNG}")
+    );
+    // An image on the last tool result (the request about to go out) is carried too.
+    let tail = to_openai_messages(&msgs[..4]);
+    assert_eq!(tail.last().expect("a message")["role"], "user");
 }

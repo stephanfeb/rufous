@@ -35,9 +35,9 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, Implementation, InitializeRequest, InitializeResponse,
     LoadSessionRequest, LoadSessionResponse, McpCapabilities, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
-    ReadTextFileRequest, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
-    SessionNotification, ToolCallId, ToolCallUpdate, WriteTextFileRequest,
+    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
+    PromptResponse, ReadTextFileRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    SessionId, SessionNotification, ToolCallId, ToolCallUpdate, WriteTextFileRequest,
 };
 use agent_client_protocol::{
     Agent as AcpAgent, Client as AcpClient, ConnectTo, ConnectionTo, Error, Responder, Stdio,
@@ -47,7 +47,7 @@ use rufous_kernel::ollama::Message;
 use rufous_kernel::safety::Verdict;
 use tokio::sync::mpsc;
 
-use bridge::{prompt_text, replay_updates, TurnBridge};
+use bridge::{prompt_input, replay_updates, TurnBridge};
 use runner::{
     AcpConfirmer, AcpFileStore, AgentFactory, BridgeMsg, ClientFs, FsRequest, PermissionAsk,
     StandardFactory, TurnSetup,
@@ -170,6 +170,10 @@ impl ConnectTo<AcpClient> for RufousAcp {
                             .agent_capabilities(
                                 AgentCapabilities::new()
                                     .load_session(true)
+                                    // Image blocks reach the model on every backend
+                                    // (beads boubou-bs3, boubou-2cr); a model without
+                                    // vision gets them dropped with a note, the turn goes on.
+                                    .prompt_capabilities(PromptCapabilities::new().image(true))
                                     // `session/new` HTTP servers are served (runner.rs maps
                                     // them); a client only sends them when this says so.
                                     .mcp_capabilities(McpCapabilities::new().http(true)),
@@ -377,9 +381,53 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 tracing::warn!(target: "rufous_coding", "session/update (notice): {e}");
                             }
                         }
-                        let text = prompt_text(&req.prompt);
                         let plan_dir =
                             rufous_kernel::agent::session::harness_dir(&sessions_dir, &name);
+                        // Prompt images go in the queue the loop empties onto the prompt's
+                        // message before its first request (bead boubou-bs3); the queue is
+                        // the turn's own, so whatever an interrupted turn left is cleared.
+                        // `plan_dir` is the harness directory the loop is given (runner.rs).
+                        use rufous_kernel::agent::history::{clear_image_queue, queue_image};
+                        clear_image_queue(&plan_dir);
+                        // A model known to take no images gets a marker in their place and
+                        // the user a notice; unknown (an OpenAI-compatible engine) is sent.
+                        // Asked only when the prompt carries an image; the answer is cached.
+                        let has_image = bridge::has_images(&req.prompt);
+                        let blind = has_image && {
+                            let (f, m) = (factory.clone(), model.clone());
+                            tokio::task::spawn_blocking(move || f.model_takes_images(&m))
+                                .await
+                                .ok()
+                                .flatten()
+                                == Some(false)
+                        };
+                        let input = prompt_input(&req.prompt, |img| {
+                            if blind {
+                                return bridge::ImageFate::NoVision;
+                            }
+                            queue_image(
+                                &plan_dir,
+                                &format!("prompt image {}", img.n),
+                                img.b64.clone(),
+                                img.size,
+                            )
+                            .into()
+                        });
+                        if input.no_vision > 0 {
+                            let n = input.no_vision;
+                            let what = if n == 1 { "image was" } else { "images were" };
+                            let note = format!(
+                                "{model} does not take images. {n} {what} not sent; the model \
+                                 sees a note in their place. Choose a vision model to send images."
+                            );
+                            if let Err(e) = cx.send_notification(SessionNotification::new(
+                                req.session_id.clone(),
+                                bridge::notice_update(&note),
+                            )) {
+                                tracing::warn!(target: "rufous_coding", "session/update (notice): {e}");
+                            }
+                        }
+                        let text = input.text;
                         // The session's protocol log (bead boubou-bmq): the editor keeps
                         // none of the loop's lines, so they go beside the session files.
                         let log = rufous_kernel::agent::session::SessionLog::open(
@@ -391,6 +439,9 @@ impl ConnectTo<AcpClient> for RufousAcp {
                                 "[turn] {}",
                                 rufous_kernel::text::head(&text, 120).replace('\n', " ")
                             ));
+                            for line in &input.image_log {
+                                l.line(line);
+                            }
                         }
                         let session_id = req.session_id.clone();
                         let (tx, rx) = mpsc::unbounded_channel::<BridgeMsg>();

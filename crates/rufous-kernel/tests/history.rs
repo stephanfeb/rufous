@@ -3,8 +3,9 @@
 
 use rufous_kernel::agent::chat::{ChatBackend, ChatError, ChatResponse, StreamPiece};
 use rufous_kernel::agent::history::{
-    attach_pending_images, compact_history, dedupe_trailing_assistant, drop_images, prune_history,
-    sanitize_ckpt, similar, PRUNED_MARK,
+    attach_pending_images, clear_image_queue, compact_history, dedupe_trailing_assistant,
+    drop_images, prune_history, prune_images, queue_image, sanitize_ckpt, similar, ImageQueued,
+    IMG_MAX_BYTES, IMG_PER_TURN, PRUNED_MARK,
 };
 use rufous_kernel::ollama::{Message, Role};
 use serde_json::{json, Value};
@@ -652,4 +653,102 @@ mod reattribution {
         assert_eq!(v[2].content, "I will write it now.");
         assert!(v.iter().all(|m| m.content != "I could not."));
     }
+}
+
+// ---- image pruning by recency (bd boubou-fky) ----
+
+fn with_image(mut m: Message, b64: &str) -> Message {
+    m.images = vec![b64.to_string()];
+    m
+}
+
+#[test]
+fn a_lone_image_is_kept_through_the_next_turn_and_gone_the_turn_after() {
+    let mut v = vec![
+        Message::system("s"),
+        with_image(Message::user("what is in this picture?"), "QUJD"),
+        Message::assistant("a cat"),
+        Message::user("what colour is it?"),
+    ];
+    assert_eq!(prune_images(&mut v), 0, "turn 2 still sees turn 1's image");
+    assert_eq!(v[1].images.len(), 1);
+    v.push(Message::assistant("grey"));
+    v.push(Message::user("thanks, now something else"));
+    assert_eq!(prune_images(&mut v), 1, "turn 3 no longer carries it");
+    assert!(v.iter().all(|m| m.images.is_empty()));
+}
+
+#[test]
+fn images_within_the_current_turn_survive_many_tool_steps() {
+    let mut v = vec![
+        Message::system("s"),
+        Message::user("read shot.png and fix the layout"),
+        Message::assistant_call("read_file", json!({"path": "shot.png"})),
+        with_image(Message::tool_output("[image attached: shot.png]"), "QUJD"),
+    ];
+    for _ in 0..6 {
+        v.push(Message::assistant_call(
+            "read_file",
+            json!({"path": "a.css"}),
+        ));
+        v.push(Message::tool_output("body {}"));
+    }
+    assert_eq!(prune_images(&mut v), 0);
+    assert_eq!(v[3].images.len(), 1);
+}
+
+#[test]
+fn harness_notes_do_not_count_as_turns_for_images() {
+    let note = "Continue: the task is not finished yet.".to_string();
+    assert!(rufous_kernel::guards::qa::is_harness_note(&note));
+    let mut v = vec![
+        Message::system("s"),
+        with_image(Message::user("describe this"), "QUJD"),
+        Message::user(&note),
+        Message::user(&note),
+    ];
+    assert_eq!(prune_images(&mut v), 0);
+}
+
+#[test]
+fn only_the_two_latest_image_messages_keep_images() {
+    let mut v = vec![
+        Message::system("s"),
+        Message::user("compare these"),
+        with_image(Message::tool_output("[image attached: a.png]"), "QQ=="),
+        with_image(Message::tool_output("[image attached: b.png]"), "Qg=="),
+        with_image(Message::tool_output("[image attached: c.png]"), "Qw=="),
+    ];
+    assert_eq!(prune_images(&mut v), 1);
+    assert!(v[2].images.is_empty());
+    assert_eq!(v[3].images.len() + v[4].images.len(), 2);
+}
+
+#[test]
+fn the_image_queue_applies_the_size_and_count_limits() {
+    let d = tempfile::tempdir().expect("tmp");
+    assert_eq!(
+        queue_image(d.path(), "big", "QUJD".into(), IMG_MAX_BYTES + 1),
+        ImageQueued::TooLarge
+    );
+    for i in 0..IMG_PER_TURN {
+        assert_eq!(
+            queue_image(d.path(), &format!("img{i}"), "QUJD".into(), 3),
+            ImageQueued::Attached
+        );
+    }
+    assert_eq!(
+        queue_image(d.path(), "one too many", "QUJD".into(), 3),
+        ImageQueued::QueueFull
+    );
+    let mut v = vec![Message::system("s"), Message::user("look at these")];
+    assert_eq!(attach_pending_images(&mut v, d.path()), IMG_PER_TURN);
+    assert_eq!(
+        v[1].images.len(),
+        IMG_PER_TURN,
+        "on the prompt's own message"
+    );
+    queue_image(d.path(), "stale", "QUJD".into(), 3);
+    clear_image_queue(d.path());
+    assert_eq!(attach_pending_images(&mut v, d.path()), 0);
 }
