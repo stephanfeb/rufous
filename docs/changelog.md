@@ -4186,3 +4186,38 @@ Checked live on `gemma4:e4b`: a generated receipt read correctly (merchant, date
 the saved session and checkpoint held no image and the transcript no base64. The two-turn
 drop itself is checked in `acp_turn.rs` with a scripted model.
 
+
+## v0.5.0 (2026-11-10)
+
+CI run 42819056760 on 0bc1488 is green on all three systems.
+
+v0.5.0 adds the following since v0.4.0. It is a minor release because `rufous acp` gains a new
+protocol capability.
+
+ACP and desktop hosts:
+- Images in a prompt: `initialize` reports `promptCapabilities.image: true`. Image blocks, and
+  embedded blobs with an `image/*` mime type, go to the model on the prompt's user message, with
+  a marker such as `[image 1: image/png, 68 KB]` in the text and a `[prompt] image N` line in the
+  session log. An image over 20 MB, a fifth image in one prompt, or an empty block becomes an
+  `[image N not sent: …]` marker and the turn carries on. On Ollama, a model without `vision` gets
+  a marker in place of each image and the client gets a notice (boubou-bs3; docs/acp.md "Images
+  in a prompt").
+
+Images on every engine:
+- OpenAI-compatible servers (LM Studio, Ollama's `/v1`) receive images as `image_url` parts, with
+  the mime type read from the image data. Images from tool results go in one user message after
+  the results. The drop-and-retry path also recognises the OpenAI and LM Studio wording for a
+  model that doesn't take images (boubou-2cr).
+- An image is sent with the turn it arrives in and the next turn, then dropped. Before, a single
+  image was resent on every request (boubou-fky).
+- Session files and checkpoints keep only the last turn's images, and the transcript keeps none
+  (boubou-080).
+
+Web UI:
+- A `batch_tools` row names its calls instead of `calls=[object Object]` (boubou-3jp).
+
+Docs:
+- docs/host-tools.md matches the code as shipped in v0.4.0 (boubou-c9a).
+
+Known gap: `read_file` on an image still tells a model without vision that the image is attached
+(boubou-39v).
