@@ -435,6 +435,9 @@ pub fn run_hook(command: &str, cwd: &Path, input: &str, timeout: Duration) -> Ho
         c.arg("-c").arg(command);
         c
     };
+    for var in crate::config::API_KEY_ENVS {
+        c.env_remove(var);
+    }
     c.current_dir(cwd)
         .env("RUFOUS_PROJECT_DIR", cwd)
         .env("BOUBOU_PROJECT_DIR", cwd)

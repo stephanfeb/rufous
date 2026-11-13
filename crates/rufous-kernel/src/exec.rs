@@ -1643,6 +1643,9 @@ pub(crate) fn run_command(
         c.arg("-c").arg(cmd);
         c
     };
+    for var in crate::config::API_KEY_ENVS {
+        command.env_remove(var);
+    }
     command
         .current_dir(cwd)
         .env("PYTHONIOENCODING", "utf-8")

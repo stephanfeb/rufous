@@ -122,6 +122,28 @@ impl Default for Config {
     }
 }
 
+/// The environment variable that carries the local engine's API key: over
+/// `local_backend.api_key`, for a host that keeps the key in a keychain and must not write
+/// it to `config.json`. Read when the engine is built and never stored in [`Config`], so
+/// saving the config does not write it back.
+pub const API_KEY_ENV: &str = "RUFOUS_API_KEY";
+
+/// The same for the cloud provider: over `cloud.api_key`.
+pub const CLOUD_API_KEY_ENV: &str = "RUFOUS_CLOUD_API_KEY";
+
+/// Both, for the processes rufous starts (the model's shell commands, hooks, MCP servers,
+/// `ollama serve`): they are taken out of each one's environment, so a command the model
+/// runs cannot read the key. Dispatched children are rufous itself and keep them.
+pub const API_KEY_ENVS: [&str; 2] = [API_KEY_ENV, CLOUD_API_KEY_ENV];
+
+/// An API key from the environment; unset, empty and blank all mean there is none.
+fn env_api_key(var: &str) -> Option<String> {
+    std::env::var(var)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// An enabled, complete cloud provider (`config.cloud`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudProvider {
@@ -429,7 +451,7 @@ impl Config {
         }
         Some(CloudProvider {
             base_url,
-            api_key: s("api_key"),
+            api_key: env_api_key(CLOUD_API_KEY_ENV).unwrap_or_else(|| s("api_key")),
             model,
         })
     }
@@ -499,6 +521,11 @@ impl Config {
         if k == "base_url" {
             if let Some(url) = self.base_url_flag.as_deref() {
                 return url.trim().to_string();
+            }
+        }
+        if k == "api_key" {
+            if let Some(key) = env_api_key(API_KEY_ENV) {
+                return key;
             }
         }
         self.local_backend

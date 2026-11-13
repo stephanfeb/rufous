@@ -132,7 +132,10 @@ rufous acp --model <model>      # Agent Client Protocol over stdio, for an edito
 
 Environment variables are inherited from Mingbird: `OLLAMA_HOST`, `OLLAMA_BIN`, `AGENT_CTX`,
 `AGENT_TEMP`, `AGENT_NUMPREDICT`, `AGENT_THINK`, `AGENT_SYSTEM_FILE`, `AGENT_SLIM_OUTPUT`,
-`AGENT_OFFLINE`. Under an editor, which passes no environment, `rufous acp --ctx <tokens>` sets
+`AGENT_OFFLINE`. `RUFOUS_API_KEY` is the API key of the engine `--backend` names, over
+`local_backend.api_key`, and `RUFOUS_CLOUD_API_KEY` the cloud provider's, over `cloud.api_key`: for
+a host that keeps keys in a keychain and must not write them to `config.json` (neither is ever
+written back). Under an editor, which passes no environment, `rufous acp --ctx <tokens>` sets
 the context window instead (see `docs/acp.md`). Every named session also keeps the loop's protocol
 lines in `~/.ollama_agent/sessions/<name>.log` (`AGENT_SESSION_LOG=0` turns that off; `bench/session_metrics.py <log>` reads one).
 The scope gate asks before the model, told to work on beads, issues or documents, first writes a

@@ -201,6 +201,9 @@ impl OllamaProc {
     pub fn spawn_serve(&self) -> std::io::Result<()> {
         let exe = find_ollama_exe(&self.exe);
         let mut cmd = Command::new(&exe);
+        for var in crate::config::API_KEY_ENVS {
+            cmd.env_remove(var);
+        }
         cmd.arg("serve")
             .stdin(Stdio::null())
             .stdout(Stdio::null())

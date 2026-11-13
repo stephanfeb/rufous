@@ -297,3 +297,118 @@ fn mcp_add_list_get_remove_round_trip() {
     let o = rufous(home.path(), cwd.path(), &["mcp", "get", "framit"]);
     assert!(!o.status.success(), "{}", text(&o));
 }
+
+/// One request to a listener that answers like an OpenAI-compatible server's `/models`,
+/// returned as the text the client sent.
+fn one_models_request(listener: std::net::TcpListener) -> std::thread::JoinHandle<String> {
+    use std::io::{Read, Write};
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a request");
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 2048];
+        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).expect("read");
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buf[..n]);
+        }
+        let body = r#"{"data":[{"id":"m"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("answer");
+        String::from_utf8_lossy(&seen).to_lowercase()
+    })
+}
+
+/// A host that keeps the model server's key in a keychain passes it as `RUFOUS_API_KEY`:
+/// it reaches the server, wins over `config.json`, and is not written back to it.
+#[test]
+fn api_key_from_the_environment_reaches_the_engine_and_stays_out_of_the_config() {
+    let home = tempfile::tempdir().expect("home");
+    let cwd = tempfile::tempdir().expect("cwd");
+    let config = home.path().join("config.json");
+    let run = |env_key: Option<&str>| {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let url = format!("http://{}/v1", listener.local_addr().expect("addr"));
+        std::fs::write(
+            &config,
+            serde_json::json!({"local_backend": {"api_key": "sk-file"}}).to_string(),
+        )
+        .expect("config");
+        let seen = one_models_request(listener);
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rufous"));
+        cmd.args(["--backend", "openai", "--base-url", &url, "doctor"])
+            .current_dir(cwd.path())
+            .env("RUFOUS_HOME", home.path())
+            .env("OLLAMA_HOST", "http://127.0.0.1:9")
+            .env("OLLAMA_BIN", "/nonexistent/ollama")
+            .env("AGENT_PARALLEL", "0")
+            .env_remove("AGENT_OFFLINE")
+            .env_remove("RUFOUS_API_KEY");
+        if let Some(k) = env_key {
+            cmd.env("RUFOUS_API_KEY", k);
+        }
+        let o = cmd.output().expect("run rufous");
+        (seen.join().expect("server"), text(&o))
+    };
+
+    let (request, out) = run(Some("sk-env"));
+    assert!(
+        request.contains("authorization: bearer sk-env"),
+        "{request}"
+    );
+    assert!(out.contains("openai engine: ok"), "{out}");
+    assert!(!out.contains("sk-env"), "the key is not printed: {out}");
+    let written = std::fs::read_to_string(&config).expect("config");
+    assert!(!written.contains("sk-env"), "not written back: {written}");
+
+    // blank counts as unset, and without the variable the config's key is used as before
+    let (request, _) = run(Some("  "));
+    assert!(
+        request.contains("authorization: bearer sk-file"),
+        "{request}"
+    );
+    let (request, _) = run(None);
+    assert!(
+        request.contains("authorization: bearer sk-file"),
+        "{request}"
+    );
+}
+
+/// The key is rufous's own: a command the model runs does not find it in its environment.
+#[test]
+fn api_key_is_not_in_the_environment_of_a_command_the_model_runs() {
+    let d = tempfile::tempdir().expect("tmp");
+    let ws = d.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("mkdir");
+    let o = Command::new(env!("CARGO_BIN_EXE_rufous"))
+        .args([
+            "tool",
+            "run_command",
+            r#"{"command":"echo key=[$RUFOUS_API_KEY$RUFOUS_CLOUD_API_KEY] home=[$RUFOUS_HOME]"}"#,
+        ])
+        .current_dir(&ws)
+        .env("RUFOUS_HOME", d.path())
+        .env("OLLAMA_HOST", "http://127.0.0.1:9")
+        .env("OLLAMA_BIN", "/nonexistent/ollama")
+        .env("AGENT_PARALLEL", "0")
+        .env("RUFOUS_API_KEY", "sk-env")
+        .env("RUFOUS_CLOUD_API_KEY", "sk-cloud")
+        .output()
+        .expect("run rufous");
+    let out = text(&o);
+    assert!(out.contains("key=[]"), "{out}");
+    assert!(
+        !out.contains("sk-env") && !out.contains("sk-cloud"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("home=[]"),
+        "the rest of the environment stays: {out}"
+    );
+}

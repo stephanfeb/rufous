@@ -82,6 +82,10 @@ async fn connect(cfg: &ServerConfig) -> Result<(Running, Option<LiveGroup>), Str
         .filter(|c| !c.is_empty())
         .ok_or_else(|| "server has neither command nor url".to_string())?;
     let mut cmd = tokio::process::Command::new(command);
+    // The model server's key is rufous's own; a server gets only what its config names.
+    for var in crate::config::API_KEY_ENVS {
+        cmd.env_remove(var);
+    }
     cmd.args(&cfg.args).envs(cfg.env.iter()).kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
