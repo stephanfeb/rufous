@@ -381,6 +381,8 @@ fn api_key_from_the_environment_reaches_the_engine_and_stays_out_of_the_config()
 }
 
 /// The key is rufous's own: a command the model runs does not find it in its environment.
+/// Unix only: the command is written for `sh` (`cmd` leaves an unset `%VAR%` as it is).
+#[cfg(unix)]
 #[test]
 fn api_key_is_not_in_the_environment_of_a_command_the_model_runs() {
     let d = tempfile::tempdir().expect("tmp");
