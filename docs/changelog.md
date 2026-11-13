@@ -4221,3 +4221,26 @@ Docs:
 
 Known gap: `read_file` on an image still tells a model without vision that the image is attached
 (boubou-39v).
+
+
+## v0.5.1 (2026-11-13)
+
+v0.5.1 adds one thing since v0.5.0, asked for by a desktop host that keeps credentials in the
+system keychain and never in a file.
+
+API keys from the environment:
+- `RUFOUS_API_KEY` is the API key of the engine `--backend` names, over
+  `local_backend.api_key`. `RUFOUS_CLOUD_API_KEY` is the cloud provider's, over `cloud.api_key`.
+  Unset, empty and blank all mean the config's key is used, as before. The variables are read
+  when the engine is built and are not held in `Config`, so saving the config does not write
+  them to `config.json`.
+- The two variables are taken out of the environment of what rufous starts: the model's shell
+  commands (`run_command`), hooks, MCP servers and `ollama serve`. Before, each of these
+  inherited rufous's whole environment, so a command the model ran could have printed the key
+  into the transcript. An MCP server still gets a variable of that name when its own config
+  sets one. Dispatched children are rufous itself and keep both.
+- Checked in `crates/rufous-cli/tests/cli.rs`: the key reaches an OpenAI-compatible server as
+  `Authorization: Bearer`, wins over the config's key, appears in neither `doctor`'s output nor
+  `config.json`, and `run_command` sees an empty `$RUFOUS_API_KEY`.
+
+It is a patch release: nothing changes unless one of the variables is set.
