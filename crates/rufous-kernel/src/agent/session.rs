@@ -685,6 +685,7 @@ mod asking_tests {
                 name: name.to_string(),
                 arguments: args,
             },
+            extra_content: None,
         }
     }
 

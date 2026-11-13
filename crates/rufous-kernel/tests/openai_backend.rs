@@ -302,6 +302,7 @@ fn cloud_message_mapping_pairs_tool_results() {
                     name: "read_file".into(),
                     arguments: json!({"path": "b"}),
                 },
+                extra_content: None,
             });
             m
         },
@@ -502,60 +503,131 @@ fn serve_once(
     ctype: &'static str,
     body: String,
 ) -> (String, mpsc::Receiver<(String, String, Value)>) {
+    serve_seq(vec![(status, ctype, body)])
+}
+
+/// One connection per response, answered in order; each request is captured.
+fn serve_seq(
+    replies: Vec<(&'static str, &'static str, String)>,
+) -> (String, mpsc::Receiver<(String, String, Value)>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let Ok((mut sock, _)) = listener.accept() else {
-            return;
-        };
-        sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 4096];
-        let (mut head_end, mut clen) = (None, 0usize);
-        loop {
-            let n = match sock.read(&mut tmp) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
+        for (status, ctype, body) in replies {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
             };
-            buf.extend_from_slice(&tmp[..n]);
-            if head_end.is_none() {
-                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                    head_end = Some(i + 4);
-                    let head = String::from_utf8_lossy(&buf[..i]).to_lowercase();
-                    clen = head
-                        .lines()
-                        .find_map(|l| l.strip_prefix("content-length:"))
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .ok();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            let (mut head_end, mut clen) = (None, 0usize);
+            loop {
+                let n = match sock.read(&mut tmp) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                buf.extend_from_slice(&tmp[..n]);
+                if head_end.is_none() {
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        head_end = Some(i + 4);
+                        let head = String::from_utf8_lossy(&buf[..i]).to_lowercase();
+                        clen = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                    }
+                }
+                if let Some(h) = head_end {
+                    if buf.len() >= h + clen {
+                        break;
+                    }
                 }
             }
-            if let Some(h) = head_end {
-                if buf.len() >= h + clen {
-                    break;
-                }
-            }
-        }
-        let h = head_end.unwrap_or(buf.len());
-        let head = String::from_utf8_lossy(&buf[..h]).to_string();
-        let path = head
-            .lines()
-            .next()
-            .unwrap_or("")
-            .split(' ')
-            .nth(1)
-            .unwrap_or("")
-            .to_string();
-        let body_v: Value = serde_json::from_slice(&buf[h..]).unwrap_or(Value::Null);
-        let _ = tx.send((path, head, body_v));
-        let resp = format!(
+            let h = head_end.unwrap_or(buf.len());
+            let head = String::from_utf8_lossy(&buf[..h]).to_string();
+            let path = head
+                .lines()
+                .next()
+                .unwrap_or("")
+                .split(' ')
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            let body_v: Value = serde_json::from_slice(&buf[h..]).unwrap_or(Value::Null);
+            let _ = tx.send((path, head, body_v));
+            let resp = format!(
             "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.write_all(resp.as_bytes());
+        }
     });
     (format!("http://{addr}/v1"), rx)
+}
+
+// Bead boubou-vl0: Google's /v1beta/openai refuses unknown fields with a 400.
+#[test]
+fn cloud_drops_enable_thinking_when_the_provider_rejects_it() {
+    let d = tempfile::tempdir().expect("tmp");
+    let rejected = json!([{"error": {"code": 400, "status": "INVALID_ARGUMENT",
+        "message": "Invalid JSON payload received. Unknown name \"enable_thinking\": Cannot find field."}}]);
+    let ok = json!({"choices": [{"message": {"role": "assistant", "content": "hi"},
+        "finish_reason": "stop"}]});
+    let (base, rx) = serve_seq(vec![
+        ("400 Bad Request", "application/json", rejected.to_string()),
+        ("200 OK", "application/json", ok.to_string()),
+        ("200 OK", "application/json", ok.to_string()),
+    ]);
+    let cp = CloudProvider {
+        base_url: base,
+        api_key: "k".into(),
+        model: "gemini".into(),
+    };
+    let mut b = OpenAiBackend::cloud(&cp, &params(d.path(), -1)).expect("backend");
+    let r = b
+        .chat("m", &[Message::user("hi")], &[], &mut |_| {})
+        .expect("retried without the field");
+    assert_eq!(r.message.content, "hi");
+    let (_, _, first) = rx.recv().expect("first");
+    let (_, _, second) = rx.recv().expect("retry");
+    assert_eq!(first["enable_thinking"], false);
+    assert!(second.get("enable_thinking").is_none(), "{second}");
+    b.chat("m", &[Message::user("again")], &[], &mut |_| {})
+        .expect("next turn");
+    let (_, _, third) = rx.recv().expect("next turn");
+    assert!(third.get("enable_thinking").is_none(), "never sent again");
+}
+
+#[test]
+fn cloud_does_not_retry_other_400s() {
+    let d = tempfile::tempdir().expect("tmp");
+    let (base, rx) = serve_seq(vec![
+        (
+            "400 Bad Request",
+            "application/json",
+            r#"{"error":{"message":"bad model"}}"#.into(),
+        ),
+        ("200 OK", "application/json", "{}".into()),
+    ]);
+    let cp = CloudProvider {
+        base_url: base,
+        api_key: "k".into(),
+        model: "m".into(),
+    };
+    let mut b = OpenAiBackend::cloud(&cp, &params(d.path(), -1)).expect("backend");
+    let e = b
+        .chat("m", &[Message::user("hi")], &[], &mut |_| {})
+        .expect_err("400 stands");
+    assert!(e.to_string().contains("bad model"), "{e}");
+    rx.recv().expect("one request");
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "no second request"
+    );
 }
 
 #[test]
@@ -982,6 +1054,7 @@ fn tool_result_images_follow_the_run_of_results_as_one_user_message() {
                 name: "read_file".into(),
                 arguments: json!({"path": p}),
             },
+            extra_content: None,
         });
     }
     let mut r1 = Message::tool_output("[image attached: a.png (1 KB)]");
@@ -1022,4 +1095,127 @@ fn tool_result_images_follow_the_run_of_results_as_one_user_message() {
     // An image on the last tool result (the request about to go out) is carried too.
     let tail = to_openai_messages(&msgs[..4]);
     assert_eq!(tail.last().expect("a message")["role"], "user");
+}
+
+// ---------------- provider data on tool calls (bead boubou-fdd) ----------------
+
+// Gemini 3 signs each call and refuses the next request unless the signature comes back:
+// 400 "Function call is missing a thought_signature in functionCall parts".
+fn signature() -> Value {
+    json!({"google": {"thought_signature": "c2lnLTE="}})
+}
+
+#[test]
+fn a_tool_calls_extra_content_is_read_from_a_whole_reply_and_sent_back() {
+    let reply = json!({"choices": [{"message": {"role": "assistant", "content": null,
+        "tool_calls": [
+            {"id": "a", "type": "function", "extra_content": signature(),
+             "function": {"name": "todo", "arguments": "{\"add\":\"x\"}"}},
+            {"id": "b", "type": "function",
+             "function": {"name": "find", "arguments": "{}"}}
+        ]}, "finish_reason": "tool_calls"}]});
+    let r = parse_completion(&reply);
+    assert_eq!(r.message.tool_calls[0].extra_content, Some(signature()));
+    assert_eq!(r.message.tool_calls[1].extra_content, None);
+    let out = to_openai_messages(&[
+        Message::user("u"),
+        r.message,
+        Message::tool_output("ok"),
+        Message::tool_output("ok"),
+    ]);
+    let tcs = out[1]["tool_calls"].as_array().expect("tool_calls");
+    assert_eq!(tcs[0]["extra_content"], signature());
+    assert!(tcs[1].get("extra_content").is_none(), "{}", tcs[1]);
+}
+
+#[test]
+fn a_streamed_tool_calls_extra_content_survives_assembly() {
+    let mut asm = SseAssembler::new();
+    let body = sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "a", "type": "function",
+            "extra_content": signature(),
+            "function": {"name": "todo", "arguments": "{\"add\":"}}]}}]}),
+        json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+            "function": {"arguments": "\"x\"}"}}]}, "finish_reason": "tool_calls"}]}),
+    ]);
+    asm.push(body.as_bytes(), &mut |_| {});
+    let r = asm.finish(&mut |_| {});
+    assert_eq!(
+        r.message.tool_calls[0].function.arguments,
+        json!({"add": "x"})
+    );
+    assert_eq!(r.message.tool_calls[0].extra_content, Some(signature()));
+}
+
+#[test]
+fn extra_content_is_kept_in_session_files_and_absent_when_none() {
+    let mut m = Message::assistant_call("todo", json!({}));
+    let plain = serde_json::to_value(&m).expect("json");
+    assert!(
+        plain["tool_calls"][0].get("extra_content").is_none(),
+        "{plain}"
+    );
+    m.tool_calls[0].extra_content = Some(signature());
+    let back: Message =
+        serde_json::from_value(serde_json::to_value(&m).expect("json")).expect("message");
+    assert_eq!(back.tool_calls[0].extra_content, Some(signature()));
+}
+
+// Gemini streams parallel calls whole, one per chunk, with no `index`.
+#[test]
+fn unindexed_streamed_calls_stay_apart_by_id() {
+    let mut asm = SseAssembler::new();
+    let call = |id: &str, city: &str, sig: bool| {
+        let mut t = json!({"id": id, "type": "function",
+            "function": {"name": "get_weather", "arguments": format!("{{\"city\":\"{city}\"}}")}});
+        if sig {
+            t["extra_content"] = signature();
+        }
+        json!({"choices": [{"delta": {"tool_calls": [t]}}]})
+    };
+    let body = sse(&[
+        call("call_1", "Paris", true),
+        call("call_2", "Tokyo", false),
+        call("call_3", "Lima", false),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    ]);
+    asm.push(body.as_bytes(), &mut |_| {});
+    let r = asm.finish(&mut |_| {});
+    let got: Vec<_> = r
+        .message
+        .tool_calls
+        .iter()
+        .map(|t| {
+            (
+                t.function.name.as_str(),
+                t.function.arguments["city"].clone(),
+                t.extra_content.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("get_weather", json!("Paris"), true),
+            ("get_weather", json!("Tokyo"), false),
+            ("get_weather", json!("Lima"), false),
+        ]
+    );
+}
+
+#[test]
+fn unindexed_fragments_without_an_id_continue_the_last_call() {
+    let mut asm = SseAssembler::new();
+    let body = sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [{"id": "a",
+            "function": {"name": "todo", "arguments": "{\"add\":"}}]}}]}),
+        json!({"choices": [{"delta": {"tool_calls": [{"function": {"arguments": "\"x\"}"}}]}}]}),
+    ]);
+    asm.push(body.as_bytes(), &mut |_| {});
+    let r = asm.finish(&mut |_| {});
+    assert_eq!(r.message.tool_calls.len(), 1);
+    assert_eq!(
+        r.message.tool_calls[0].function.arguments,
+        json!({"add": "x"})
+    );
 }

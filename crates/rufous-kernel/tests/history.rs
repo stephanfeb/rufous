@@ -467,6 +467,7 @@ fn pruning_shrinks_long_arguments_of_old_calls_and_keeps_facts_for_each_tool() {
             name: "read_file".into(),
             arguments: json!({"path": "b.txt"}),
         },
+        extra_content: None,
     });
     msgs.push(a);
     msgs.push(Message::tool_output("A".repeat(300)));

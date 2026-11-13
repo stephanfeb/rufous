@@ -2321,6 +2321,7 @@ fn follow_up_history(steer: &str) -> Vec<Message> {
             name: "run_bash".into(),
             arguments: json!({"command": "flutter pub get"}),
         },
+        extra_content: None,
     }];
     vec![
         Message::system("sys"),

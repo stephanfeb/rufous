@@ -797,6 +797,7 @@ mod tests {
                 name: name.to_string(),
                 arguments: args,
             },
+            extra_content: None,
         })
     }
 
@@ -1131,6 +1132,7 @@ mod tests {
                 name: name.to_string(),
                 arguments: args,
             },
+            extra_content: None,
         }
     }
 

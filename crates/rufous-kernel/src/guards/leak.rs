@@ -39,6 +39,7 @@ pub fn salvage(content: &str, finish_prose_rescue: bool) -> Option<Salvaged> {
                     name,
                     arguments: Value::Object(args),
                 },
+                extra_content: None,
             })
             .collect(),
         rescued,

@@ -4,7 +4,9 @@
 //! keeping apart (Mingbird's note: "all measured differences, do not unify"):
 //!
 //! * **cloud** (`config.cloud`): non-streaming, `Authorization: Bearer` always, and
-//!   `enable_thinking: false` (thinking off by default, like the local protocol);
+//!   `enable_thinking: false` (thinking off by default, like the local protocol) until the
+//!   provider rejects the field: strict servers (Google's `/v1beta/openai`) answer 400 to
+//!   any unknown field, so that turn is resent without it and it is never sent again;
 //! * **local engine** (`config.local_backend = {"type":"openai"}`: LM Studio, llama.app,
 //!   llama-server, Jan, vLLM): true SSE streaming, Bearer only when a key is set (an empty
 //!   Bearer gets a 401 from strict servers), no `enable_thinking` (the server's reasoning
@@ -76,11 +78,15 @@ pub fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
                         };
                         let cid = format!("call_{}_{i}", out.len());
                         pending.push_back(cid.clone());
-                        otcs.push(json!({
+                        let mut otc = json!({
                             "id": cid,
                             "type": "function",
                             "function": {"name": tc.function.name, "arguments": args},
-                        }));
+                        });
+                        if let Some(x) = &tc.extra_content {
+                            otc["extra_content"] = x.clone();
+                        }
+                        otcs.push(otc);
                     }
                     om.insert("tool_calls".into(), Value::Array(otcs));
                 }
@@ -265,6 +271,11 @@ pub fn tc_args_from_str(s: &str) -> Value {
     serde_json::from_str::<Value>(s).unwrap_or_else(|_| json!({"_raw": s}))
 }
 
+/// A tool call's `extra_content`, when the server sent one (bead boubou-fdd).
+fn extra_content(tc: &Value) -> Option<Value> {
+    tc.get("extra_content").filter(|v| !v.is_null()).cloned()
+}
+
 fn tool_calls_from(v: Option<&Value>) -> Vec<ToolCall> {
     v.and_then(Value::as_array)
         .map(|arr| {
@@ -283,6 +294,7 @@ fn tool_calls_from(v: Option<&Value>) -> Vec<ToolCall> {
                     };
                     ToolCall {
                         function: FunctionCall { name, arguments },
+                        extra_content: extra_content(tc),
                     }
                 })
                 .collect()
@@ -347,6 +359,7 @@ struct TcAcc {
     id: Option<String>,
     name: String,
     args: String,
+    extra: Option<Value>,
 }
 
 /// Assembles an OpenAI SSE stream: body/thinking deltas are routed through the inline
@@ -436,10 +449,13 @@ impl SseAssembler {
                 .into_iter()
                 .flatten()
             {
-                let idx = dtc.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let idx = self.slot(dtc);
                 let acc = self.tcs.entry(idx).or_default();
                 if let Some(id) = dtc.get("id").and_then(Value::as_str) {
                     acc.id = Some(id.to_string());
+                }
+                if let Some(x) = extra_content(dtc) {
+                    acc.extra = Some(x);
                 }
                 if let Some(f) = dtc.get("function") {
                     if let Some(n) = f.get("name").and_then(Value::as_str) {
@@ -450,6 +466,25 @@ impl SseAssembler {
                     }
                 }
             }
+        }
+    }
+
+    /// Which call a tool-call fragment belongs to: its `index`; without one (Gemini streams
+    /// each call whole in its own chunk, unindexed) a new `id` opens the next call, a known
+    /// `id` is that call, and no `id` continues the last one.
+    fn slot(&self, dtc: &Value) -> u64 {
+        if let Some(i) = dtc.get("index").and_then(Value::as_u64) {
+            return i;
+        }
+        let last = self.tcs.keys().next_back().copied();
+        match dtc.get("id").and_then(Value::as_str) {
+            Some(id) => self
+                .tcs
+                .iter()
+                .find(|(_, a)| a.id.as_deref() == Some(id))
+                .map(|(k, _)| *k)
+                .unwrap_or_else(|| last.map_or(0, |k| k + 1)),
+            None => last.unwrap_or(0),
         }
     }
 
@@ -476,6 +511,7 @@ impl SseAssembler {
                     name: a.name.clone(),
                     arguments: tc_args_from_str(&a.args),
                 },
+                extra_content: a.extra.clone(),
             })
             .collect();
         let done_reason = self.finish_reason.or_else(|| {
@@ -496,6 +532,12 @@ impl SseAssembler {
 }
 
 // ---------------- the backend ----------------
+
+/// A 400 body that blames the `enable_thinking` field (Google: `Unknown name
+/// "enable_thinking": Cannot find field.`; others: `unrecognized`/`extra` field errors).
+pub fn rejects_enable_thinking(body: &str) -> bool {
+    body.contains("enable_thinking")
+}
 
 /// Which measured protocol variant to speak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -553,6 +595,8 @@ pub struct OpenAiBackend {
     pub model_override: Option<String>,
     pub num_predict: i32,
     pub temperature: Option<f32>,
+    /// Cloud: false once the provider has rejected `enable_thinking` (bead boubou-vl0).
+    send_enable_thinking: bool,
     http: reqwest::Client,
     rt: tokio::runtime::Runtime,
     cancel: Option<Arc<AtomicBool>>,
@@ -592,6 +636,7 @@ impl OpenAiBackend {
             model_override,
             num_predict: params.num_predict,
             temperature: params.temperature,
+            send_enable_thinking: true,
             http,
             rt,
             cancel: None,
@@ -630,7 +675,8 @@ impl OpenAiBackend {
             stream: self.flavor == Flavor::LocalEngine,
             max_tokens: (self.num_predict > 0).then_some(self.num_predict as u32),
             temperature: self.temperature,
-            enable_thinking: (self.flavor == Flavor::Cloud).then_some(false),
+            enable_thinking: (self.flavor == Flavor::Cloud && self.send_enable_thinking)
+                .then_some(false),
         }
     }
 
@@ -751,10 +797,27 @@ impl ChatBackend for OpenAiBackend {
     ) -> Result<ChatResponse, ChatError> {
         let shape = self.shape(model);
         let body = shape.body(messages, tools);
-        if shape.stream {
+        let r = if shape.stream {
             self.stream(&body, on_piece)
         } else {
             self.once(&body, on_piece)
+        };
+        match r {
+            // A strict provider refuses the field it does not know: drop it for good and
+            // resend this turn once without it.
+            Err(ChatError::Status {
+                status: 400,
+                body: ref text,
+            }) if shape.enable_thinking.is_some() && rejects_enable_thinking(text) => {
+                self.send_enable_thinking = false;
+                let body = self.shape(model).body(messages, tools);
+                if shape.stream {
+                    self.stream(&body, on_piece)
+                } else {
+                    self.once(&body, on_piece)
+                }
+            }
+            other => other,
         }
     }
     fn set_cancel(&mut self, flag: Arc<AtomicBool>) {

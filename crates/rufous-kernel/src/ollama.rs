@@ -107,6 +107,7 @@ impl Message {
                     name: name.into(),
                     arguments,
                 },
+                extra_content: None,
             }],
             ..Self::new(Role::Assistant, "")
         }
@@ -141,6 +142,11 @@ impl Message {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
     pub function: FunctionCall,
+    /// Provider data an OpenAI-compatible server attached to this call and wants back
+    /// verbatim with it (bead boubou-fdd: Gemini 3's `{"google": {"thought_signature": …}}`,
+    /// without which the next request is a 400). Opaque; kept in session files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
