@@ -4244,3 +4244,30 @@ API keys from the environment:
   `config.json`, and `run_command` sees an empty `$RUFOUS_API_KEY`.
 
 It is a patch release: nothing changes unless one of the variables is set.
+
+
+## v0.5.2 (2026-11-13)
+
+v0.5.2 fixes three things that stopped Google's Gemini from working through its
+OpenAI-compatible endpoint (`https://generativelanguage.googleapis.com/v1beta/openai`).
+
+Gemini on the OpenAI wire:
+- Tool calls keep their `thought_signature` (boubou-fdd). Gemini 3 attaches one to each call,
+  as `extra_content.google.thought_signature`, and answers the next request with 400
+  "Function call is missing a thought_signature in functionCall parts" unless the call goes
+  back with it. Each tool call now carries the provider's `extra_content` without reading it:
+  taken from whole and streamed replies, kept in session files, sent back on the call. Calls
+  without one send none.
+- Streamed tool calls without an `index` stay apart. Gemini streams each of a turn's parallel
+  calls whole, in its own chunk, with no `index`; they were all taken as call 0 and merged into
+  one broken call. A fragment without an `index` is now placed by its `id`, and one with
+  neither continues the last call.
+- The cloud provider (`config.cloud`) drops `enable_thinking` when it is refused (boubou-vl0).
+  Google rejects any field it does not know with a 400. On a 400 that names the field, the
+  turn is sent again without it, and it is not sent again for the rest of the session.
+  Providers that accept it see no change.
+- Checked in `crates/rufous-kernel/tests/openai_backend.rs`, and live: a seven-turn tool task
+  with parallel calls on `models/gemini-3.8-flash` completes.
+
+It is a patch release: engines that send no `extra_content`, always index their streamed calls
+and accept `enable_thinking` see no change.
